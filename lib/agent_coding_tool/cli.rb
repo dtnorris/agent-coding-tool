@@ -4,14 +4,22 @@ require "optparse"
 
 module AgentCodingTool
   class CLI
-    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr)
-      new(root: root, out: out, err: err).run(argv)
+    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
+      new(root: root, out: out, err: err, data_root: data_root).run(argv)
     end
 
-    def initialize(root:, out:, err:)
+    def self.default_data_root(root, env: ENV)
+      override = env["AGENT_CODING_TOOL_DATA_DIR"]
+      return File.expand_path(override) if override && !override.empty?
+
+      File.expand_path("../#{File.basename(root)}-data", root)
+    end
+
+    def initialize(root:, out:, err:, data_root: nil)
       @root = root
       @out = out
       @err = err
+      @data_root = data_root || self.class.default_data_root(root)
     end
 
     def run(argv)
@@ -35,13 +43,17 @@ module AgentCodingTool
 
     def coordinator
       @coordinator ||= begin
-        config = Config.load(File.join(@root, "config.yml"))
+        unless Dir.exist?(@data_root)
+          raise Error, "data directory does not exist: #{@data_root}; set AGENT_CODING_TOOL_DATA_DIR to override"
+        end
+
+        config = Config.load(File.join(@data_root, "config.yml"))
         Coordinator.new(
-          task_store: TaskStore.new(File.join(@root, "tasks")),
-          state_store: StateStore.new(File.join(@root, "state")),
+          task_store: TaskStore.new(File.join(@data_root, "tasks")),
+          state_store: StateStore.new(File.join(@data_root, "state")),
           repo_inspector: RepoInspector.new(config),
           prompt_renderer: PromptRenderer.new,
-          prompt_root: File.join(@root, "state", "prompts")
+          prompt_root: File.join(@data_root, "state", "prompts")
         )
       end
     end
@@ -109,6 +121,10 @@ module AgentCodingTool
     def help
       @out.puts <<~HELP
         agent-coding-tool — small local coordinator for human-directed coding agents
+
+        Data:
+          Defaults to a sibling <tool-directory>-data directory.
+          Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
           status [TASK]

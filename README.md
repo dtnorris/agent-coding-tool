@@ -2,6 +2,8 @@
 
 A deliberately small, local-first coordinator for a human directing multiple coding agents.
 
+The source repository is designed to remain safe to publish as open source. Operational task definitions, project details, generated prompts, and runtime state live in a separate data directory and are never required to be committed here.
+
 The tool does not launch agents, plan architecture, parse chat prose, merge code, commit, push, or mutate GitHub. Its first job is to make the existing human-directed workflow cheaper and safer.
 
 ## V1 contract
@@ -17,22 +19,38 @@ The tool does not launch agents, plan architecture, parse chat prose, merge code
 - `needs_judgment` and `blocked` are normal outcomes, not failures to be auto-retried.
 - The tool never commits, pushes, opens PRs, or otherwise mutates GitHub.
 
-## Files
+## Source/data separation
 
-- `config.yml` — local repository root plus default remote/branch.
+The public source checkout contains implementation, tests, documentation, and examples only. Runtime data belongs in an external data directory.
+
+By default, a checkout named `agent-coding-tool` uses a sibling directory named `agent-coding-tool-data`. For example:
+
+- `/path/to/code/agent-coding-tool` — public source checkout
+- `/path/to/code/agent-coding-tool-data` — private/local task and state data
+- `/path/to/code/other-repository` — a repository referenced by tasks
+
+The default data directory can be overridden with `AGENT_CODING_TOOL_DATA_DIR=/path/to/data`.
+
+The data directory may itself be a private Git repository. Its expected contents are:
+
+- `config.yml` — optional overrides for repository root and default remote/branch.
 - `tasks/*.yml` — durable human-authored task definitions.
 - `state/*.yml` — explicit runtime/result state.
 - `state/prompts/*.txt` — generated worker prompts.
 
+When `config.yml` is absent, `repo_root` defaults to the parent of the data directory, `default_remote` to `origin`, and `default_branch` to `main`. Relative `repo_root` values are resolved from the data directory. See `examples/config.yml`.
+
+The public repository also ignores legacy/local `config.yml`, `tasks/`, `state/`, and `data/` paths as a fail-safe against accidentally committing operational data.
+
 ## Task shape
 
-Copy `tasks/EXAMPLE.yml` and replace its contents. Repository keys default to directory names under `repo_root`; an individual repository may additionally set `path`, `remote`, or `branch` when it differs from the defaults.
+Copy `examples/tasks/EXAMPLE.yml` into the external data directory's `tasks/` directory and replace its contents. Repository keys default to directory names under `repo_root`; an individual repository may additionally set `path`, `remote`, or `branch` when it differs from the defaults.
 
 Required task fields are `id`, `title`, and a non-empty `repositories` mapping. `depends_on`, `constraints`, and `acceptance` are arrays. `goal` is free text.
 
 ## Typical workflow
 
-1. Create a task YAML file.
+1. Create a task YAML file in the external data directory.
 2. Run `bin/agent-coding-tool status` to see ready/blocked work.
 3. Run `bin/agent-coding-tool prepare TASK` immediately before launching a coding agent.
 4. Paste the generated prompt into the worker.
@@ -50,7 +68,7 @@ Shows effective task state. Prepared and candidate tasks are compared against cu
 
 `bin/agent-coding-tool prepare TASK`
 
-Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt.
+Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory.
 
 `bin/agent-coding-tool prepare TASK --retry`
 
@@ -68,6 +86,6 @@ Clears runtime state for a task. The task definition is untouched.
 
 ## Development
 
-Run `rake` for the full test suite.
+Run `rake` for the full test suite. Tests use explicit temporary data directories and do not depend on personal task data.
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous planner, agent-to-agent messaging, or GitHub write path. Add those only when repeated real workflow friction demonstrates a need.

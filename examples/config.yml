@@ -1,0 +1,5 @@
+---
+# Paths are resolved relative to the external data directory.
+repo_root: ..
+default_remote: origin
+default_branch: main

@@ -58,3 +58,9 @@ build-iPhoneSimulator/
 /.bundle/
 /vendor/bundle/
 /coverage/
+
+# Runtime/operator data belongs outside the public source repository.
+/config.yml
+/tasks/
+/state/
+/data/

@@ -1,0 +1,17 @@
+---
+id: EXAMPLE
+title: Replace this example with a real coding task
+depends_on: []
+repositories:
+  adventure-finder:
+    access: write
+  workload-orchestrator:
+    access: read_only
+goal: >-
+  Demonstrate the task-file shape. Delete this file once real work is being tracked.
+constraints:
+  - Keep the implementation narrow.
+  - Preserve existing public behavior unless the task explicitly changes it.
+acceptance:
+  - Run focused tests for changed behavior.
+  - Run the relevant full offline suite before handoff.

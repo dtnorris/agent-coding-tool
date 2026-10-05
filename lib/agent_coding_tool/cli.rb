@@ -27,6 +27,7 @@ module AgentCodingTool
       case command
       when "status" then status_command(argv)
       when "prepare" then prepare_command(argv)
+      when "start" then start_command(argv)
       when "record" then record_command(argv)
       when "reset" then reset_command(argv)
       when "help", nil then help
@@ -92,6 +93,14 @@ module AgentCodingTool
       @out.write(prepared.fetch("prompt"))
     end
 
+    def start_command(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool start TASK" unless id && argv.empty?
+
+      coordinator.start(id)
+      @out.puts "Started #{id}: IN_FLIGHT"
+    end
+
     def record_command(argv)
       options = { tests: [] }
       parser = OptionParser.new do |opts|
@@ -129,6 +138,7 @@ module AgentCodingTool
         Commands:
           status [TASK]
           prepare TASK [--retry]
+          start TASK          mark a prepared task in flight (human assertion)
           record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]
           reset TASK
 

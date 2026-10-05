@@ -14,7 +14,8 @@ The tool does not launch agents, plan architecture, parse chat prose, merge code
 - Each repository is explicitly `write` or `read_only` for each task.
 - Task dependencies must be explicitly complete before a dependent task can be prepared.
 - Preparing a task snapshots exact pushed heads and emits a worker prompt.
-- Any pushed-head movement after preparation makes the task stale.
+- Writable pushed-head movement after preparation makes the task stale; read-only movement requires refresh/reconciliation.
+- Starting a prepared task explicitly marks it in flight; no agent liveness is detected.
 - Worker outcomes are recorded explicitly; no prose interpretation is attempted.
 - `needs_judgment` and `blocked` are normal outcomes, not failures to be auto-retried.
 - The tool never commits, pushes, opens PRs, or otherwise mutates GitHub.
@@ -53,7 +54,7 @@ Required task fields are `id`, `title`, and a non-empty `repositories` mapping. 
 1. Create a task YAML file in the external data directory.
 2. Run `bin/agent-coding-tool status` to see ready/blocked work.
 3. Run `bin/agent-coding-tool prepare TASK` immediately before launching a coding agent.
-4. Paste the generated prompt into the worker.
+4. Paste the generated prompt into the worker and run `bin/agent-coding-tool start TASK`.
 5. Explicitly record the result with `record`.
 6. Apply/review the worker artifact yourself. Once the task has actually landed on authoritative pushed state, record `complete`.
 7. Dependent tasks become ready only after that explicit completion.
@@ -64,25 +65,33 @@ A worker that discovers a bad task breakout should be recorded as `blocked` or `
 
 `bin/agent-coding-tool status [TASK]`
 
-Shows effective task state. Prepared and candidate tasks are compared against current pushed heads; head movement produces `STALE` or `STALE_CANDIDATE`.
+Shows effective task state. Prepared, in-flight, and candidate tasks are compared against current pushed heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only movement preserves the state with a refresh/reconciliation warning.
+
+Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` → `record candidate_complete` → `CANDIDATE` → `record complete` → `COMPLETE`. Recorded outcomes, incomplete dependencies, and hard staleness take precedence over `IN_FLIGHT`.
 
 `bin/agent-coding-tool prepare TASK`
 
-Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory.
+Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
 
 `bin/agent-coding-tool prepare TASK --retry`
 
-Explicitly clears a recorded non-complete outcome and prepares another attempt. Completed tasks cannot be retried without resetting their state.
+Explicitly clears a recorded non-complete outcome and any in-flight marker, then prepares another attempt in `PREPARED` state. Completed tasks cannot be retried without resetting their state.
+
+`bin/agent-coding-tool start TASK`
+
+Human assertion that a prepared prompt has been handed to a worker. Records a UTC `started_at` without changing the snapshot or prompt. Requires an existing task and preparation with no recorded outcome; a second start fails with `already in flight`. This does not launch, inspect, or control agents, check liveness, or refresh repository heads. Use `status` to check dependencies and staleness.
 
 `bin/agent-coding-tool record TASK OUTCOME --summary "..." --artifact "..." --test "rake=pass"`
 
 Valid outcomes: `candidate_complete`, `complete`, `blocked`, `needs_judgment`, `failed`.
 
+Every recorded result clears the in-flight marker. `IN_FLIGHT` is not an outcome, and recording results without first calling `start` remains supported.
+
 `complete` means the human is asserting that the task is complete on authoritative pushed state; the tool captures a fresh completion snapshot at that moment.
 
 `bin/agent-coding-tool reset TASK`
 
-Clears runtime state for a task. The task definition is untouched.
+Clears runtime state for a task, including the in-flight marker. The task definition is untouched.
 
 ## Development
 

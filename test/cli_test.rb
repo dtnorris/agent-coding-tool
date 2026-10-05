@@ -4,6 +4,51 @@ require "stringio"
 require_relative "test_helper"
 
 class CLITest < Minitest::Test
+  include TestHelpers
+
+  def test_start_command_and_status
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.prepare("T1")
+      out = StringIO.new
+      err = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: out, err: err)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[start T1])
+      assert_includes out.string, "Started T1: IN_FLIGHT"
+      assert_equal 0, cli.run(%w[status T1])
+      assert_includes out.string, "T1: IN_FLIGHT"
+      assert_empty err.string
+      assert_equal 2, cli.run(%w[start T1])
+      assert_includes err.string, "already in flight"
+      assert_equal 0, cli.run(%w[prepare T1 --retry])
+      assert_equal "PREPARED", coordinator.status("T1").fetch("status")
+    end
+  end
+
+  def test_start_command_errors
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      [%w[start], %w[start T1 extra], %w[start T1], %w[start missing]].each do |args|
+        err = StringIO.new
+        cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: StringIO.new, err: err)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 2, cli.run(args)
+        assert_match(/ERROR:/, err.string)
+      end
+    end
+  end
+
+  def test_help_lists_start
+    out = StringIO.new
+    assert_equal 0, AgentCodingTool::CLI.run(["help"], out: out)
+    assert_includes out.string, "start TASK"
+    assert_includes out.string, "human assertion"
+  end
+
   def test_default_data_root_is_sibling_named_after_tool_checkout
     root = "/code/agent-coding-tool"
 

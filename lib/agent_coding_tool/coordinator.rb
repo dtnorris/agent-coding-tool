@@ -45,7 +45,13 @@ module AgentCodingTool
         return status_hash(label, task, state, "pushed branch changed: #{stale.join(', ')}")
       end
 
-      label = outcome == "candidate_complete" ? "CANDIDATE" : "PREPARED"
+      label = if outcome == "candidate_complete"
+                "CANDIDATE"
+              elsif state["started_at"]
+                "IN_FLIGHT"
+              else
+                "PREPARED"
+              end
       reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
       status_hash(label, task, state, reason)
     end
@@ -79,9 +85,26 @@ module AgentCodingTool
         "prompt_path" => prompt_path
       )
       new_state.delete("result") if retry_result
+      new_state.delete("started_at")
       @state_store.write(id, new_state)
 
       { "task" => task, "state" => new_state, "prompt" => prompt }
+    end
+
+    def start(id)
+      @task_store.load(id)
+      state = @state_store.load(id)
+      outcome = state.dig("result", "outcome")
+      raise InvalidState, "#{id}: already complete" if outcome == "complete"
+      if outcome
+        raise InvalidState, "#{id}: has recorded outcome #{outcome}; use prepare --retry to prepare a new attempt"
+      end
+      raise InvalidState, "#{id}: prepare the task before starting" unless state["snapshot"]
+      raise InvalidState, "#{id}: already in flight" if state["started_at"]
+
+      state["started_at"] = Time.now.utc.iso8601
+      @state_store.write(id, state)
+      state
     end
 
     def record(id, outcome:, summary: nil, artifact: nil, tests: [])
@@ -104,6 +127,7 @@ module AgentCodingTool
       state["id"] = id
       state["result"] = result
       state["completion_snapshot"] = snapshot_task(task) if outcome == "complete"
+      state.delete("started_at")
       @state_store.write(id, state)
       state
     end

@@ -5,6 +5,138 @@ require_relative "test_helper"
 class CoordinatorTest < Minitest::Test
   include TestHelpers
 
+  def test_start_preserves_preparation_and_rejects_double_start
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      prepared = coordinator.prepare("T1").fetch("state")
+      prompt = File.read(prepared.fetch("prompt_path"))
+      assert_equal "PREPARED", coordinator.status("T1").fetch("status")
+
+      started = coordinator.start("T1")
+      assert_equal prepared, started.reject { |key, _| key == "started_at" }
+      assert Time.iso8601(started.fetch("started_at")).utc?
+      assert_equal prompt, File.read(started.fetch("prompt_path"))
+      assert_equal "IN_FLIGHT", coordinator.status("T1").fetch("status")
+      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("T1") }
+      assert_match(/already in flight/, error.message)
+      assert_equal started, coordinator.status("T1").fetch("state")
+    end
+  end
+
+  def test_start_requires_existing_prepared_task
+    with_workspace do |dir|
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      assert_raises(AgentCodingTool::Error) { coordinator.start("missing") }
+      write_task(dir, id: "T1")
+      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("T1") }
+      assert_match(/prepare the task before starting/, error.message)
+      assert_equal "READY", coordinator.status("T1").fetch("status")
+    end
+  end
+
+  def test_every_result_ends_in_flight_and_prevents_start
+    AgentCodingTool::Coordinator::OUTCOMES.each do |outcome|
+      with_workspace do |dir|
+        write_task(dir, id: "T1")
+        coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+        coordinator.prepare("T1")
+        coordinator.start("T1")
+        result = coordinator.record("T1", outcome: outcome)
+        refute result.key?("started_at")
+        label = outcome == "candidate_complete" ? "CANDIDATE" : outcome.upcase
+        assert_equal label, coordinator.status("T1").fetch("status")
+        error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("T1") }
+        assert_match(outcome == "complete" ? /already complete/ : /use prepare --retry/, error.message)
+        assert_equal result, coordinator.status("T1").fetch("state")
+      end
+    end
+  end
+
+  def test_fresh_preparation_clears_in_flight_with_or_without_retry
+    [false, true].each do |retry_result|
+      with_workspace do |dir|
+        write_task(dir, id: "T1")
+        coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+        coordinator.prepare("T1")
+        coordinator.start("T1")
+        prepared = coordinator.prepare("T1", retry_result: retry_result)
+        refute prepared.fetch("state").key?("started_at")
+        assert_equal "PREPARED", coordinator.status("T1").fetch("status")
+      end
+    end
+  end
+
+  def test_retry_clears_result_and_any_retained_in_flight_marker
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.prepare("T1")
+      started = coordinator.start("T1")
+      result = coordinator.record("T1", outcome: "blocked")
+      store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+      store.write("T1", result.merge("started_at" => started.fetch("started_at")))
+
+      prepared = coordinator.prepare("T1", retry_result: true).fetch("state")
+      refute prepared.key?("result")
+      refute prepared.key?("started_at")
+      assert_equal "PREPARED", coordinator.status("T1").fetch("status")
+      coordinator.start("T1")
+      assert_equal "IN_FLIGHT", coordinator.status("T1").fetch("status")
+    end
+  end
+
+  def test_reset_clears_in_flight
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.prepare("T1")
+      coordinator.start("T1")
+      coordinator.reset("T1")
+      assert_equal({ "id" => "T1" }, coordinator.status("T1").fetch("state"))
+      assert_equal "READY", coordinator.status("T1").fetch("status")
+    end
+  end
+
+  def test_in_flight_preserves_read_only_reconciliation_and_writable_staleness
+    [false, true].each do |mixed|
+      with_workspace do |dir|
+        repos = { "reference" => { "access" => "read_only" } }
+        repos["alpha"] = { "access" => "write" } if mixed
+        write_task(dir, id: "T1", repositories: repos)
+        heads = { "alpha" => "a" * 40, "reference" => "b" * 40 }
+        coordinator = coordinator_for(dir, heads)
+        coordinator.prepare("T1")
+        started = coordinator.start("T1")
+        heads["reference"] = "c" * 40
+        status = coordinator.status("T1")
+        assert_equal "IN_FLIGHT", status.fetch("status")
+        assert_includes status.fetch("reason"), "refresh and reconcile materially affected findings before finalizing: reference"
+        assert_equal started, status.fetch("state")
+        next unless mixed
+
+        heads["alpha"] = "d" * 40
+        assert_equal "STALE", coordinator.status("T1").fetch("status")
+        assert_equal "pushed branch changed: alpha", coordinator.status("T1").fetch("reason")
+        assert_equal started, coordinator.status("T1").fetch("state")
+      end
+    end
+  end
+
+  def test_incomplete_dependencies_take_precedence_over_in_flight
+    with_workspace do |dir|
+      write_task(dir, id: "A")
+      write_task(dir, id: "B", depends_on: ["A"])
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.record("A", outcome: "complete")
+      coordinator.prepare("B")
+      coordinator.start("B")
+      coordinator.reset("A")
+      assert_equal "BLOCKED", coordinator.status("B").fetch("status")
+      assert_equal "dependencies incomplete: A", coordinator.status("B").fetch("reason")
+    end
+  end
+
   def test_new_task_is_ready
     with_workspace do |dir|
       write_task(dir, id: "T1")

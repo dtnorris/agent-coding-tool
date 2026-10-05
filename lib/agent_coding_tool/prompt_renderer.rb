@@ -11,10 +11,15 @@ module AgentCodingTool
       lines << ""
       lines << "Use the connected GitHub account."
       lines << ""
-      lines << "Work from the exact current pushed main state recorded below. Refresh these pushed heads before doing any work. If any head differs, stop and report STALE INPUT rather than silently continuing."
+      lines << "Work from the exact current pushed branch state recorded below. Refresh these pushed heads before doing any work. If any head differs, stop and report STALE INPUT rather than silently continuing."
+      lines << "Repository names below are logical task keys / local checkout identities, not necessarily GitHub repository names. Verify each pushed head using its recorded remote_url and branch; do not infer the remote repository from the logical key or local path."
       lines << ""
       snapshot.each do |name, repo|
-        lines << "- #{name}: #{repo.fetch('pushed_sha')}"
+        lines << "- #{name}"
+        lines << "  - path: #{repo.fetch('path')}"
+        lines << "  - remote_url: #{repo.fetch('remote_url')}"
+        lines << "  - branch: #{repo.fetch('branch')}"
+        lines << "  - pushed_sha: #{repo.fetch('pushed_sha')}"
       end
       lines << ""
       append_repo_section(lines, "Writable repositories", writable)

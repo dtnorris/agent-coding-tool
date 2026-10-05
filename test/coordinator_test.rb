@@ -41,8 +41,15 @@ class CoordinatorTest < Minitest::Test
       result = coordinator.prepare("T1")
       prompt = result.fetch("prompt")
 
-      assert_includes prompt, "alpha: #{'a' * 40}"
-      assert_includes prompt, "beta: #{'b' * 40}"
+      %w[alpha beta].each do |name|
+        assert_includes prompt, <<~BLOCK
+          - #{name}
+            - path: /repos/#{name}
+            - remote_url: git@github.com:example/#{name}.git
+            - branch: main
+            - pushed_sha: #{name[0] * 40}
+        BLOCK
+      end
       assert_includes prompt, "## Writable repositories"
       assert_includes prompt, "## Read-only repositories"
       assert_includes prompt, "report STALE INPUT"

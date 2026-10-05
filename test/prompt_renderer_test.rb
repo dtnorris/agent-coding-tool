@@ -1,0 +1,55 @@
+# frozen_string_literal: true
+
+require_relative "test_helper"
+
+class PromptRendererTest < Minitest::Test
+  def test_logical_checkout_key_uses_recorded_remote_and_branch
+    name = "runpod-ollama-fleet-production"
+    task = {
+      "id" => "T1",
+      "title" => "Narrow change",
+      "repositories" => {
+        name => { "access" => "write" },
+        "reference" => { "access" => "read_only" }
+      },
+      "goal" => "Expose checkout identity.",
+      "constraints" => ["No paid capacity."],
+      "acceptance" => ["Focused tests pass."]
+    }
+    snapshot = TestHelpers::FakeInspector.new(heads: { name => "a" * 40, "reference" => "b" * 40 })
+    repos = task.fetch("repositories").to_h { |key, spec| [key, snapshot.snapshot(key, spec)] }
+    repos.fetch(name).merge!(
+      "path" => "/code/#{name}",
+      "remote_url" => "git@github.com:example/runpod-ollama-fleet.git",
+      "branch" => "release",
+      "local_head" => "c" * 40,
+      "local_dirty" => true
+    )
+
+    prompt = AgentCodingTool::PromptRenderer.new.render(task, repos)
+
+    assert_includes prompt, <<~BLOCK
+      - runpod-ollama-fleet-production
+        - path: /code/runpod-ollama-fleet-production
+        - remote_url: git@github.com:example/runpod-ollama-fleet.git
+        - branch: release
+        - pushed_sha: #{'a' * 40}
+    BLOCK
+    refute_includes prompt, "example/runpod-ollama-fleet-production.git"
+    refute_includes prompt, "c" * 40
+    refute_includes prompt, "local_dirty"
+    assert_includes prompt, "not necessarily GitHub repository names"
+    assert_includes prompt, "Verify each pushed head using its recorded remote_url and branch"
+    assert_includes prompt, "do not infer the remote repository from the logical key or local path"
+    assert_includes prompt, "# T1: Narrow change"
+    assert_includes prompt, "Use the connected GitHub account."
+    assert_includes prompt, "Refresh these pushed heads before doing any work. If any head differs, stop and report STALE INPUT rather than silently continuing."
+    assert_includes prompt, "## Writable repositories\n\n- #{name}\n"
+    assert_includes prompt, "## Read-only repositories\n\n- reference\n"
+    assert_includes prompt, "Do not commit, push, create a PR, or otherwise mutate GitHub."
+    assert_includes prompt, "Do not broaden repository scope. If the task cannot be completed correctly within the stated boundary, report the dependency or compatibility defect instead."
+    assert_includes prompt, "## Goal\n\nExpose checkout identity.\n"
+    assert_includes prompt, "## Constraints\n\n- No paid capacity.\n"
+    assert_includes prompt, "## Acceptance\n\n- Focused tests pass.\n"
+  end
+end

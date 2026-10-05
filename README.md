@@ -52,7 +52,7 @@ Required task fields are `id`, `title`, and a non-empty `repositories` mapping. 
 ## Typical workflow
 
 1. Create a task YAML file in the external data directory.
-2. Run `bin/agent-coding-tool status` to see ready/blocked work.
+2. Run `bin/agent-coding-tool status` to see active work, blockers, and recent progress.
 3. Run `bin/agent-coding-tool prepare TASK` immediately before launching a coding agent.
 4. Paste the generated prompt into the worker and run `bin/agent-coding-tool start TASK`.
 5. Explicitly record the result with `record`.
@@ -63,9 +63,11 @@ A worker that discovers a bad task breakout should be recorded as `blocked` or `
 
 ## Commands
 
-`bin/agent-coding-tool status [TASK]`
+`bin/agent-coding-tool status [TASK] [--all | --active]`
 
-Shows effective task state. Prepared, in-flight, and candidate tasks are compared against current pushed heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only movement preserves the state with a refresh/reconciliation warning.
+Shows effective task state. The default dashboard includes every non-complete task and the five most recently completed tasks, ranked by their recorded completion timestamps. Completed tasks without a usable recorded timestamp remain visible. `--all` shows every task, and `--active` excludes every completed task. The two options are mutually exclusive. Explicit `status TASK` lookup always shows the named task.
+
+Prepared, in-flight, and candidate tasks are compared against current pushed heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only movement preserves the state with a refresh/reconciliation warning. Presentation filtering does not alter task state or dependency resolution.
 
 Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` → `record candidate_complete` → `CANDIDATE` → `record complete` → `COMPLETE`. Recorded outcomes, incomplete dependencies, and hard staleness take precedence over `IN_FLIGHT`.
 

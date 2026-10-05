@@ -6,6 +6,7 @@ require "time"
 module AgentCodingTool
   class Coordinator
     OUTCOMES = %w[candidate_complete complete blocked needs_judgment failed].freeze
+    RECENT_COMPLETE_LIMIT = 5
 
     def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:)
       @task_store = task_store
@@ -20,8 +21,9 @@ module AgentCodingTool
 
     def status(id) = statuses([id]).first
 
-    def statuses(ids = nil)
+    def statuses(ids = nil, completion_filter: :all)
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
+      selected_tasks = filter_completed_tasks(selected_tasks, completion_filter) unless ids
       contexts = selected_tasks.map { |task| status_context(task) }
       references = contexts.filter_map { |context| context["pending"] }.flat_map do |pending|
         freshness_references(pending.fetch("task"), pending.fetch("snapshot"))
@@ -115,6 +117,40 @@ module AgentCodingTool
     end
 
     private
+
+    def filter_completed_tasks(selected_tasks, completion_filter)
+      unless %i[all active recent].include?(completion_filter)
+        raise ArgumentError, "invalid completion filter: #{completion_filter.inspect}"
+      end
+      return selected_tasks if completion_filter == :all
+
+      complete = selected_tasks.each_with_index.filter_map do |task, index|
+        state = @state_store.load(task.fetch("id"))
+        next unless state.dig("result", "outcome") == "complete"
+
+        [task.fetch("id"), completion_time(state), index]
+      end
+      return selected_tasks.reject { |task| complete.any? { |id, _time, _index| id == task.fetch("id") } } if completion_filter == :active
+
+      ranked = complete.select { |_id, time, _index| time }
+      recent_ids = ranked.sort_by { |_id, time, index| [time, index] }
+                         .last(RECENT_COMPLETE_LIMIT)
+                         .to_h { |id, _time, _index| [id, true] }
+      unranked_ids = complete.filter_map { |id, time, _index| [id, true] unless time }.to_h
+      visible_ids = recent_ids.merge(unranked_ids)
+
+      selected_tasks.reject do |task|
+        complete.any? { |id, _time, _index| id == task.fetch("id") } &&
+          !visible_ids.key?(task.fetch("id"))
+      end
+    end
+
+    def completion_time(state)
+      recorded_at = state.dig("result", "recorded_at")
+      Time.iso8601(recorded_at) if recorded_at.is_a?(String) && !recorded_at.empty?
+    rescue ArgumentError
+      nil
+    end
 
     def status_context(task)
       id = task.fetch("id")

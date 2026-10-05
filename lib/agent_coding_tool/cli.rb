@@ -60,10 +60,26 @@ module AgentCodingTool
     end
 
     def status_command(argv)
-      id = argv.shift
-      raise Error, "usage: agent-coding-tool status [TASK]" unless argv.empty?
+      options = { completion_filter: :recent }
+      parser = OptionParser.new do |opts|
+        opts.on("--all", "show every task, including all completed tasks") { options[:all] = true }
+        opts.on("--active", "show no completed tasks") { options[:active] = true }
+      end
+      parser.parse!(argv)
+      if options[:all] && options[:active]
+        raise Error, "status --all and --active are mutually exclusive"
+      end
+      options[:completion_filter] = :all if options[:all]
+      options[:completion_filter] = :active if options[:active]
 
-      statuses = id ? coordinator.statuses([id]) : coordinator.statuses
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool status [TASK] [--all | --active]" unless argv.empty?
+
+      statuses = if id
+                   coordinator.statuses([id])
+                 else
+                   coordinator.statuses(completion_filter: options.fetch(:completion_filter))
+                 end
       statuses.each do |item|
         line = "#{item.fetch('id')}: #{item.fetch('status')} — #{item.fetch('title')}"
         line += " (#{item.fetch('reason')})" if item["reason"]
@@ -136,7 +152,7 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
-          status [TASK]
+          status [TASK] [--all | --active]
           prepare TASK [--retry]
           start TASK          mark a prepared task in flight (human assertion)
           record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]

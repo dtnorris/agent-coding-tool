@@ -49,6 +49,48 @@ class CLITest < Minitest::Test
     assert_includes out.string, "human assertion"
   end
 
+  def test_status_completion_filters_and_explicit_lookup
+    with_workspace do |dir|
+      (1..6).each { |index| write_task(dir, id: "C#{index}") }
+      write_task(dir, id: "READY")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      (1..6).each { |index| coordinator.record("C#{index}", outcome: "complete") }
+
+      default_out = run_status(dir, coordinator, %w[status])
+      refute_includes default_out, "C1: COMPLETE"
+      assert_includes default_out, "C6: COMPLETE"
+      assert_includes default_out, "READY: READY"
+
+      all_out = run_status(dir, coordinator, %w[status --all])
+      assert_includes all_out, "C1: COMPLETE"
+
+      active_out = run_status(dir, coordinator, %w[status --active])
+      refute_includes active_out, "COMPLETE"
+      assert_includes active_out, "READY: READY"
+
+      explicit_out = run_status(dir, coordinator, %w[status C1])
+      assert_includes explicit_out, "C1: COMPLETE"
+    end
+  end
+
+  def test_status_rejects_conflicting_completion_filters
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      err = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: StringIO.new, err: err)
+      cli.instance_variable_set(:@coordinator, coordinator_for(dir, "alpha" => "a" * 40))
+
+      assert_equal 2, cli.run(%w[status --all --active])
+      assert_includes err.string, "mutually exclusive"
+    end
+  end
+
+  def test_help_documents_status_completion_filters
+    out = StringIO.new
+    assert_equal 0, AgentCodingTool::CLI.run(["help"], out: out)
+    assert_includes out.string, "status [TASK] [--all | --active]"
+  end
+
   def test_default_data_root_is_sibling_named_after_tool_checkout
     root = "/code/agent-coding-tool"
 
@@ -72,5 +114,17 @@ class CLITest < Minitest::Test
       assert_equal 2, status
       assert_match(/data directory does not exist/, err.string)
     end
+  end
+
+  private
+
+  def run_status(dir, coordinator, argv)
+    out = StringIO.new
+    err = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: out, err: err)
+    cli.instance_variable_set(:@coordinator, coordinator)
+    assert_equal 0, cli.run(argv)
+    assert_empty err.string
+    out.string
   end
 end

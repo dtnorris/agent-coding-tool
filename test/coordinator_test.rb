@@ -468,6 +468,110 @@ class CoordinatorTest < Minitest::Test
     end
   end
 
+  def test_recent_completion_filter_keeps_five_newest_in_task_store_order
+    with_workspace do |dir|
+      timestamps = {
+        "C1" => "2026-10-05T18:00:00Z",
+        "C2" => "2026-10-05T12:00:00Z",
+        "C3" => "2026-10-05T17:00:00Z",
+        "C4" => "2026-10-05T16:00:00Z",
+        "C5" => "2026-10-05T11:00:00Z",
+        "C6" => "2026-10-05T15:00:00Z",
+        "C7" => "2026-10-05T14:00:00Z"
+      }
+      timestamps.each_key { |id| write_task(dir, id:) }
+      write_task(dir, id: "READY")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      timestamps.each { |id, timestamp| record_complete_at(dir, coordinator, id, timestamp) }
+
+      statuses = coordinator.statuses(completion_filter: :recent)
+
+      assert_equal %w[C1 C3 C4 C6 C7 READY], statuses.map { |status| status.fetch("id") }
+      assert_equal ["COMPLETE"] * 5 + ["READY"], statuses.map { |status| status.fetch("status") }
+    end
+  end
+
+  def test_recent_completion_filter_keeps_all_when_five_or_fewer_are_complete
+    with_workspace do |dir|
+      (1..5).each { |index| write_task(dir, id: "C#{index}") }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      (1..5).each do |index|
+        record_complete_at(dir, coordinator, "C#{index}", "2026-10-05T#{format('%02d', index)}:00:00Z")
+      end
+
+      assert_equal %w[C1 C2 C3 C4 C5],
+                   coordinator.statuses(completion_filter: :recent).map { |status| status.fetch("id") }
+    end
+  end
+
+  def test_recent_completion_filter_keeps_unrankable_completions_visible
+    with_workspace do |dir|
+      (1..7).each { |index| write_task(dir, id: "C#{index}") }
+      write_task(dir, id: "MALFORMED")
+      write_task(dir, id: "MISSING")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      (1..7).each do |index|
+        record_complete_at(dir, coordinator, "C#{index}", "2026-10-05T#{format('%02d', index)}:00:00Z")
+      end
+      record_complete_at(dir, coordinator, "MALFORMED", "not-a-time")
+      record_complete_at(dir, coordinator, "MISSING", nil)
+
+      ids = coordinator.statuses(completion_filter: :recent).map { |status| status.fetch("id") }
+
+      assert_equal %w[C3 C4 C5 C6 C7 MALFORMED MISSING], ids
+    end
+  end
+
+  def test_all_and_active_completion_filters_preserve_selected_order
+    with_workspace do |dir|
+      %w[A B C].each { |id| write_task(dir, id:) }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      record_complete_at(dir, coordinator, "A", "2026-10-05T10:00:00Z")
+      coordinator.prepare("B")
+      coordinator.record("B", outcome: "blocked", summary: "blocked")
+
+      assert_equal %w[A B C], coordinator.statuses(completion_filter: :all).map { |status| status.fetch("id") }
+      assert_equal %w[B C], coordinator.statuses(completion_filter: :active).map { |status| status.fetch("id") }
+    end
+  end
+
+  def test_hidden_complete_dependency_still_unblocks_visible_task
+    with_workspace do |dir|
+      (1..6).each { |index| write_task(dir, id: "C#{index}") }
+      write_task(dir, id: "DEPENDENT", depends_on: ["C1"])
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      (1..6).each do |index|
+        record_complete_at(dir, coordinator, "C#{index}", "2026-10-05T#{format('%02d', index)}:00:00Z")
+      end
+
+      statuses = coordinator.statuses(completion_filter: :recent)
+
+      refute_includes statuses.map { |status| status.fetch("id") }, "C1"
+      assert_equal "READY", statuses.find { |status| status.fetch("id") == "DEPENDENT" }.fetch("status")
+    end
+  end
+
+  def test_recent_filter_does_not_add_freshness_work_for_hidden_completions
+    with_workspace do |dir|
+      (1..6).each { |index| write_task(dir, id: "C#{index}") }
+      write_task(dir, id: "ACTIVE")
+      inspector = InstrumentedInspector.new("alpha" => "a" * 40)
+      coordinator = coordinator_with_inspector(dir, inspector)
+      (1..6).each do |index|
+        record_complete_at(dir, coordinator, "C#{index}", "2026-10-05T#{format('%02d', index)}:00:00Z")
+      end
+      coordinator.prepare("ACTIVE")
+      inspector.reset_counts
+
+      statuses = coordinator.statuses(completion_filter: :recent)
+
+      assert_equal 6, statuses.length
+      assert_empty inspector.snapshot_calls
+      assert_equal 1, inspector.head_batches.length
+      assert_equal ["ACTIVE/alpha"], inspector.head_batches.first.map { |reference| reference.fetch("name") }
+    end
+  end
+
   private
 
   def coordinator_with_inspector(dir, inspector)
@@ -478,5 +582,17 @@ class CoordinatorTest < Minitest::Test
       prompt_renderer: AgentCodingTool::PromptRenderer.new,
       prompt_root: File.join(dir, "state", "prompts")
     )
+  end
+
+  def record_complete_at(dir, coordinator, id, timestamp)
+    coordinator.record(id, outcome: "complete")
+    store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+    state = store.load(id)
+    if timestamp
+      state.fetch("result")["recorded_at"] = timestamp
+    else
+      state.fetch("result").delete("recorded_at")
+    end
+    store.write(id, state)
   end
 end

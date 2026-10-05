@@ -11,7 +11,9 @@ module AgentCodingTool
       lines << ""
       lines << "Use the connected GitHub account."
       lines << ""
-      lines << "Work from the exact current pushed branch state recorded below. Refresh these pushed heads before doing any work. If any head differs, stop and report STALE INPUT rather than silently continuing."
+      lines << "The pushed branch heads recorded below are the preparation snapshot. Refresh these pushed heads before doing any work and again before finalizing."
+      lines << "Writable repositories: if any pushed head differs from the preparation snapshot, stop and report STALE INPUT rather than silently continuing. A new preparation (with explicit retry if an outcome was recorded) is required."
+      lines << "Read-only repositories: if a pushed head differs, refresh that repository to the new pushed head and re-inspect and reconcile any materially affected findings before finalizing. Unrelated read-only head movement alone does not require an abort. Preserve the preparation snapshot as provenance and report the refreshed heads and any effect on your conclusions in the handoff."
       lines << "Repository names below are logical task keys / local checkout identities, not necessarily GitHub repository names. Verify each pushed head using its recorded remote_url and branch; do not infer the remote repository from the logical key or local path."
       lines << ""
       snapshot.each do |name, repo|

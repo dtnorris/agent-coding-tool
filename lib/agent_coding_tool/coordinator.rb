@@ -37,14 +37,17 @@ module AgentCodingTool
       snapshot = state["snapshot"]
       return status_hash("READY", task, state) unless snapshot
 
-      stale = stale_repositories(task, snapshot)
+      refresh, stale = changed_repositories(task, snapshot).partition do |name|
+        snapshot.key?(name) && task.fetch("repositories").fetch(name).fetch("access") == "read_only"
+      end
       unless stale.empty?
         label = outcome == "candidate_complete" ? "STALE_CANDIDATE" : "STALE"
-        return status_hash(label, task, state, "pushed main changed: #{stale.join(', ')}")
+        return status_hash(label, task, state, "pushed branch changed: #{stale.join(', ')}")
       end
 
       label = outcome == "candidate_complete" ? "CANDIDATE" : "PREPARED"
-      status_hash(label, task, state)
+      reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
+      status_hash(label, task, state, reason)
     end
 
     def prepare(id, retry_result: false)
@@ -124,7 +127,7 @@ module AgentCodingTool
       end
     end
 
-    def stale_repositories(task, snapshot)
+    def changed_repositories(task, snapshot)
       task.fetch("repositories").filter_map do |name, spec|
         previous = snapshot[name]
         next name unless previous

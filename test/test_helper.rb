@@ -19,6 +19,14 @@ module TestHelpers
         "local_dirty" => !!local_dirty
       }
     end
+
+    def pushed_heads(references)
+      references.each_with_object({}) do |reference, resolved|
+        repository = reference.fetch("name").split("/", 2).last
+        key = [reference.fetch("remote_url"), reference.fetch("branch")]
+        resolved[key] = heads.fetch(repository)
+      end
+    end
   end
 
   def with_workspace

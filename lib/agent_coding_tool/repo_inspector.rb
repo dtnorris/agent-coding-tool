@@ -1,19 +1,28 @@
 # frozen_string_literal: true
 
 require "open3"
+require "thread"
 
 module AgentCodingTool
   class CommandRunner
     def capture(*command, chdir: nil)
-      stdout, stderr, status = Open3.capture3(*command, chdir: chdir)
+      options = {}
+      options[:chdir] = chdir if chdir
+      stdout, stderr, status = Open3.capture3(*command, **options)
       [stdout, stderr, status.success?]
     end
   end
 
   class RepoInspector
-    def initialize(config, runner: CommandRunner.new)
+    DEFAULT_REMOTE_CONCURRENCY = 4
+
+    def initialize(config, runner: CommandRunner.new, remote_concurrency: DEFAULT_REMOTE_CONCURRENCY)
       @config = config
       @runner = runner
+      @remote_concurrency = Integer(remote_concurrency)
+      raise ArgumentError, "remote concurrency must be positive" unless @remote_concurrency.positive?
+    rescue ArgumentError, TypeError
+      raise ArgumentError, "remote concurrency must be a positive integer"
     end
 
     def snapshot(name, spec)
@@ -38,6 +47,56 @@ module AgentCodingTool
       }
     end
 
+    def pushed_heads(references)
+      targets = Array(references).each_with_object({}) do |reference, out|
+        name = reference.fetch("name").to_s
+        remote_url = reference.fetch("remote_url").to_s
+        branch = reference.fetch("branch").to_s
+        if name.empty? || remote_url.empty? || branch.empty?
+          raise RepositoryError, "status freshness reference is missing name, remote URL, or branch"
+        end
+
+        key = [remote_url, branch]
+        target = out[key] ||= { "names" => [], "remote_url" => remote_url, "branch" => branch }
+        target.fetch("names") << name unless target.fetch("names").include?(name)
+      rescue KeyError
+        raise RepositoryError, "status freshness reference is missing name, remote URL, or branch"
+      end
+      return {} if targets.empty?
+
+      queue = Queue.new
+      targets.each { |key, target| queue << [key, target] }
+      results = {}
+      errors = {}
+      lock = Mutex.new
+      worker_count = [@remote_concurrency, targets.length].min
+      workers = Array.new(worker_count) do
+        Thread.new do
+          loop do
+            key, target = queue.pop(true)
+            begin
+              sha = pushed_sha_from_url!(
+                target.fetch("names").join(", "),
+                target.fetch("remote_url"),
+                target.fetch("branch")
+              )
+              lock.synchronize { results[key] = sha }
+            rescue StandardError => e
+              lock.synchronize { errors[key] = e }
+            end
+          rescue ThreadError
+            break
+          end
+        end
+      end
+      workers.each(&:join)
+
+      first_error = targets.each_key.lazy.map { |key| errors[key] }.find(&:itself)
+      raise first_error if first_error
+
+      results
+    end
+
     private
 
     def repository_path(name, spec)
@@ -58,6 +117,17 @@ module AgentCodingTool
       stdout, stderr, success = @runner.capture(
         "git", "ls-remote", "--exit-code", remote, "refs/heads/#{branch}", chdir: path
       )
+      parse_pushed_sha!(name, remote, branch, stdout, stderr, success)
+    end
+
+    def pushed_sha_from_url!(name, remote_url, branch)
+      stdout, stderr, success = @runner.capture(
+        "git", "ls-remote", "--exit-code", remote_url, "refs/heads/#{branch}"
+      )
+      parse_pushed_sha!(name, remote_url, branch, stdout, stderr, success)
+    end
+
+    def parse_pushed_sha!(name, remote, branch, stdout, stderr, success)
       unless success
         raise RepositoryError,
               "#{name}: cannot resolve pushed #{remote}/#{branch}: #{stderr.strip}"

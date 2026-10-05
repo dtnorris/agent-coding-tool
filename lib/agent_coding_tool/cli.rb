@@ -63,7 +63,7 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool status [TASK]" unless argv.empty?
 
-      statuses = id ? [coordinator.status(id)] : coordinator.tasks.map { |task| coordinator.status(task.fetch("id")) }
+      statuses = id ? coordinator.statuses([id]) : coordinator.statuses
       statuses.each do |item|
         line = "#{item.fetch('id')}: #{item.fetch('status')} — #{item.fetch('title')}"
         line += " (#{item.fetch('reason')})" if item["reason"]

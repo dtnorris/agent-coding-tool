@@ -5,6 +5,43 @@ require_relative "test_helper"
 class CoordinatorTest < Minitest::Test
   include TestHelpers
 
+  class InstrumentedInspector
+    attr_reader :snapshot_calls, :head_batches
+
+    def initialize(heads)
+      @heads = heads
+      reset_counts
+    end
+
+    def snapshot(name, _spec)
+      @snapshot_calls << name
+      sha = @heads.fetch(name)
+      {
+        "path" => "/repos/#{name}",
+        "remote" => "origin",
+        "remote_url" => "git@github.com:example/#{name}.git",
+        "branch" => "main",
+        "pushed_sha" => sha,
+        "local_head" => sha,
+        "local_dirty" => false
+      }
+    end
+
+    def pushed_heads(references)
+      @head_batches << references.map(&:dup)
+      references.each_with_object({}) do |reference, heads|
+        repository = reference.fetch("name").split("/", 2).last
+        key = [reference.fetch("remote_url"), reference.fetch("branch")]
+        heads[key] = @heads.fetch(repository)
+      end
+    end
+
+    def reset_counts
+      @snapshot_calls = []
+      @head_batches = []
+    end
+  end
+
   def test_start_preserves_preparation_and_rejects_double_start
     with_workspace do |dir|
       write_task(dir, id: "T1")
@@ -357,5 +394,89 @@ class CoordinatorTest < Minitest::Test
       refute result.fetch("state").key?("result")
       assert_equal "PREPARED", coordinator.status("T1").fetch("status")
     end
+  end
+
+  def test_broad_status_batches_freshness_without_full_repository_snapshots
+    with_workspace do |dir|
+      shared = (1..4).to_h { |index| ["shared#{index}", { "access" => "read_only" }] }
+      first_only = (1..4).to_h { |index| ["first#{index}", { "access" => "read_only" }] }
+      second_only = (1..4).to_h { |index| ["second#{index}", { "access" => "read_only" }] }
+      write_task(dir, id: "T1", repositories: shared.merge(first_only))
+      write_task(dir, id: "T2", repositories: shared.merge(second_only))
+      names = shared.keys + first_only.keys + second_only.keys
+      inspector = InstrumentedInspector.new(names.to_h { |name| [name, name[0] * 40] })
+      coordinator = coordinator_with_inspector(dir, inspector)
+      coordinator.prepare("T1")
+      coordinator.start("T1")
+      coordinator.prepare("T2")
+      inspector.reset_counts
+
+      statuses = coordinator.statuses
+
+      assert_equal %w[IN_FLIGHT PREPARED], statuses.map { |status| status.fetch("status") }
+      assert_empty inspector.snapshot_calls
+      assert_equal 1, inspector.head_batches.length
+      references = inspector.head_batches.first
+      assert_equal 16, references.length
+      assert_equal 12, references.map { |reference| [reference.fetch("remote_url"), reference.fetch("branch")] }.uniq.length
+    end
+  end
+
+  def test_single_task_status_uses_optimized_freshness_path
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      inspector = InstrumentedInspector.new("alpha" => "a" * 40)
+      coordinator = coordinator_with_inspector(dir, inspector)
+      coordinator.prepare("T1")
+      inspector.reset_counts
+
+      assert_equal "PREPARED", coordinator.status("T1").fetch("status")
+      assert_empty inspector.snapshot_calls
+      assert_equal 1, inspector.head_batches.length
+      assert_equal ["T1/alpha"], inspector.head_batches.first.map { |reference| reference.fetch("name") }
+    end
+  end
+
+  def test_terminal_ready_and_dependency_blocked_tasks_skip_freshness_work
+    with_workspace do |dir|
+      %w[COMPLETE BLOCKED FAILED NEEDS].each { |id| write_task(dir, id:) }
+      write_task(dir, id: "READY")
+      write_task(dir, id: "DEPENDENT", depends_on: ["READY"])
+      inspector = InstrumentedInspector.new("alpha" => "a" * 40)
+      coordinator = coordinator_with_inspector(dir, inspector)
+      coordinator.record("COMPLETE", outcome: "complete")
+      {
+        "BLOCKED" => "blocked",
+        "FAILED" => "failed",
+        "NEEDS" => "needs_judgment"
+      }.each do |id, outcome|
+        coordinator.prepare(id)
+        coordinator.record(id, outcome:, summary: outcome)
+      end
+      inspector.reset_counts
+
+      statuses = coordinator.statuses.to_h { |status| [status.fetch("id"), status.fetch("status")] }
+
+      assert_equal "COMPLETE", statuses.fetch("COMPLETE")
+      assert_equal "BLOCKED", statuses.fetch("BLOCKED")
+      assert_equal "FAILED", statuses.fetch("FAILED")
+      assert_equal "NEEDS_JUDGMENT", statuses.fetch("NEEDS")
+      assert_equal "READY", statuses.fetch("READY")
+      assert_equal "BLOCKED", statuses.fetch("DEPENDENT")
+      assert_empty inspector.snapshot_calls
+      assert_empty inspector.head_batches
+    end
+  end
+
+  private
+
+  def coordinator_with_inspector(dir, inspector)
+    AgentCodingTool::Coordinator.new(
+      task_store: AgentCodingTool::TaskStore.new(File.join(dir, "tasks")),
+      state_store: AgentCodingTool::StateStore.new(File.join(dir, "state")),
+      repo_inspector: inspector,
+      prompt_renderer: AgentCodingTool::PromptRenderer.new,
+      prompt_root: File.join(dir, "state", "prompts")
+    )
   end
 end

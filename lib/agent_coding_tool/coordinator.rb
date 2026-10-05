@@ -18,42 +18,19 @@ module AgentCodingTool
 
     def tasks = @task_store.all
 
-    def status(id)
-      task = @task_store.load(id)
-      state = @state_store.load(id)
-      result = state["result"] || {}
-      outcome = result["outcome"]
+    def status(id) = statuses([id]).first
 
-      return status_hash("COMPLETE", task, state) if outcome == "complete"
-      return status_hash("NEEDS_JUDGMENT", task, state, result["summary"]) if outcome == "needs_judgment"
-      return status_hash("FAILED", task, state, result["summary"]) if outcome == "failed"
-      return status_hash("BLOCKED", task, state, result["summary"]) if outcome == "blocked"
-
-      incomplete = incomplete_dependencies(task)
-      unless incomplete.empty?
-        return status_hash("BLOCKED", task, state, "dependencies incomplete: #{incomplete.join(', ')}")
+    def statuses(ids = nil)
+      selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
+      contexts = selected_tasks.map { |task| status_context(task) }
+      references = contexts.filter_map { |context| context["pending"] }.flat_map do |pending|
+        freshness_references(pending.fetch("task"), pending.fetch("snapshot"))
       end
+      pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references)
 
-      snapshot = state["snapshot"]
-      return status_hash("READY", task, state) unless snapshot
-
-      refresh, stale = changed_repositories(task, snapshot).partition do |name|
-        snapshot.key?(name) && task.fetch("repositories").fetch(name).fetch("access") == "read_only"
+      contexts.map do |context|
+        context["status"] || freshness_status(context.fetch("pending"), pushed_heads)
       end
-      unless stale.empty?
-        label = outcome == "candidate_complete" ? "STALE_CANDIDATE" : "STALE"
-        return status_hash(label, task, state, "pushed branch changed: #{stale.join(', ')}")
-      end
-
-      label = if outcome == "candidate_complete"
-                "CANDIDATE"
-              elsif state["started_at"]
-                "IN_FLIGHT"
-              else
-                "PREPARED"
-              end
-      reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
-      status_hash(label, task, state, reason)
     end
 
     def prepare(id, retry_result: false)
@@ -139,6 +116,56 @@ module AgentCodingTool
 
     private
 
+    def status_context(task)
+      id = task.fetch("id")
+      state = @state_store.load(id)
+      result = state["result"] || {}
+      outcome = result["outcome"]
+
+      status = status_hash("COMPLETE", task, state) if outcome == "complete"
+      status ||= status_hash("NEEDS_JUDGMENT", task, state, result["summary"]) if outcome == "needs_judgment"
+      status ||= status_hash("FAILED", task, state, result["summary"]) if outcome == "failed"
+      status ||= status_hash("BLOCKED", task, state, result["summary"]) if outcome == "blocked"
+      return { "status" => status } if status
+
+      incomplete = incomplete_dependencies(task)
+      unless incomplete.empty?
+        return {
+          "status" => status_hash("BLOCKED", task, state, "dependencies incomplete: #{incomplete.join(', ')}")
+        }
+      end
+
+      snapshot = state["snapshot"]
+      return { "status" => status_hash("READY", task, state) } unless snapshot
+
+      { "pending" => { "task" => task, "state" => state, "outcome" => outcome, "snapshot" => snapshot } }
+    end
+
+    def freshness_status(pending, pushed_heads)
+      task = pending.fetch("task")
+      state = pending.fetch("state")
+      outcome = pending.fetch("outcome")
+      snapshot = pending.fetch("snapshot")
+
+      refresh, stale = changed_repositories(task, snapshot, pushed_heads).partition do |name|
+        snapshot.key?(name) && task.fetch("repositories").fetch(name).fetch("access") == "read_only"
+      end
+      unless stale.empty?
+        label = outcome == "candidate_complete" ? "STALE_CANDIDATE" : "STALE"
+        return status_hash(label, task, state, "pushed branch changed: #{stale.join(', ')}")
+      end
+
+      label = if outcome == "candidate_complete"
+                "CANDIDATE"
+              elsif state["started_at"]
+                "IN_FLIGHT"
+              else
+                "PREPARED"
+              end
+      reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
+      status_hash(label, task, state, reason)
+    end
+
     def incomplete_dependencies(task)
       task.fetch("depends_on", []).reject do |dependency|
         @state_store.load(dependency).dig("result", "outcome") == "complete"
@@ -151,13 +178,30 @@ module AgentCodingTool
       end
     end
 
-    def changed_repositories(task, snapshot)
-      task.fetch("repositories").filter_map do |name, spec|
+    def freshness_references(task, snapshot)
+      task.fetch("repositories").filter_map do |name, _spec|
+        previous = snapshot[name]
+        next unless previous
+
+        {
+          "name" => "#{task.fetch('id')}/#{name}",
+          "remote_url" => previous.fetch("remote_url"),
+          "branch" => previous.fetch("branch")
+        }
+      rescue KeyError
+        raise RepositoryError, "#{task.fetch('id')}/#{name}: prepared snapshot lacks remote URL or branch"
+      end
+    end
+
+    def changed_repositories(task, snapshot, pushed_heads)
+      task.fetch("repositories").filter_map do |name, _spec|
         previous = snapshot[name]
         next name unless previous
 
-        current = @repo_inspector.snapshot(name, spec)
-        name if current.fetch("pushed_sha") != previous.fetch("pushed_sha")
+        key = [previous.fetch("remote_url"), previous.fetch("branch")]
+        name if pushed_heads.fetch(key) != previous.fetch("pushed_sha")
+      rescue KeyError
+        raise RepositoryError, "#{task.fetch('id')}/#{name}: prepared snapshot lacks freshness provenance"
       end
     end
 

@@ -67,6 +67,8 @@ A worker that discovers a bad task breakout should be recorded as `blocked` or `
 
 Shows effective task state. The default dashboard includes every non-complete task and the five most recently completed tasks, ranked by their recorded completion timestamps. Completed tasks without a usable recorded timestamp remain visible. `--all` shows every task, and `--active` excludes every completed task. The two options are mutually exclusive. Explicit `status TASK` lookup always shows the named task.
 
+Broad dashboards are ordered for scanability: `COMPLETE`, `IN_FLIGHT`, `READY`, then other active or exceptional states, with `BLOCKED` last. Major groups are separated by a blank line. Reasons render on an indented second line, and dependency blockers use the compact `waiting on:` label. When output is a TTY, status labels are colored; set `NO_COLOR` to disable ANSI color.
+
 Prepared, in-flight, and candidate tasks are compared against current pushed heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only movement preserves the state with a refresh/reconciliation warning. Presentation filtering does not alter task state or dependency resolution.
 
 Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` → `record candidate_complete` → `CANDIDATE` → `record complete` → `COMPLETE`. Recorded outcomes, incomplete dependencies, and hard staleness take precedence over `IN_FLIGHT`.

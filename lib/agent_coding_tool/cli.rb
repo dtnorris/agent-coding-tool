@@ -4,6 +4,33 @@ require "optparse"
 
 module AgentCodingTool
   class CLI
+    STATUS_ORDER = {
+      "COMPLETE" => 0,
+      "IN_FLIGHT" => 10,
+      "READY" => 20,
+      "PREPARED" => 30,
+      "CANDIDATE" => 40,
+      "NEEDS_JUDGMENT" => 50,
+      "STALE_CANDIDATE" => 60,
+      "STALE" => 70,
+      "FAILED" => 80,
+      "BLOCKED" => 100
+    }.freeze
+    STATUS_COLORS = {
+      "COMPLETE" => 32,
+      "IN_FLIGHT" => 36,
+      "READY" => 92,
+      "PREPARED" => 34,
+      "CANDIDATE" => 33,
+      "NEEDS_JUDGMENT" => 33,
+      "STALE_CANDIDATE" => 31,
+      "STALE" => 31,
+      "FAILED" => 31,
+      "BLOCKED" => 31
+    }.freeze
+    DEPENDENCY_REASON_PREFIX = "dependencies incomplete: "
+    ANSI_RESET = "\e[0m"
+
     def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
       new(root: root, out: out, err: err, data_root: data_root).run(argv)
     end
@@ -80,11 +107,55 @@ module AgentCodingTool
                  else
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
+      broad_dashboard = id.nil?
+      statuses = sort_statuses(statuses) if broad_dashboard
+      previous_bucket = nil
+
       statuses.each do |item|
-        line = "#{item.fetch('id')}: #{item.fetch('status')} — #{item.fetch('title')}"
-        line += " (#{item.fetch('reason')})" if item["reason"]
-        @out.puts line
+        bucket = status_bucket(item.fetch("status"))
+        @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
+
+        status = item.fetch("status")
+        @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
+        @out.puts "    #{display_reason(item)}" if item["reason"]
+        previous_bucket = bucket
       end
+    end
+
+    def sort_statuses(statuses)
+      statuses.each_with_index
+              .sort_by { |item, index| [STATUS_ORDER.fetch(item.fetch("status"), 90), index] }
+              .map(&:first)
+    end
+
+    def status_bucket(status)
+      case status
+      when "COMPLETE" then 0
+      when "IN_FLIGHT" then 1
+      when "READY" then 2
+      when "BLOCKED" then 4
+      else 3
+      end
+    end
+
+    def display_reason(item)
+      reason = item.fetch("reason")
+      if item.fetch("status") == "BLOCKED" && reason.start_with?(DEPENDENCY_REASON_PREFIX)
+        "waiting on: #{reason.delete_prefix(DEPENDENCY_REASON_PREFIX)}"
+      else
+        reason
+      end
+    end
+
+    def colorize_status(status)
+      color = STATUS_COLORS[status]
+      return status unless color && color_status?
+
+      "\e[#{color}m#{status}#{ANSI_RESET}"
+    end
+
+    def color_status?
+      @out.respond_to?(:tty?) && @out.tty? && !ENV.key?("NO_COLOR")
     end
 
     def prepare_command(argv)

@@ -29,6 +29,7 @@ module AgentCodingTool
       "BLOCKED" => 31
     }.freeze
     DEPENDENCY_REASON_PREFIX = "dependencies incomplete: "
+    BLOCKED_DISPLAY_LIMIT = 5
     ANSI_RESET = "\e[0m"
 
     def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
@@ -108,7 +109,10 @@ module AgentCodingTool
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
       broad_dashboard = id.nil?
-      statuses = sort_statuses(statuses) if broad_dashboard
+      if broad_dashboard
+        statuses = sort_statuses(statuses)
+        statuses = limit_blocked_statuses(statuses) unless options[:all]
+      end
       previous_bucket = nil
 
       statuses.each do |item|
@@ -124,8 +128,33 @@ module AgentCodingTool
 
     def sort_statuses(statuses)
       statuses.each_with_index
-              .sort_by { |item, index| [STATUS_ORDER.fetch(item.fetch("status"), 90), index] }
+              .sort_by do |item, index|
+                [STATUS_ORDER.fetch(item.fetch("status"), 90), blocked_dependency_count(item), index]
+              end
               .map(&:first)
+    end
+
+    def blocked_dependency_count(item)
+      return 0 unless item.fetch("status") == "BLOCKED"
+
+      reason = item["reason"]
+      return Float::INFINITY unless reason&.start_with?(DEPENDENCY_REASON_PREFIX)
+
+      reason.delete_prefix(DEPENDENCY_REASON_PREFIX)
+            .split(",")
+            .map(&:strip)
+            .reject(&:empty?)
+            .length
+    end
+
+    def limit_blocked_statuses(statuses)
+      blocked_seen = 0
+      statuses.select do |item|
+        next true unless item.fetch("status") == "BLOCKED"
+
+        blocked_seen += 1
+        blocked_seen <= BLOCKED_DISPLAY_LIMIT
+      end
     end
 
     def status_bucket(status)

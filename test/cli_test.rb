@@ -105,6 +105,61 @@ class CLITest < Minitest::Test
     ], lines
   end
 
+  def test_status_limits_blocked_tasks_to_five_ranked_by_incomplete_dependency_count
+    statuses = [
+      { "id" => "B3", "status" => "BLOCKED", "title" => "Three blockers",
+        "reason" => "dependencies incomplete: A, B, C" },
+      { "id" => "B1A", "status" => "BLOCKED", "title" => "One blocker A",
+        "reason" => "dependencies incomplete: A" },
+      { "id" => "B4", "status" => "BLOCKED", "title" => "Four blockers",
+        "reason" => "dependencies incomplete: A, B, C, D" },
+      { "id" => "B2", "status" => "BLOCKED", "title" => "Two blockers",
+        "reason" => "dependencies incomplete: A, B" },
+      { "id" => "MANUAL", "status" => "BLOCKED", "title" => "Manual blocker",
+        "reason" => "waiting for external decision" },
+      { "id" => "B1B", "status" => "BLOCKED", "title" => "One blocker B",
+        "reason" => "dependencies incomplete: B" },
+      { "id" => "B5", "status" => "BLOCKED", "title" => "Five blockers",
+        "reason" => "dependencies incomplete: A, B, C, D, E" },
+      { "id" => "B1C", "status" => "BLOCKED", "title" => "One blocker C",
+        "reason" => "dependencies incomplete: C" }
+    ]
+    fake_coordinator = Object.new
+    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| statuses }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_coordinator)
+
+    assert_equal 0, cli.run(%w[status])
+
+    visible_blocked = out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
+    assert_equal %w[B1A B1B B1C B2 B3], visible_blocked
+    refute_includes out.string, "B4: BLOCKED"
+    refute_includes out.string, "B5: BLOCKED"
+    refute_includes out.string, "MANUAL: BLOCKED"
+  end
+
+  def test_status_all_keeps_every_blocked_task
+    statuses = (1..6).map do |index|
+      {
+        "id" => "B#{index}",
+        "status" => "BLOCKED",
+        "title" => "Blocked #{index}",
+        "reason" => "dependencies incomplete: D#{index}"
+      }
+    end
+    fake_coordinator = Object.new
+    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| statuses }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_coordinator)
+
+    assert_equal 0, cli.run(%w[status --all])
+
+    visible_blocked = out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
+    assert_equal %w[B1 B2 B3 B4 B5 B6], visible_blocked
+  end
+
   def test_status_preserves_single_task_lookup_without_dashboard_spacing
     status = {
       "id" => "B1",

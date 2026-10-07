@@ -242,8 +242,10 @@ module AgentCodingTool
       id = item.fetch("id")
       status = item.fetch("status")
       if status == "IN_FLIGHT"
-        @out.puts "#{id}: #{colorize_status(status)}"
-        puts_wrapped(item.fetch("title"), first_prefix: "    ", continuation_prefix: "    ")
+        plain_prefix = "#{id}: #{status} — "
+        colored_prefix = "#{id}: #{colorize_status(status)} — "
+        title_width = [dashboard_width - plain_prefix.length, 0].max
+        @out.puts "#{colored_prefix}#{truncate_title(item.fetch('title'), title_width)}"
         if item["reason"]
           puts_wrapped(display_in_flight_reason(item.fetch("reason")),
                        first_prefix: "    ", continuation_prefix: "    ")
@@ -262,6 +264,14 @@ module AgentCodingTool
                      first_prefix: "    ", continuation_prefix: "    ")
       end
       puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ") if item["reason"]
+    end
+
+    def truncate_title(title, width)
+      return "" unless width.positive?
+      return title if title.length <= width
+      return "…" if width == 1
+
+      "#{title[0, width - 1].rstrip}…"
     end
 
     def pluralize(count, noun)

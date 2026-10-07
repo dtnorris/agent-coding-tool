@@ -280,8 +280,7 @@ class CLITest < Minitest::Test
       "",
       "K1: CANDIDATE — Candidate task",
       "",
-      "F1: IN_FLIGHT",
-      "    Running task",
+      "F1: IN_FLIGHT — Running task",
       "",
       "R1: READY — Ready task",
       "    downstream: 0 levels / 0 tasks",
@@ -312,8 +311,7 @@ class CLITest < Minitest::Test
     assert_equal [
       "F2: CANDIDATE — Was in flight",
       "",
-      "F1: IN_FLIGHT",
-      "    Still running",
+      "F1: IN_FLIGHT — Still running",
       "",
       "R1: READY — Ready one",
       "    downstream: 0 levels / 0 tasks",
@@ -341,9 +339,7 @@ class CLITest < Minitest::Test
 
     assert_equal 0, cli.run(%w[status])
     assert_equal [
-      "F1: IN_FLIGHT",
-      "    An in flight title with enough words",
-      "    to wrap cleanly",
+      "F1: IN_FLIGHT — An in flight title with e…",
       "    A long diagnostic that remains visibly",
       "    subordinate when wrapped",
       "",
@@ -355,6 +351,10 @@ class CLITest < Minitest::Test
       "              words to wrap cleanly",
       "    waiting on: R1, R2, R3, R4"
     ], out.string.lines.map(&:chomp)
+    in_flight_line = out.string.lines.find { |line| line.start_with?("F1: IN_FLIGHT") }
+    assert_equal 1, out.string.lines.count { |line| line.start_with?("F1: IN_FLIGHT") }
+    assert in_flight_line.chomp.end_with?("…")
+    assert_operator in_flight_line.chomp.length, :<=, 42
   end
 
   def test_status_wraps_colored_output_by_visible_width
@@ -376,6 +376,42 @@ class CLITest < Minitest::Test
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
     ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_status_truncates_colored_in_flight_title_at_same_visible_location_as_plain_output
+    status = { "id" => "F1", "status" => "IN_FLIGHT",
+               "title" => "A long in flight title that must stay on one physical line" }
+    coordinator = fake_status_coordinator([status])
+    plain = StringIO.new
+    plain_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: plain, err: StringIO.new,
+                                         terminal_width: 36)
+    plain_cli.instance_variable_set(:@coordinator, coordinator)
+    tty = TTYOutput.new(36)
+    color_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: tty, err: StringIO.new)
+    color_cli.instance_variable_set(:@coordinator, coordinator)
+    previous_no_color = ENV.delete("NO_COLOR")
+
+    assert_equal 0, plain_cli.run(%w[status])
+    assert_equal 0, color_cli.run(%w[status])
+    assert_equal 1, plain.string.lines.length
+    assert plain.string.chomp.end_with?("…")
+    assert_operator plain.string.chomp.length, :<=, 36
+    assert_includes tty.string, "\e[36mIN_FLIGHT\e[0m"
+    assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
+  ensure
+    ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_status_preserves_in_flight_prefix_when_terminal_is_too_narrow_for_a_title
+    status = { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Running task" }
+    coordinator = fake_status_coordinator([status])
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 12)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status])
+    assert_equal ["F1: IN_FLIGHT — "], out.string.lines.map(&:chomp)
   end
 
   def test_status_uses_columns_for_non_tty_output_and_honors_no_color
@@ -463,11 +499,9 @@ class CLITest < Minitest::Test
 
     assert_equal 0, cli.run(%w[status])
     assert_equal [
-      "F1: IN_FLIGHT",
-      "    Running with refresh",
+      "F1: IN_FLIGHT — Running with refresh",
       "    read-only refresh/reconcile: af-data-pipeline, af-workloads",
-      "F2: IN_FLIGHT",
-      "    Running without refresh"
+      "F2: IN_FLIGHT — Running without refresh"
     ], out.string.lines.map(&:chomp)
   end
 

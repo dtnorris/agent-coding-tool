@@ -279,6 +279,7 @@ class CLITest < Minitest::Test
       "C1: COMPLETE — Complete task",
       "",
       "K1: CANDIDATE — Candidate task",
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
       "",
       "F1: IN_FLIGHT — Running task",
       "",
@@ -310,6 +311,7 @@ class CLITest < Minitest::Test
     lines = out.string.lines.map(&:chomp)
     assert_equal [
       "F2: CANDIDATE — Was in flight",
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
       "",
       "F1: IN_FLIGHT — Still running",
       "",
@@ -432,7 +434,10 @@ class CLITest < Minitest::Test
     assert_equal [
       "K1: CANDIDATE — A candidate title",
       "                that wraps",
-      "                predictably"
+      "                predictably",
+      "    downstream: 0 levels / 0",
+      "    tasks; unlocks: 0 tasks / 0",
+      "    parallel"
     ], out.string.lines.map(&:chomp)
   ensure
     previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
@@ -485,6 +490,42 @@ class CLITest < Minitest::Test
     assert_operator out.string.index("K: CANDIDATE"), :<, out.string.index("F: IN_FLIGHT")
     assert_operator out.string.index("F: IN_FLIGHT"), :<, out.string.index("R-DEEP: READY")
     assert_operator out.string.index("R-STABLE-A: READY"), :<, out.string.index("B: BLOCKED")
+  end
+
+  def test_status_displays_completion_metrics_for_fresh_candidates_without_reordering_them
+    statuses = [
+      { "id" => "K2", "status" => "CANDIDATE", "title" => "Second candidate" },
+      { "id" => "S1", "status" => "STALE_CANDIDATE", "title" => "Stale candidate" },
+      { "id" => "K1", "status" => "CANDIDATE", "title" => "First candidate" },
+      { "id" => "R1", "status" => "READY", "title" => "Ready" }
+    ]
+    tasks = [
+      task_definition("K1"), task_definition("D1", ["K1"]), task_definition("D2", ["D1"]),
+      task_definition("K2"), task_definition("S1"), task_definition("R1")
+    ]
+    unlock_metrics = {
+      "K1" => { "unlock_count" => 1, "parallel_width" => 1 },
+      "K2" => { "unlock_count" => 0, "parallel_width" => 0 },
+      "R1" => { "unlock_count" => 0, "parallel_width" => 0 }
+    }
+    coordinator = fake_status_coordinator(statuses, tasks:, unlock_metrics:)
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status --active])
+
+    candidate_ids = out.string.lines.filter_map { |line| line[/\A([^:]+): CANDIDATE/, 1] }
+    assert_equal %w[K2 K1], candidate_ids
+    assert_includes out.string,
+                    "K2: CANDIDATE — Second candidate\n" \
+                    "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel\n"
+    assert_includes out.string,
+                    "K1: CANDIDATE — First candidate\n" \
+                    "    downstream: 2 levels / 2 tasks; unlocks: 1 task / 1 parallel\n"
+    assert_includes out.string, "S1: STALE_CANDIDATE — Stale candidate\n"
+    refute_includes out.string,
+                    "S1: STALE_CANDIDATE — Stale candidate\n    downstream:"
   end
 
   def test_status_ranks_ready_tasks_by_parallel_width_then_unlock_count_before_downstream_metrics
@@ -744,7 +785,7 @@ class CLITest < Minitest::Test
       ids ? statuses.select { |status| ids.include?(status.fetch("id")) } : statuses
     end
     coordinator.define_singleton_method(:tasks) { tasks }
-    coordinator.define_singleton_method(:ready_unlock_metrics) { |_statuses| unlock_metrics }
+    coordinator.define_singleton_method(:completion_unlock_metrics) { |_statuses| unlock_metrics }
     coordinator
   end
 

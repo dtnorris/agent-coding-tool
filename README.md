@@ -119,14 +119,16 @@ Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`,
 `IN_FLIGHT`, `READY`, then other active or exceptional states, with `BLOCKED`
 last. READY tasks are ranked by immediate collision-aware parallel unlock
 width, immediate unlock count, longest downstream dependency path, then
-distinct downstream task count. Their detail includes `unlocks: N tasks / M
-parallel`: `N` is the number of dependency-blocked tasks that would become
-READY if this task alone completed, while `M` is the exact maximum subset that
-could start together without conflicting with each other or fresh
-IN_FLIGHT/CANDIDATE writers under normal repository-authority rules. This is
-deterministic advisory prioritization only; it does not launch work or reserve
-repositories. Default and `--active` dashboards show only the three easiest
-dependency blockers, ranked by fewest incomplete dependencies; explicit
+distinct downstream task count. READY and fresh CANDIDATE rows show downstream
+depth/count and `unlocks: N tasks / M parallel`: `N` is the number of
+dependency-blocked tasks that would become READY if the row's task completed,
+while `M` is the exact maximum subset that could start together without
+conflicting with each other or other fresh IN_FLIGHT/CANDIDATE writers under
+normal repository-authority rules. For a CANDIDATE, this models the state after
+the candidate is finished, so its own current write reservation is excluded.
+This is deterministic advisory prioritization only; it does not launch work or
+reserve repositories. Default and `--active` dashboards show only the three
+easiest dependency blockers, ranked by fewest incomplete dependencies; explicit
 `blocked` outcomes without measurable dependency counts rank after
 dependency-derived blockers. `--all` remains exhaustive. Major groups are
 separated by a blank line. Long broad-dashboard titles and diagnostics wrap to

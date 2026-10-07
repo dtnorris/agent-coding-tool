@@ -191,6 +191,103 @@ class ReadyUnlockMetricsTest < Minitest::Test
     end
   end
 
+  def test_candidate_completion_unlocks_tasks_without_reserving_its_own_authority
+    with_workspace do |dir|
+      write_task(dir, id: "TARGET", repositories: repository("target"))
+      write_task(dir, id: "EMPTY", repositories: repository("empty"))
+      write_task(dir, id: "OTHER", repositories: repository("other"))
+      write_task(dir, id: "CHILD", depends_on: ["TARGET"], repositories: repository("child"))
+      write_task(dir, id: "OTHER-MISSING", depends_on: %w[TARGET OTHER],
+                       repositories: repository("other_missing"))
+      shared = "git@github.com:example/shared.git"
+      heads = { "target" => "a" * 40, "empty" => "b" * 40 }
+      inspector = FakeInspector.new(
+        heads:,
+        remote_urls: { "target" => shared, "child" => shared }
+      )
+      coordinator = coordinator_with_inspector(dir, inspector)
+      %w[TARGET EMPTY].each do |id|
+        coordinator.prepare(id)
+        coordinator.record(id, outcome: "candidate_complete")
+      end
+
+      metrics = unlock_metrics(coordinator)
+
+      assert_equal({ "unlock_count" => 1, "parallel_width" => 1 }, metrics.fetch("TARGET"))
+      assert_equal({ "unlock_count" => 0, "parallel_width" => 0 }, metrics.fetch("EMPTY"))
+
+      heads["target"] = "c" * 40
+      stale_metrics = unlock_metrics(coordinator)
+      refute stale_metrics.key?("TARGET")
+    end
+  end
+
+  def test_candidate_completion_keeps_other_fresh_writer_reservations
+    with_workspace do |dir|
+      write_task(dir, id: "TARGET", repositories: repository("target"))
+      write_task(dir, id: "U-X", depends_on: ["TARGET"], repositories: repository("x"))
+      write_task(dir, id: "U-Y", depends_on: ["TARGET"], repositories: repository("y"))
+      write_task(dir, id: "U-Z", depends_on: ["TARGET"], repositories: repository("z"))
+      write_task(dir, id: "ACTIVE", repositories: repository("active"))
+      write_task(dir, id: "OTHER-CANDIDATE", repositories: repository("other_candidate"))
+      remote_urls = {
+        "active" => "git@github.com:example/x.git",
+        "x" => "git@github.com:example/x.git",
+        "other_candidate" => "git@github.com:example/y.git",
+        "y" => "git@github.com:example/y.git"
+      }
+      inspector = FakeInspector.new(
+        heads: {
+          "target" => "t" * 40,
+          "active" => "a" * 40,
+          "other_candidate" => "o" * 40
+        },
+        remote_urls:
+      )
+      coordinator = coordinator_with_inspector(dir, inspector)
+      coordinator.prepare("TARGET")
+      coordinator.record("TARGET", outcome: "candidate_complete")
+      coordinator.prepare("ACTIVE")
+      coordinator.start("ACTIVE")
+      coordinator.prepare("OTHER-CANDIDATE")
+      coordinator.record("OTHER-CANDIDATE", outcome: "candidate_complete")
+
+      metrics = unlock_metrics(coordinator).fetch("TARGET")
+
+      assert_equal({ "unlock_count" => 3, "parallel_width" => 1 }, metrics)
+    end
+  end
+
+  def test_candidate_completion_uses_exact_maximum_compatible_subset
+    with_workspace do |dir|
+      write_task(dir, id: "TARGET", repositories: repository("target"))
+      write_task(
+        dir,
+        id: "A-BRIDGE",
+        depends_on: ["TARGET"],
+        repositories: repository("x").merge(repository("y"))
+      )
+      write_task(dir, id: "B-LEFT", depends_on: ["TARGET"], repositories: repository("left"))
+      write_task(dir, id: "C-RIGHT", depends_on: ["TARGET"], repositories: repository("right"))
+      remote_urls = {
+        "x" => "git@github.com:example/x.git",
+        "left" => "git@github.com:example/x.git",
+        "y" => "git@github.com:example/y.git",
+        "right" => "git@github.com:example/y.git"
+      }
+      coordinator = coordinator_with_inspector(
+        dir,
+        FakeInspector.new(heads: { "target" => "t" * 40 }, remote_urls:)
+      )
+      coordinator.prepare("TARGET")
+      coordinator.record("TARGET", outcome: "candidate_complete")
+
+      metrics = unlock_metrics(coordinator).fetch("TARGET")
+
+      assert_equal({ "unlock_count" => 3, "parallel_width" => 2 }, metrics)
+    end
+  end
+
   private
 
   def repository(name, access: "write", branch: nil)
@@ -221,6 +318,6 @@ class ReadyUnlockMetricsTest < Minitest::Test
 
   def unlock_metrics(coordinator)
     statuses = coordinator.statuses(completion_filter: :all)
-    coordinator.ready_unlock_metrics(statuses)
+    coordinator.completion_unlock_metrics(statuses)
   end
 end

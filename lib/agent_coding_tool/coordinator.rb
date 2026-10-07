@@ -37,22 +37,26 @@ module AgentCodingTool
       end
     end
 
-    def ready_unlock_metrics(statuses)
+    def completion_unlock_metrics(statuses)
       all_tasks = tasks
       tasks_by_id = all_tasks.to_h { |task| [task.fetch("id"), task] }
-      reserved_authorities = statuses.filter_map do |status|
+      reservations = statuses.filter_map do |status|
         next unless START_COLLISION_STATES.include?(status.fetch("status"))
 
         task = tasks_by_id.fetch(status.fetch("id"))
         snapshot = status.fetch("state").fetch("snapshot")
-        writable_authorities(task, snapshot).keys
-      end.flatten(1).uniq
+        [status.fetch("id"), writable_authorities(task, snapshot).keys]
+      end.to_h
       authority_cache = {}
 
       statuses.filter_map do |status|
-        next unless status.fetch("status") == "READY"
+        next unless %w[READY CANDIDATE].include?(status.fetch("status"))
 
         id = status.fetch("id")
+        reserved_authorities = reservations.reject { |task_id, _authorities| task_id == id }
+                                            .values
+                                            .flatten(1)
+                                            .uniq
         unlocked = immediately_unlocked_tasks(id, all_tasks)
         startable_authorities = unlocked.filter_map do |task|
           authorities = task_writable_authorities(task, authority_cache)

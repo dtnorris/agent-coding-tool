@@ -117,10 +117,10 @@ module AgentCodingTool
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
       broad_dashboard = id.nil?
-      ready_metrics = {}
+      completion_metrics = {}
       if broad_dashboard
-        ready_metrics = ready_dashboard_metrics(statuses)
-        statuses = sort_statuses(statuses, ready_metrics)
+        completion_metrics = completion_dashboard_metrics(statuses)
+        statuses = sort_statuses(statuses, completion_metrics)
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -130,7 +130,7 @@ module AgentCodingTool
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
         if broad_dashboard
-          display_dashboard_item(item, ready_metrics)
+          display_dashboard_item(item, completion_metrics)
         else
           status = item.fetch("status")
           @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
@@ -140,12 +140,12 @@ module AgentCodingTool
       end
     end
 
-    def sort_statuses(statuses, ready_metrics)
+    def sort_statuses(statuses, completion_metrics)
       statuses.each_with_index
               .sort_by do |item, index|
                 status = item.fetch("status")
                 depth, count, unlock_count, parallel_width =
-                  ready_metrics.fetch(item.fetch("id"), [0, 0, 0, 0])
+                  completion_metrics.fetch(item.fetch("id"), [0, 0, 0, 0])
                 ready_rank = status == "READY" ? [-parallel_width, -unlock_count, -depth, -count] : [0, 0, 0, 0]
                 complete_rank = status == "COMPLETE" ? completion_rank(item) : [0, 0]
                 blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
@@ -154,20 +154,20 @@ module AgentCodingTool
               .map(&:first)
     end
 
-    def ready_dashboard_metrics(statuses)
+    def completion_dashboard_metrics(statuses)
       tasks = coordinator.respond_to?(:tasks) ? coordinator.tasks : []
       downstream = Hash.new { |hash, id| hash[id] = [] }
       tasks.each do |task|
         task.fetch("depends_on", []).each { |dependency| downstream[dependency] << task.fetch("id") }
       end
-      unlock_metrics = if coordinator.respond_to?(:ready_unlock_metrics)
-                         coordinator.ready_unlock_metrics(statuses)
+      unlock_metrics = if coordinator.respond_to?(:completion_unlock_metrics)
+                         coordinator.completion_unlock_metrics(statuses)
                        else
                          {}
                        end
 
       statuses.filter_map do |item|
-        next unless item.fetch("status") == "READY"
+        next unless %w[READY CANDIDATE].include?(item.fetch("status"))
 
         id = item.fetch("id")
         unlock = unlock_metrics.fetch(id, {})
@@ -264,7 +264,7 @@ module AgentCodingTool
       end
     end
 
-    def display_dashboard_item(item, ready_metrics)
+    def display_dashboard_item(item, completion_metrics)
       id = item.fetch("id")
       status = item.fetch("status")
       if status == "IN_FLIGHT"
@@ -284,8 +284,8 @@ module AgentCodingTool
       puts_wrapped(item.fetch("title"), first_prefix: colored_prefix,
                                         first_prefix_width: plain_prefix.length,
                                         continuation_prefix: " " * plain_prefix.length)
-      if status == "READY"
-        depth, count, unlock_count, parallel_width = ready_metrics.fetch(id, [0, 0, 0, 0])
+      if %w[READY CANDIDATE].include?(status)
+        depth, count, unlock_count, parallel_width = completion_metrics.fetch(id, [0, 0, 0, 0])
         detail = "downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}; " \
                  "unlocks: #{unlock_count} #{pluralize(unlock_count, 'task')} / #{parallel_width} parallel"
         puts_wrapped(detail,

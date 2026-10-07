@@ -283,7 +283,7 @@ class CLITest < Minitest::Test
       "F1: IN_FLIGHT — Running task",
       "",
       "R1: READY — Ready task",
-      "    downstream: 0 levels / 0 tasks",
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
       "",
       "P1: PREPARED — Prepared task",
       "",
@@ -314,9 +314,9 @@ class CLITest < Minitest::Test
       "F1: IN_FLIGHT — Still running",
       "",
       "R1: READY — Ready one",
-      "    downstream: 0 levels / 0 tasks",
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
       "R2: READY — Ready two",
-      "    downstream: 0 levels / 0 tasks"
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel"
     ], lines
   end
 
@@ -345,7 +345,8 @@ class CLITest < Minitest::Test
       "",
       "R1: READY — A ready title with enough",
       "            words to wrap cleanly",
-      "    downstream: 0 levels / 0 tasks",
+      "    downstream: 0 levels / 0 tasks;",
+      "    unlocks: 0 tasks / 0 parallel",
       "",
       "B1: BLOCKED — A blocked title with enough",
       "              words to wrap cleanly",
@@ -475,12 +476,96 @@ class CLITest < Minitest::Test
 
     visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
     assert_equal %w[R-DEEP R-DIAMOND R-LESS R-WIDE R-CYCLE R-STABLE-B R-STABLE-A], visible_ready
-    assert_includes out.string, "R-DEEP: READY — Deep\n    downstream: 4 levels / 4 tasks\n"
-    assert_includes out.string, "R-DIAMOND: READY — Diamond\n    downstream: 2 levels / 3 tasks\n"
-    assert_includes out.string, "R-CYCLE: READY — Cycle\n    downstream: 1 level / 1 task\n"
+    assert_includes out.string,
+                    "R-DEEP: READY — Deep\n    downstream: 4 levels / 4 tasks; unlocks: 0 tasks / 0 parallel\n"
+    assert_includes out.string,
+                    "R-DIAMOND: READY — Diamond\n    downstream: 2 levels / 3 tasks; unlocks: 0 tasks / 0 parallel\n"
+    assert_includes out.string,
+                    "R-CYCLE: READY — Cycle\n    downstream: 1 level / 1 task; unlocks: 0 tasks / 0 parallel\n"
     assert_operator out.string.index("K: CANDIDATE"), :<, out.string.index("F: IN_FLIGHT")
     assert_operator out.string.index("F: IN_FLIGHT"), :<, out.string.index("R-DEEP: READY")
     assert_operator out.string.index("R-STABLE-A: READY"), :<, out.string.index("B: BLOCKED")
+  end
+
+  def test_status_ranks_ready_tasks_by_parallel_width_then_unlock_count_before_downstream_metrics
+    statuses = [
+      { "id" => "R-DEEP", "status" => "READY", "title" => "Deep" },
+      { "id" => "R-WIDTH", "status" => "READY", "title" => "Parallel width" },
+      { "id" => "R-COUNT", "status" => "READY", "title" => "Unlock count" }
+    ]
+    tasks = [
+      task_definition("R-DEEP"), task_definition("D1", ["R-DEEP"]),
+      task_definition("D2", ["D1"]), task_definition("D3", ["D2"]),
+      task_definition("R-WIDTH"), task_definition("R-COUNT")
+    ]
+    unlock_metrics = {
+      "R-DEEP" => { "unlock_count" => 1, "parallel_width" => 1 },
+      "R-WIDTH" => { "unlock_count" => 2, "parallel_width" => 2 },
+      "R-COUNT" => { "unlock_count" => 4, "parallel_width" => 1 }
+    }
+    coordinator = fake_status_coordinator(statuses, tasks:, unlock_metrics:)
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status --active])
+
+    visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
+    assert_equal %w[R-WIDTH R-COUNT R-DEEP], visible_ready
+    assert_includes out.string,
+                    "R-WIDTH: READY — Parallel width\n" \
+                    "    downstream: 0 levels / 0 tasks; unlocks: 2 tasks / 2 parallel\n"
+    assert_includes out.string,
+                    "R-COUNT: READY — Unlock count\n" \
+                    "    downstream: 0 levels / 0 tasks; unlocks: 4 tasks / 1 parallel\n"
+    assert_includes out.string,
+                    "R-DEEP: READY — Deep\n" \
+                    "    downstream: 3 levels / 3 tasks; unlocks: 1 task / 1 parallel\n"
+  end
+
+  def test_status_displays_retained_completions_oldest_to_newest_after_unrankable_rows
+    with_workspace do |dir|
+      timestamps = {
+        "C1" => "2026-10-07T15:00:00Z",
+        "C2" => "2026-10-07T10:00:00Z",
+        "C3" => "2026-10-07T14:00:00Z",
+        "C4" => "2026-10-07T11:00:00Z",
+        "C5" => "2026-10-07T13:00:00Z",
+        "C6" => "2026-10-07T12:00:00Z"
+      }
+      timestamps.each_key { |id| write_task(dir, id:) }
+      write_task(dir, id: "MALFORMED")
+      write_task(dir, id: "MISSING")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      timestamps.each { |id, timestamp| record_complete_at(dir, coordinator, id, timestamp) }
+      record_complete_at(dir, coordinator, "MALFORMED", "not-a-time")
+      record_complete_at(dir, coordinator, "MISSING", nil)
+
+      default_ids = complete_ids(run_status(dir, coordinator, %w[status]))
+      all_ids = complete_ids(run_status(dir, coordinator, %w[status --all]))
+      active_out = run_status(dir, coordinator, %w[status --active])
+
+      assert_equal %w[MALFORMED MISSING C4 C6 C5 C3 C1], default_ids
+      refute_includes default_ids, "C2"
+      assert_equal "C1", default_ids.last
+      assert_equal %w[MALFORMED MISSING C2 C4 C6 C5 C3 C1], all_ids
+      refute_includes active_out, "COMPLETE"
+    end
+  end
+
+  def test_status_orders_five_or_fewer_timestamped_completions_oldest_to_newest
+    with_workspace do |dir|
+      timestamps = {
+        "C1" => "2026-10-07T12:00:00Z",
+        "C2" => "2026-10-07T10:00:00Z",
+        "C3" => "2026-10-07T11:00:00Z"
+      }
+      timestamps.each_key { |id| write_task(dir, id:) }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      timestamps.each { |id, timestamp| record_complete_at(dir, coordinator, id, timestamp) }
+
+      assert_equal %w[C2 C3 C1], complete_ids(run_status(dir, coordinator, %w[status]))
+    end
   end
 
   def test_status_formats_broad_in_flight_tasks_and_compacts_read_only_freshness
@@ -653,12 +738,13 @@ class CLITest < Minitest::Test
 
   private
 
-  def fake_status_coordinator(statuses, tasks: [])
+  def fake_status_coordinator(statuses, tasks: [], unlock_metrics: {})
     coordinator = Object.new
     coordinator.define_singleton_method(:statuses) do |ids = nil, **_kwargs|
       ids ? statuses.select { |status| ids.include?(status.fetch("id")) } : statuses
     end
     coordinator.define_singleton_method(:tasks) { tasks }
+    coordinator.define_singleton_method(:ready_unlock_metrics) { |_statuses| unlock_metrics }
     coordinator
   end
 
@@ -674,5 +760,21 @@ class CLITest < Minitest::Test
     assert_equal 0, cli.run(argv)
     assert_empty err.string
     out.string
+  end
+
+  def record_complete_at(dir, coordinator, id, timestamp)
+    coordinator.record(id, outcome: "complete")
+    store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+    state = store.load(id)
+    if timestamp
+      state.fetch("result")["recorded_at"] = timestamp
+    else
+      state.fetch("result").delete("recorded_at")
+    end
+    store.write(id, state)
+  end
+
+  def complete_ids(output)
+    output.lines.filter_map { |line| line[/\A([^:]+): COMPLETE/, 1] }
   end
 end

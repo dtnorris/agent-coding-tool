@@ -47,6 +47,16 @@ module AgentCodingTool
       }
     end
 
+    def repository_authority(name, spec)
+      path = repository_path(name, spec)
+      ensure_repository!(name, path)
+
+      remote = spec.fetch("remote", @config.default_remote)
+      branch = spec.fetch("branch", @config.default_branch)
+      remote_url = git!(name, path, "remote", "get-url", remote).strip
+      [remote_url, branch]
+    end
+
     def pushed_heads(references)
       targets = Array(references).each_with_object({}) do |reference, out|
         name = reference.fetch("name").to_s

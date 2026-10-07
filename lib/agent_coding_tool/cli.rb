@@ -2,6 +2,7 @@
 
 require "optparse"
 require "io/console"
+require "time"
 
 module AgentCodingTool
   class CLI
@@ -116,10 +117,10 @@ module AgentCodingTool
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
       broad_dashboard = id.nil?
-      downstream_metrics = {}
+      ready_metrics = {}
       if broad_dashboard
-        downstream_metrics = ready_downstream_metrics(statuses)
-        statuses = sort_statuses(statuses, downstream_metrics)
+        ready_metrics = ready_dashboard_metrics(statuses)
+        statuses = sort_statuses(statuses, ready_metrics)
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -129,7 +130,7 @@ module AgentCodingTool
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
         if broad_dashboard
-          display_dashboard_item(item, downstream_metrics)
+          display_dashboard_item(item, ready_metrics)
         else
           status = item.fetch("status")
           @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
@@ -139,31 +140,56 @@ module AgentCodingTool
       end
     end
 
-    def sort_statuses(statuses, downstream_metrics)
+    def sort_statuses(statuses, ready_metrics)
       statuses.each_with_index
               .sort_by do |item, index|
                 status = item.fetch("status")
-                depth, count = downstream_metrics.fetch(item.fetch("id"), [0, 0])
-                ready_rank = status == "READY" ? [-depth, -count] : [0, 0]
+                depth, count, unlock_count, parallel_width =
+                  ready_metrics.fetch(item.fetch("id"), [0, 0, 0, 0])
+                ready_rank = status == "READY" ? [-parallel_width, -unlock_count, -depth, -count] : [0, 0, 0, 0]
+                complete_rank = status == "COMPLETE" ? completion_rank(item) : [0, 0]
                 blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
-                [STATUS_ORDER.fetch(status, 90), *ready_rank, blocked_rank, index]
+                [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, index]
               end
               .map(&:first)
     end
 
-    def ready_downstream_metrics(statuses)
+    def ready_dashboard_metrics(statuses)
       tasks = coordinator.respond_to?(:tasks) ? coordinator.tasks : []
       downstream = Hash.new { |hash, id| hash[id] = [] }
       tasks.each do |task|
         task.fetch("depends_on", []).each { |dependency| downstream[dependency] << task.fetch("id") }
       end
+      unlock_metrics = if coordinator.respond_to?(:ready_unlock_metrics)
+                         coordinator.ready_unlock_metrics(statuses)
+                       else
+                         {}
+                       end
 
       statuses.filter_map do |item|
         next unless item.fetch("status") == "READY"
 
         id = item.fetch("id")
-        [id, [downstream_depth(id, downstream, { id => true }), downstream_count(id, downstream)]]
+        unlock = unlock_metrics.fetch(id, {})
+        [
+          id,
+          [
+            downstream_depth(id, downstream, { id => true }),
+            downstream_count(id, downstream),
+            unlock.fetch("unlock_count", 0),
+            unlock.fetch("parallel_width", 0)
+          ]
+        ]
       end.to_h
+    end
+
+    def completion_rank(item)
+      recorded_at = item.dig("state", "result", "recorded_at")
+      return [0, 0] unless recorded_at.is_a?(String) && !recorded_at.empty?
+
+      [1, Time.iso8601(recorded_at).to_f]
+    rescue ArgumentError
+      [0, 0]
     end
 
     def downstream_depth(id, downstream, path)
@@ -238,7 +264,7 @@ module AgentCodingTool
       end
     end
 
-    def display_dashboard_item(item, downstream_metrics)
+    def display_dashboard_item(item, ready_metrics)
       id = item.fetch("id")
       status = item.fetch("status")
       if status == "IN_FLIGHT"
@@ -259,8 +285,10 @@ module AgentCodingTool
                                         first_prefix_width: plain_prefix.length,
                                         continuation_prefix: " " * plain_prefix.length)
       if status == "READY"
-        depth, count = downstream_metrics.fetch(id, [0, 0])
-        puts_wrapped("downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}",
+        depth, count, unlock_count, parallel_width = ready_metrics.fetch(id, [0, 0, 0, 0])
+        detail = "downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}; " \
+                 "unlocks: #{unlock_count} #{pluralize(unlock_count, 'task')} / #{parallel_width} parallel"
+        puts_wrapped(detail,
                      first_prefix: "    ", continuation_prefix: "    ")
       end
       puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ") if item["reason"]

@@ -105,6 +105,29 @@ class RepoInspectorTest < Minitest::Test
     assert_match(/cannot resolve pushed origin\/main/, error.message)
   end
 
+  def test_repository_authority_resolves_remote_url_and_branch_without_remote_fetch
+    config = Config.new("/code", "origin", "main")
+    path = "/code/repo"
+    responses = {
+      [path, ["git", "rev-parse", "--git-dir"]] => [".git\n", "", true],
+      [path, ["git", "remote", "get-url", "upstream"]] =>
+        ["git@github.com:example/shared.git\n", "", true]
+    }
+    runner = RecordingRunner.new(responses, [])
+    inspector = AgentCodingTool::RepoInspector.new(config, runner:)
+
+    authority = inspector.repository_authority(
+      "repo",
+      "access" => "write", "remote" => "upstream", "branch" => "release"
+    )
+
+    assert_equal ["git@github.com:example/shared.git", "release"], authority
+    assert_equal [
+      [path, ["git", "rev-parse", "--git-dir"]],
+      [path, ["git", "remote", "get-url", "upstream"]]
+    ], runner.commands
+  end
+
   def test_status_head_resolution_deduplicates_remote_and_branch_without_local_probes
     config = Config.new("/code", "origin", "main")
     alpha = "git@github.com:example/alpha.git"

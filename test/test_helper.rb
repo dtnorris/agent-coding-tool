@@ -27,6 +27,13 @@ module TestHelpers
         resolved[key] = heads.fetch(repository)
       end
     end
+
+    def repository_authority(name, spec)
+      [
+        remote_urls&.fetch(name, nil) || "git@github.com:example/#{name}.git",
+        spec.fetch("branch", "main")
+      ]
+    end
   end
 
   def with_workspace

@@ -37,6 +37,37 @@ module AgentCodingTool
       end
     end
 
+    def ready_unlock_metrics(statuses)
+      all_tasks = tasks
+      tasks_by_id = all_tasks.to_h { |task| [task.fetch("id"), task] }
+      reserved_authorities = statuses.filter_map do |status|
+        next unless START_COLLISION_STATES.include?(status.fetch("status"))
+
+        task = tasks_by_id.fetch(status.fetch("id"))
+        snapshot = status.fetch("state").fetch("snapshot")
+        writable_authorities(task, snapshot).keys
+      end.flatten(1).uniq
+      authority_cache = {}
+
+      statuses.filter_map do |status|
+        next unless status.fetch("status") == "READY"
+
+        id = status.fetch("id")
+        unlocked = immediately_unlocked_tasks(id, all_tasks)
+        startable_authorities = unlocked.filter_map do |task|
+          authorities = task_writable_authorities(task, authority_cache)
+          authorities unless (authorities & reserved_authorities).any?
+        end
+        [
+          id,
+          {
+            "unlock_count" => unlocked.length,
+            "parallel_width" => maximum_compatible_count(startable_authorities)
+          }
+        ]
+      end.to_h
+    end
+
     def prepare(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -224,6 +255,42 @@ module AgentCodingTool
       task.fetch("depends_on", []).reject do |dependency|
         @state_store.load(dependency).dig("result", "outcome") == "complete"
       end
+    end
+
+    def immediately_unlocked_tasks(completed_id, all_tasks)
+      all_tasks.select do |task|
+        state = @state_store.load(task.fetch("id"))
+        next false if state["snapshot"] || state.dig("result", "outcome")
+
+        incomplete = incomplete_dependencies(task)
+        !incomplete.empty? && incomplete.all? { |dependency| dependency == completed_id }
+      end
+    end
+
+    def task_writable_authorities(task, cache)
+      cache[task.fetch("id")] ||= task.fetch("repositories").filter_map do |name, spec|
+        next unless spec.fetch("access") == "write"
+
+        @repo_inspector.repository_authority(name, spec)
+      end.uniq
+    end
+
+    def maximum_compatible_count(authority_sets)
+      best = 0
+      search = lambda do |index, selected, count|
+        return if count + authority_sets.length - index <= best
+
+        if index == authority_sets.length
+          best = count
+          return
+        end
+
+        authorities = authority_sets.fetch(index)
+        search.call(index + 1, selected + authorities, count + 1) if (selected & authorities).empty?
+        search.call(index + 1, selected, count)
+      end
+      search.call(0, [], 0)
+      best
     end
 
     def snapshot_task(task)

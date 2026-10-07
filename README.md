@@ -75,7 +75,7 @@ Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGH
 
 `bin/agent-coding-tool prepare TASK`
 
-Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. When task metadata includes `worker_recommendation`, the output prints the advisory model and thinking level after the pushed-head summary and before the prompt path. The recommendation is not copied into runtime state or snapshots, and the tool does not launch or configure a worker. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
+Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. When task metadata includes `worker_recommendation`, the terminal output prints the advisory model and thinking level after the complete generated prompt. The recommendation is not copied into the prompt file, runtime state, or snapshots, and the tool does not launch or configure a worker. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
 
 `bin/agent-coding-tool prepare TASK --retry`
 

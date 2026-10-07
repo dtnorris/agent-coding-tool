@@ -6,7 +6,7 @@ require_relative "test_helper"
 class CLITest < Minitest::Test
   include TestHelpers
 
-  def test_prepare_prints_optional_worker_recommendation_before_prompt
+  def test_prepare_prints_worker_recommendation_once_after_complete_prompt_and_keeps_prompt_file_clean
     with_workspace do |dir|
       write_task(dir, id: "T1", worker_recommendation: {
                    "model" => "GPT-5.6 Sol", "thinking" => "High"
@@ -17,12 +17,36 @@ class CLITest < Minitest::Test
       cli.instance_variable_set(:@coordinator, coordinator)
 
       assert_equal 0, cli.run(%w[prepare T1])
-      lines = out.string.lines
-      recommendation = lines.index("Recommended worker: GPT-5.6 Sol — High\n")
-      prompt = lines.index { |line| line.start_with?("Prompt: ") }
-      refute_nil recommendation
-      refute_nil prompt
-      assert_operator recommendation, :<, prompt
+      prompt_path = Dir[File.join(dir, "state/prompts/T1-*.txt")].fetch(0)
+      prompt = File.read(prompt_path)
+      output = out.string
+      recommendation = "Recommended worker model: GPT-5.6 Sol\nThinking level: High\n"
+
+      assert_includes output, "#{prompt}\n#{recommendation}"
+      assert_operator output.index(recommendation), :>=, output.index(prompt) + prompt.length
+      assert_equal ["Recommended worker model: GPT-5.6 Sol", "Thinking level: High"],
+                   output.lines.map(&:chomp).reject(&:empty?).last(2)
+      assert_equal 1, output.scan("Recommended worker model:").length
+      assert_equal 1, output.scan("Thinking level:").length
+      refute_includes prompt, "Recommended worker model:"
+      refute_includes prompt, "Thinking level:"
+      assert_equal prompt, File.read(prompt_path)
+    end
+  end
+
+  def test_prepare_prints_astra_recommendation_at_bottom
+    with_workspace do |dir|
+      write_task(dir, id: "T1", worker_recommendation: {
+                   "model" => "GPT-6 Astra", "thinking" => "Medium"
+                 })
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[prepare T1])
+      assert_equal ["Recommended worker model: GPT-6 Astra", "Thinking level: Medium"],
+                   out.string.lines.map(&:chomp).reject(&:empty?).last(2)
     end
   end
 
@@ -36,7 +60,8 @@ class CLITest < Minitest::Test
 
       assert_equal 0, cli.run(%w[prepare T1])
       assert_includes out.string, "  alpha: #{'a' * 40} (local matches)\nPrompt: "
-      refute_includes out.string, "Recommended worker:"
+      refute_includes out.string, "Recommended worker model:"
+      refute_includes out.string, "Thinking level:"
     end
   end
 

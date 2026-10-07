@@ -204,12 +204,16 @@ module AgentCodingTool
         local += ", dirty" if repo.fetch("local_dirty")
         @out.puts "  #{name}: #{repo.fetch('pushed_sha')} (#{local})"
       end
-      if (recommendation = prepared.fetch("task")["worker_recommendation"])
-        @out.puts "Recommended worker: #{recommendation.fetch('model')} — #{recommendation.fetch('thinking')}"
-      end
       @out.puts "Prompt: #{state.fetch('prompt_path')}"
       @out.puts
-      @out.write(prepared.fetch("prompt"))
+      prompt = prepared.fetch("prompt")
+      @out.write(prompt)
+      if (recommendation = prepared.fetch("task")["worker_recommendation"])
+        @out.puts unless prompt.end_with?("\n")
+        @out.puts
+        @out.puts "Recommended worker model: #{recommendation.fetch('model')}"
+        @out.puts "Thinking level: #{recommendation.fetch('thinking')}"
+      end
     end
 
     def start_command(argv)

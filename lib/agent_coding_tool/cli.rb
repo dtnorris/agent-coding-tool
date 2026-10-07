@@ -58,6 +58,8 @@ module AgentCodingTool
       when "status" then status_command(argv)
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
+      when "received" then received_command(argv)
+      when "finish" then finish_command(argv)
       when "record" then record_command(argv)
       when "reset" then reset_command(argv)
       when "help", nil then help
@@ -242,6 +244,31 @@ module AgentCodingTool
     end
 
     def record_command(argv)
+      record_result(
+        argv,
+        usage: "agent-coding-tool record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]"
+      )
+    end
+
+    def received_command(argv)
+      record_result(
+        argv,
+        outcome: "candidate_complete",
+        usage: "agent-coding-tool received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]",
+        success: ->(id, _outcome) { "Received #{id}: CANDIDATE" }
+      )
+    end
+
+    def finish_command(argv)
+      record_result(
+        argv,
+        outcome: "complete",
+        usage: "agent-coding-tool finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]",
+        success: ->(id, _outcome) { "Finished #{id}: COMPLETE" }
+      )
+    end
+
+    def record_result(argv, outcome: nil, usage:, success: nil)
       options = { tests: [] }
       parser = OptionParser.new do |opts|
         opts.on("--summary TEXT", "short explicit result summary") { |value| options[:summary] = value }
@@ -250,13 +277,13 @@ module AgentCodingTool
       end
       parser.parse!(argv)
       id = argv.shift
-      outcome = argv.shift
+      outcome ||= argv.shift
       unless id && outcome && argv.empty?
-        raise Error, "usage: agent-coding-tool record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]"
+        raise Error, "usage: #{usage}"
       end
 
       coordinator.record(id, outcome: outcome, **options)
-      @out.puts "Recorded #{id}: #{outcome}"
+      @out.puts(success ? success.call(id, outcome) : "Recorded #{id}: #{outcome}")
     end
 
     def reset_command(argv)
@@ -279,7 +306,12 @@ module AgentCodingTool
           status [TASK] [--all | --active]
           prepare TASK [--retry]
           start TASK          mark a prepared task in flight (human assertion)
+          received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
+                              worker result is ready for human review/application
+          finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
+                              landed task is complete on authoritative pushed state
           record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]
+                              generic/manual outcome primitive
           reset TASK
 
         Outcomes:

@@ -108,6 +108,120 @@ class CLITest < Minitest::Test
     assert_includes out.string, "human assertion"
   end
 
+  def test_received_records_candidate_with_metadata_and_preserves_staleness
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      heads = { "alpha" => "a" * 40 }
+      coordinator = coordinator_for(dir, heads)
+      coordinator.prepare("T1")
+      coordinator.start("T1")
+      out = StringIO.new
+      err = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run([
+        "received", "T1", "--summary", "review ready", "--artifact", "T1.patch",
+        "--test", "focused=pass", "--test", "rake=pass"
+      ])
+      state = coordinator.status("T1").fetch("state")
+      assert_equal "Received T1: CANDIDATE\n", out.string
+      assert_empty err.string
+      assert_equal "candidate_complete", state.dig("result", "outcome")
+      assert_equal "review ready", state.dig("result", "summary")
+      assert_equal "T1.patch", state.dig("result", "artifact")
+      assert_equal %w[focused=pass rake=pass], state.dig("result", "tests")
+      refute state.key?("started_at")
+      assert_equal "CANDIDATE", coordinator.status("T1").fetch("status")
+
+      heads["alpha"] = "b" * 40
+      assert_equal "STALE_CANDIDATE", coordinator.status("T1").fetch("status")
+    end
+  end
+
+  def test_finish_records_complete_with_metadata_snapshot_and_unblocks_dependents
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      write_task(dir, id: "T2", depends_on: ["T1"])
+      heads = { "alpha" => "a" * 40 }
+      coordinator = coordinator_for(dir, heads)
+      coordinator.prepare("T1")
+      coordinator.start("T1")
+      heads["alpha"] = "b" * 40
+      out = StringIO.new
+      err = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run([
+        "finish", "T1", "--summary", "landed", "--artifact", "T1.patch",
+        "--test", "focused=pass", "--test", "rake=pass"
+      ])
+      state = coordinator.status("T1").fetch("state")
+      assert_equal "Finished T1: COMPLETE\n", out.string
+      assert_empty err.string
+      assert_equal "complete", state.dig("result", "outcome")
+      assert_equal "landed", state.dig("result", "summary")
+      assert_equal "T1.patch", state.dig("result", "artifact")
+      assert_equal %w[focused=pass rake=pass], state.dig("result", "tests")
+      assert_equal "b" * 40, state.dig("completion_snapshot", "alpha", "pushed_sha")
+      refute state.key?("started_at")
+      assert_equal "COMPLETE", coordinator.status("T1").fetch("status")
+      assert_equal "READY", coordinator.status("T2").fetch("status")
+
+      assert_equal 2, cli.run(%w[start T1])
+      assert_includes err.string, "already complete"
+    end
+  end
+
+  def test_received_and_finish_require_exactly_one_task
+    {
+      "received" => "agent-coding-tool received TASK",
+      "finish" => "agent-coding-tool finish TASK"
+    }.each do |command, usage|
+      [[], %w[T1 extra]].each do |arguments|
+        err = StringIO.new
+        cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: StringIO.new, err:)
+
+        assert_equal 2, cli.run([command, *arguments])
+        assert_includes err.string, "usage: #{usage}"
+      end
+    end
+  end
+
+  def test_record_remains_backward_compatible_for_every_outcome
+    with_workspace do |dir|
+      outcomes = %w[candidate_complete complete blocked needs_judgment failed]
+      outcomes.each { |outcome| write_task(dir, id: outcome) }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      outcomes.each { |outcome| coordinator.prepare(outcome) }
+
+      outcomes.each do |outcome|
+        out = StringIO.new
+        err = StringIO.new
+        cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+        cli.instance_variable_set(:@coordinator, coordinator)
+
+        assert_equal 0, cli.run(["record", outcome, outcome])
+        assert_equal "Recorded #{outcome}: #{outcome}\n", out.string
+        assert_empty err.string
+        assert_equal outcome, coordinator.status(outcome).dig("state", "result", "outcome")
+      end
+    end
+  end
+
+  def test_help_documents_received_finish_and_generic_record
+    out = StringIO.new
+
+    assert_equal 0, AgentCodingTool::CLI.run(["help"], out:)
+    assert_includes out.string, "received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]"
+    assert_includes out.string, "worker result is ready for human review/application"
+    assert_includes out.string, "finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]"
+    assert_includes out.string, "landed task is complete on authoritative pushed state"
+    assert_includes out.string, "record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]"
+    assert_includes out.string, "generic/manual outcome primitive"
+  end
+
   def test_status_completion_filters_and_explicit_lookup
     with_workspace do |dir|
       (1..6).each { |index| write_task(dir, id: "C#{index}") }

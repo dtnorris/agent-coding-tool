@@ -55,8 +55,8 @@ Required task fields are `id`, `title`, and a non-empty `repositories` mapping. 
 2. Run `bin/agent-coding-tool status` to see active work, blockers, and recent progress.
 3. Run `bin/agent-coding-tool prepare TASK` immediately before launching a coding agent.
 4. Paste the generated prompt into the worker and run `bin/agent-coding-tool start TASK`.
-5. Explicitly record the result with `record`.
-6. Apply/review the worker artifact yourself. Once the task has actually landed on authoritative pushed state, record `complete`.
+5. Run `bin/agent-coding-tool received TASK` when the worker result is ready for review/application.
+6. Apply/review the worker artifact yourself. Once the task has actually landed on authoritative pushed state, run `bin/agent-coding-tool finish TASK`.
 7. Dependent tasks become ready only after that explicit completion.
 
 A worker that discovers a bad task breakout should be recorded as `blocked` or `needs_judgment`, not encouraged to broaden scope.
@@ -71,7 +71,7 @@ Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`, `IN_FLIGH
 
 Prepared, in-flight, and candidate tasks are compared against current pushed heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only movement preserves the state with a refresh/reconciliation warning. Presentation filtering does not alter task state or dependency resolution.
 
-Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` → `record candidate_complete` → `CANDIDATE` → `record complete` → `COMPLETE`. Recorded outcomes, incomplete dependencies, and hard staleness take precedence over `IN_FLIGHT`.
+Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` → `received` → `CANDIDATE` → `finish` → `COMPLETE`. `received` is shorthand for the `candidate_complete` outcome, and `finish` is shorthand for the `complete` outcome. Recorded outcomes, incomplete dependencies, and hard staleness take precedence over `IN_FLIGHT`.
 
 `bin/agent-coding-tool prepare TASK`
 
@@ -85,9 +85,17 @@ Explicitly clears a recorded non-complete outcome and any in-flight marker, then
 
 Human assertion that a prepared prompt has been handed to a worker. Records a UTC `started_at` without changing the snapshot or prompt. Requires an existing task and preparation with no recorded outcome; a second start fails with `already in flight`. This does not launch, inspect, or control agents, check liveness, or refresh repository heads. Use `status` to check dependencies and staleness.
 
+`bin/agent-coding-tool received TASK --summary "..." --artifact "..." --test "rake=pass"`
+
+Records that the worker result is ready for human review/application. This is the preferred human-facing shorthand for `record TASK candidate_complete`; the stored outcome remains `candidate_complete` and the effective status remains `CANDIDATE` (or `STALE_CANDIDATE` when freshness requires it).
+
+`bin/agent-coding-tool finish TASK --summary "..." --artifact "..." --test "rake=pass"`
+
+Records that the landed task is complete on authoritative pushed state. This is the preferred human-facing shorthand for `record TASK complete`; the stored outcome remains `complete`, the fresh completion snapshot is captured, and the effective status remains `COMPLETE`.
+
 `bin/agent-coding-tool record TASK OUTCOME --summary "..." --artifact "..." --test "rake=pass"`
 
-Valid outcomes: `candidate_complete`, `complete`, `blocked`, `needs_judgment`, `failed`.
+Generic/manual outcome primitive. Valid outcomes: `candidate_complete`, `complete`, `blocked`, `needs_judgment`, `failed`. The existing `record TASK candidate_complete` and `record TASK complete` forms remain supported alongside the preferred shorthands.
 
 Every recorded result clears the in-flight marker. `IN_FLIGHT` is not an outcome, and recording results without first calling `start` remains supported.
 

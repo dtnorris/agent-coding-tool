@@ -363,6 +363,13 @@ module AgentCodingTool
         @out.puts "  #{name}: #{repo.fetch('pushed_sha')} (#{local})"
       end
       @out.puts "Prompt: #{state.fetch('prompt_path')}"
+      prepared.fetch("write_collisions").each do |collision|
+        repositories = collision.fetch("repositories")
+        noun = repositories.length == 1 ? "repository" : "repositories"
+        @out.puts "WARNING: #{id} shares writable #{noun} #{repositories.join(', ')} with " \
+                  "#{collision.fetch('task_id')} (#{collision.fetch('status')})."
+        @out.puts "Starting both concurrently is likely to make one stale when the other lands."
+      end
       @out.puts
       prompt = prepared.fetch("prompt")
       @out.write(prompt)
@@ -375,10 +382,19 @@ module AgentCodingTool
     end
 
     def start_command(argv)
+      allow_write_collision = false
+      parser = OptionParser.new do |opts|
+        opts.on("--allow-write-collision", "explicitly allow concurrent write/write work") do
+          allow_write_collision = true
+        end
+      end
+      parser.parse!(argv)
       id = argv.shift
-      raise Error, "usage: agent-coding-tool start TASK" unless id && argv.empty?
+      unless id && argv.empty?
+        raise Error, "usage: agent-coding-tool start TASK [--allow-write-collision]"
+      end
 
-      coordinator.start(id)
+      coordinator.start(id, allow_write_collision: allow_write_collision)
       @out.puts "Started #{id}: IN_FLIGHT"
     end
 
@@ -444,7 +460,8 @@ module AgentCodingTool
         Commands:
           status [TASK] [--all | --active]
           prepare TASK [--retry]
-          start TASK          mark a prepared task in flight (human assertion)
+          start TASK [--allow-write-collision]
+                              mark a prepared task in flight (human assertion)
           received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]

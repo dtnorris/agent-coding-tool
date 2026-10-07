@@ -6,6 +6,8 @@ require "time"
 module AgentCodingTool
   class Coordinator
     OUTCOMES = %w[candidate_complete complete blocked needs_judgment failed].freeze
+    PREPARE_COLLISION_STATES = %w[PREPARED IN_FLIGHT CANDIDATE].freeze
+    START_COLLISION_STATES = %w[IN_FLIGHT CANDIDATE].freeze
     RECENT_COMPLETE_LIMIT = 5
 
     def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:)
@@ -53,6 +55,7 @@ module AgentCodingTool
 
       snapshot = snapshot_task(task)
       prompt = @prompt_renderer.render(task, snapshot)
+      collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
       timestamp = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
       prompt_path = File.join(@prompt_root, "#{id}-#{timestamp}.txt")
       File.write(prompt_path, prompt)
@@ -65,13 +68,14 @@ module AgentCodingTool
       )
       new_state.delete("result") if retry_result
       new_state.delete("started_at")
+      new_state.delete("write_collision_override")
       @state_store.write(id, new_state)
 
-      { "task" => task, "state" => new_state, "prompt" => prompt }
+      { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
     end
 
-    def start(id)
-      @task_store.load(id)
+    def start(id, allow_write_collision: false)
+      task = @task_store.load(id)
       state = @state_store.load(id)
       outcome = state.dig("result", "outcome")
       raise InvalidState, "#{id}: already complete" if outcome == "complete"
@@ -81,7 +85,21 @@ module AgentCodingTool
       raise InvalidState, "#{id}: prepare the task before starting" unless state["snapshot"]
       raise InvalidState, "#{id}: already in flight" if state["started_at"]
 
-      state["started_at"] = Time.now.utc.iso8601
+      collisions = write_collisions(id, task, state.fetch("snapshot"), states: START_COLLISION_STATES)
+      unless collisions.empty? || allow_write_collision
+        raise InvalidState, write_collision_error(id, collisions)
+      end
+
+      started_at = Time.now.utc.iso8601
+      state["started_at"] = started_at
+      if allow_write_collision && !collisions.empty?
+        state["write_collision_override"] = {
+          "allowed_at" => started_at,
+          "conflicts" => collisions
+        }
+      else
+        state.delete("write_collision_override")
+      end
       @state_store.write(id, state)
       state
     end
@@ -239,6 +257,57 @@ module AgentCodingTool
       rescue KeyError
         raise RepositoryError, "#{task.fetch('id')}/#{name}: prepared snapshot lacks freshness provenance"
       end
+    end
+
+    def write_collisions(id, task, snapshot, states:)
+      target_authorities = writable_authorities(task, snapshot)
+      return [] if target_authorities.empty?
+
+      overlaps = tasks.each_with_object({}) do |other_task, found|
+        other_id = other_task.fetch("id")
+        next if other_id == id
+
+        other_snapshot = @state_store.load(other_id)["snapshot"]
+        next unless other_snapshot
+
+        shared = target_authorities.keys & writable_authorities(other_task, other_snapshot).keys
+        next if shared.empty?
+
+        found[other_id] = shared.flat_map { |authority| target_authorities.fetch(authority) }.uniq.sort
+      end
+      return [] if overlaps.empty?
+
+      statuses(overlaps.keys).filter_map do |status|
+        next unless states.include?(status.fetch("status"))
+
+        {
+          "task_id" => status.fetch("id"),
+          "status" => status.fetch("status"),
+          "repositories" => overlaps.fetch(status.fetch("id"))
+        }
+      end
+    end
+
+    def writable_authorities(task, snapshot)
+      task.fetch("repositories").each_with_object({}) do |(name, spec), authorities|
+        next unless spec.fetch("access") == "write"
+
+        repository = snapshot[name]
+        next unless repository
+
+        authority = [repository.fetch("remote_url"), repository.fetch("branch")]
+        (authorities[authority] ||= []) << name
+      rescue KeyError
+        raise RepositoryError, "#{task.fetch('id')}/#{name}: prepared snapshot lacks remote URL or branch"
+      end
+    end
+
+    def write_collision_error(id, collisions)
+      conflicts = collisions.map { |collision| "#{collision.fetch('task_id')} (#{collision.fetch('status')})" }.join(", ")
+      repositories = collisions.flat_map { |collision| collision.fetch("repositories") }.uniq.sort.join(", ")
+      "#{id}: conflicts with active task#{'s' if collisions.length > 1} #{conflicts}\n" \
+        "shared writable repositories: #{repositories}\n" \
+        "finish or reprepare the conflicting work first, or rerun start with --allow-write-collision"
     end
 
     def status_hash(label, task, state, reason = nil)

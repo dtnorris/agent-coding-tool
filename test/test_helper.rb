@@ -6,13 +6,13 @@ require "tmpdir"
 require "agent_coding_tool"
 
 module TestHelpers
-  FakeInspector = Struct.new(:heads, :local_dirty, keyword_init: true) do
+  FakeInspector = Struct.new(:heads, :local_dirty, :remote_urls, keyword_init: true) do
     def snapshot(name, _spec)
       sha = heads.fetch(name)
       {
         "path" => "/repos/#{name}",
         "remote" => "origin",
-        "remote_url" => "git@github.com:example/#{name}.git",
+        "remote_url" => remote_urls&.fetch(name, nil) || "git@github.com:example/#{name}.git",
         "branch" => "main",
         "pushed_sha" => sha,
         "local_head" => sha,

@@ -14,8 +14,9 @@ The tool does not launch agents, plan architecture, parse chat prose, merge code
 - Each repository is explicitly `write` or `read_only` for each task.
 - Task dependencies must be explicitly complete before a dependent task can be prepared.
 - Preparing a task snapshots exact pushed heads and emits a worker prompt.
+- Preparing remains allowed when another prepared, in-flight, or candidate task has the same writable authority, but prints a collision warning.
 - Writable pushed-head movement after preparation makes the task stale; read-only movement requires refresh/reconciliation.
-- Starting a prepared task explicitly marks it in flight; no agent liveness is detected.
+- Starting a prepared task explicitly marks it in flight and rejects fresh write/write collisions with in-flight or candidate work unless the operator explicitly overrides; no agent liveness is detected.
 - Worker outcomes are recorded explicitly; no prose interpretation is attempted.
 - `needs_judgment` and `blocked` are normal outcomes, not failures to be auto-retried.
 - The tool never commits, pushes, opens PRs, or otherwise mutates GitHub.
@@ -75,15 +76,21 @@ Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGH
 
 `bin/agent-coding-tool prepare TASK`
 
-Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. When task metadata includes `worker_recommendation`, the terminal output prints the advisory model and thinking level after the complete generated prompt. The recommendation is not copied into the prompt file, runtime state, or snapshots, and the tool does not launch or configure a worker. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
+Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. Preparation warns about writable-authority overlap with fresh `PREPARED`, `IN_FLIGHT`, or `CANDIDATE` tasks, but remains legal so the operator can stage later work and choose which prepared task starts first. When task metadata includes `worker_recommendation`, the terminal output prints the advisory model and thinking level after the complete generated prompt. The recommendation is not copied into the prompt file, runtime state, or snapshots, and the tool does not launch or configure a worker. A fresh preparation clears any in-flight marker and prior collision override record, including when re-preparing a task without a recorded outcome.
 
 `bin/agent-coding-tool prepare TASK --retry`
 
 Explicitly clears a recorded non-complete outcome and any in-flight marker, then prepares another attempt in `PREPARED` state. Completed tasks cannot be retried without resetting their state.
 
-`bin/agent-coding-tool start TASK`
+`bin/agent-coding-tool start TASK [--allow-write-collision]`
 
-Human assertion that a prepared prompt has been handed to a worker. Records a UTC `started_at` without changing the snapshot or prompt. Requires an existing task and preparation with no recorded outcome; a second start fails with `already in flight`. This does not launch, inspect, or control agents, check liveness, or refresh repository heads. Use `status` to check dependencies and staleness.
+Human assertion that a prepared prompt has been handed to a worker. Records a UTC `started_at` without changing the snapshot or prompt. Requires an existing task and preparation with no recorded outcome; a second start fails with `already in flight`.
+
+By default, start fails closed when another fresh `IN_FLIGHT` or `CANDIDATE` task writes the same authoritative repository and branch. `PREPARED` work does not block: the first explicitly started task wins. `COMPLETE`, `FAILED`, `BLOCKED`, `NEEDS_JUDGMENT`, `STALE`, and `STALE_CANDIDATE` do not block. Read/write and read/read overlap remain legal. Repository identity is the prepared snapshot's existing `[remote_url, branch]` authority, so different logical task repository keys that resolve to the same remote and branch still collide.
+
+Use `--allow-write-collision` only to intentionally run conflicting write work. When it bypasses an actual collision, the runtime state records the override time and conflicting tasks/repositories. The flag is per start invocation; there is no global disable switch.
+
+Collision checks are advisory scheduling safety for a human-operated workflow, not a process lock or autonomous scheduler. The tool still does not launch, inspect, or control agents or check liveness. Existing pushed-head freshness semantics remain authoritative.
 
 `bin/agent-coding-tool received TASK --summary "..." --artifact "..." --test "rake=pass"`
 

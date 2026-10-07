@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "optparse"
+require "io/console"
 
 module AgentCodingTool
   class CLI
@@ -31,7 +32,8 @@ module AgentCodingTool
     DEPENDENCY_REASON_PREFIX = "dependencies incomplete: "
     READ_ONLY_FRESHNESS_REASON_PREFIX =
       "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: "
-    BLOCKED_DISPLAY_LIMIT = 5
+    BLOCKED_DISPLAY_LIMIT = 3
+    DEFAULT_DASHBOARD_WIDTH = 100
     ANSI_RESET = "\e[0m"
 
     def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
@@ -45,11 +47,12 @@ module AgentCodingTool
       File.expand_path("../#{File.basename(root)}-data", root)
     end
 
-    def initialize(root:, out:, err:, data_root: nil)
+    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil)
       @root = root
       @out = out
       @err = err
       @data_root = data_root || self.class.default_data_root(root)
+      @terminal_width = terminal_width
     end
 
     def run(argv)
@@ -113,8 +116,10 @@ module AgentCodingTool
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
       broad_dashboard = id.nil?
+      downstream_metrics = {}
       if broad_dashboard
-        statuses = sort_statuses(statuses)
+        downstream_metrics = ready_downstream_metrics(statuses)
+        statuses = sort_statuses(statuses, downstream_metrics)
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -123,12 +128,10 @@ module AgentCodingTool
         bucket = status_bucket(item.fetch("status"))
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
-        status = item.fetch("status")
-        if broad_dashboard && status == "IN_FLIGHT"
-          @out.puts "#{item.fetch('id')}: #{colorize_status(status)}"
-          @out.puts "    #{item.fetch('title')}"
-          @out.puts "    #{display_in_flight_reason(item.fetch('reason'))}" if item["reason"]
+        if broad_dashboard
+          display_dashboard_item(item, downstream_metrics)
         else
+          status = item.fetch("status")
           @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
           @out.puts "    #{display_reason(item)}" if item["reason"]
         end
@@ -136,12 +139,52 @@ module AgentCodingTool
       end
     end
 
-    def sort_statuses(statuses)
+    def sort_statuses(statuses, downstream_metrics)
       statuses.each_with_index
               .sort_by do |item, index|
-                [STATUS_ORDER.fetch(item.fetch("status"), 90), blocked_dependency_count(item), index]
+                status = item.fetch("status")
+                depth, count = downstream_metrics.fetch(item.fetch("id"), [0, 0])
+                ready_rank = status == "READY" ? [-depth, -count] : [0, 0]
+                blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
+                [STATUS_ORDER.fetch(status, 90), *ready_rank, blocked_rank, index]
               end
               .map(&:first)
+    end
+
+    def ready_downstream_metrics(statuses)
+      tasks = coordinator.respond_to?(:tasks) ? coordinator.tasks : []
+      downstream = Hash.new { |hash, id| hash[id] = [] }
+      tasks.each do |task|
+        task.fetch("depends_on", []).each { |dependency| downstream[dependency] << task.fetch("id") }
+      end
+
+      statuses.filter_map do |item|
+        next unless item.fetch("status") == "READY"
+
+        id = item.fetch("id")
+        [id, [downstream_depth(id, downstream, { id => true }), downstream_count(id, downstream)]]
+      end.to_h
+    end
+
+    def downstream_depth(id, downstream, path)
+      downstream.fetch(id, []).filter_map do |child|
+        next if path[child]
+
+        1 + downstream_depth(child, downstream, path.merge(child => true))
+      end.max || 0
+    end
+
+    def downstream_count(id, downstream)
+      seen = { id => true }
+      pending = downstream.fetch(id, []).dup
+      until pending.empty?
+        descendant = pending.shift
+        next if seen[descendant]
+
+        seen[descendant] = true
+        pending.concat(downstream.fetch(descendant, []))
+      end
+      seen.length - 1
     end
 
     def blocked_dependency_count(item)
@@ -193,6 +236,92 @@ module AgentCodingTool
       else
         reason
       end
+    end
+
+    def display_dashboard_item(item, downstream_metrics)
+      id = item.fetch("id")
+      status = item.fetch("status")
+      if status == "IN_FLIGHT"
+        @out.puts "#{id}: #{colorize_status(status)}"
+        puts_wrapped(item.fetch("title"), first_prefix: "    ", continuation_prefix: "    ")
+        if item["reason"]
+          puts_wrapped(display_in_flight_reason(item.fetch("reason")),
+                       first_prefix: "    ", continuation_prefix: "    ")
+        end
+        return
+      end
+
+      plain_prefix = "#{id}: #{status} — "
+      colored_prefix = "#{id}: #{colorize_status(status)} — "
+      puts_wrapped(item.fetch("title"), first_prefix: colored_prefix,
+                                        first_prefix_width: plain_prefix.length,
+                                        continuation_prefix: " " * plain_prefix.length)
+      if status == "READY"
+        depth, count = downstream_metrics.fetch(id, [0, 0])
+        puts_wrapped("downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}",
+                     first_prefix: "    ", continuation_prefix: "    ")
+      end
+      puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ") if item["reason"]
+    end
+
+    def pluralize(count, noun)
+      count == 1 ? noun : "#{noun}s"
+    end
+
+    def puts_wrapped(text, first_prefix:, continuation_prefix:, first_prefix_width: first_prefix.length)
+      words = text.to_s.split
+      if words.empty?
+        @out.puts first_prefix.rstrip
+        return
+      end
+
+      prefix = first_prefix
+      prefix_width = first_prefix_width
+      line = prefix.dup
+      line_width = prefix_width
+      has_word = false
+      words.each do |word|
+        separator = has_word ? " " : ""
+        if has_word && line_width + separator.length + word.length > dashboard_width
+          @out.puts line
+          prefix = continuation_prefix
+          prefix_width = continuation_prefix.length
+          line = prefix.dup
+          line_width = prefix_width
+          separator = ""
+          has_word = false
+        end
+        line << separator << word
+        line_width += separator.length + word.length
+        has_word = true
+      end
+      @out.puts line
+    end
+
+    def dashboard_width
+      @dashboard_width ||= resolve_dashboard_width
+    end
+
+    def resolve_dashboard_width
+      return @terminal_width if @terminal_width&.positive?
+
+      if @out.respond_to?(:tty?) && @out.tty? && @out.respond_to?(:winsize)
+        width = output_terminal_width
+        return width if width&.positive?
+      end
+
+      columns = Integer(ENV.fetch("COLUMNS", ""), 10)
+      return columns if columns.positive?
+    rescue ArgumentError
+      DEFAULT_DASHBOARD_WIDTH
+    else
+      DEFAULT_DASHBOARD_WIDTH
+    end
+
+    def output_terminal_width
+      @out.winsize.last
+    rescue SystemCallError
+      nil
     end
 
     def colorize_status(status)

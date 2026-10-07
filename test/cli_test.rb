@@ -6,6 +6,16 @@ require_relative "test_helper"
 class CLITest < Minitest::Test
   include TestHelpers
 
+  class TTYOutput < StringIO
+    def initialize(width)
+      @width = width
+      super()
+    end
+
+    def tty? = true
+    def winsize = [24, @width]
+  end
+
   def test_prepare_prints_worker_recommendation_once_after_complete_prompt_and_keeps_prompt_file_clean
     with_workspace do |dir|
       write_task(dir, id: "T1", worker_recommendation: {
@@ -274,6 +284,7 @@ class CLITest < Minitest::Test
       "    Running task",
       "",
       "R1: READY — Ready task",
+      "    downstream: 0 levels / 0 tasks",
       "",
       "P1: PREPARED — Prepared task",
       "",
@@ -305,8 +316,135 @@ class CLITest < Minitest::Test
       "    Still running",
       "",
       "R1: READY — Ready one",
-      "R2: READY — Ready two"
+      "    downstream: 0 levels / 0 tasks",
+      "R2: READY — Ready two",
+      "    downstream: 0 levels / 0 tasks"
     ], lines
+  end
+
+  def test_status_wraps_dashboard_titles_and_reasons_with_deliberate_indentation
+    statuses = [
+      { "id" => "B1", "status" => "BLOCKED",
+        "title" => "A blocked title with enough words to wrap cleanly",
+        "reason" => "dependencies incomplete: R1, R2, R3, R4" },
+      { "id" => "R1", "status" => "READY",
+        "title" => "A ready title with enough words to wrap cleanly" },
+      { "id" => "F1", "status" => "IN_FLIGHT",
+        "title" => "An in flight title with enough words to wrap cleanly",
+        "reason" => "A long diagnostic that remains visibly subordinate when wrapped" }
+    ]
+    coordinator = fake_status_coordinator(statuses)
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 42)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status])
+    assert_equal [
+      "F1: IN_FLIGHT",
+      "    An in flight title with enough words",
+      "    to wrap cleanly",
+      "    A long diagnostic that remains visibly",
+      "    subordinate when wrapped",
+      "",
+      "R1: READY — A ready title with enough",
+      "            words to wrap cleanly",
+      "    downstream: 0 levels / 0 tasks",
+      "",
+      "B1: BLOCKED — A blocked title with enough",
+      "              words to wrap cleanly",
+      "    waiting on: R1, R2, R3, R4"
+    ], out.string.lines.map(&:chomp)
+  end
+
+  def test_status_wraps_colored_output_by_visible_width
+    status = { "id" => "R1", "status" => "READY",
+               "title" => "A colored title that should wrap at the same visible width" }
+    coordinator = fake_status_coordinator([status])
+    plain = StringIO.new
+    plain_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: plain, err: StringIO.new,
+                                         terminal_width: 36)
+    plain_cli.instance_variable_set(:@coordinator, coordinator)
+    tty = TTYOutput.new(36)
+    color_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: tty, err: StringIO.new)
+    color_cli.instance_variable_set(:@coordinator, coordinator)
+    previous_no_color = ENV.delete("NO_COLOR")
+
+    assert_equal 0, plain_cli.run(%w[status])
+    assert_equal 0, color_cli.run(%w[status])
+    assert_includes tty.string, "\e[92mREADY\e[0m"
+    assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
+  ensure
+    ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_status_uses_columns_for_non_tty_output_and_honors_no_color
+    status = { "id" => "K1", "status" => "CANDIDATE",
+               "title" => "A candidate title that wraps predictably" }
+    coordinator = fake_status_coordinator([status])
+    previous_columns = ENV["COLUMNS"]
+    previous_no_color = ENV["NO_COLOR"]
+    ENV["COLUMNS"] = "34"
+    ENV["NO_COLOR"] = "1"
+    out = TTYOutput.new(0)
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status])
+    refute_includes out.string, "\e["
+    assert_equal [
+      "K1: CANDIDATE — A candidate title",
+      "                that wraps",
+      "                predictably"
+    ], out.string.lines.map(&:chomp)
+  ensure
+    previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
+    previous_no_color ? ENV["NO_COLOR"] = previous_no_color : ENV.delete("NO_COLOR")
+  end
+
+  def test_status_ranks_ready_tasks_by_downstream_depth_then_distinct_count_then_stable_order
+    statuses = [
+      { "id" => "R-STABLE-B", "status" => "READY", "title" => "Stable B" },
+      { "id" => "B", "status" => "BLOCKED", "title" => "Blocked",
+        "reason" => "dependencies incomplete: R-DEEP" },
+      { "id" => "R-WIDE", "status" => "READY", "title" => "Wide" },
+      { "id" => "R-LESS", "status" => "READY", "title" => "Less" },
+      { "id" => "F", "status" => "IN_FLIGHT", "title" => "Running" },
+      { "id" => "R-DIAMOND", "status" => "READY", "title" => "Diamond" },
+      { "id" => "R-DEEP", "status" => "READY", "title" => "Deep" },
+      { "id" => "R-CYCLE", "status" => "READY", "title" => "Cycle" },
+      { "id" => "R-STABLE-A", "status" => "READY", "title" => "Stable A" },
+      { "id" => "K", "status" => "CANDIDATE", "title" => "Candidate" }
+    ]
+    tasks = [
+      task_definition("R-DEEP"), task_definition("D1", ["R-DEEP"]),
+      task_definition("D2", ["D1"]), task_definition("D3", ["D2"]),
+      task_definition("D4", ["D3"]),
+      task_definition("R-WIDE"), task_definition("W1", ["R-WIDE"]),
+      task_definition("W2", ["R-WIDE"]), task_definition("W3", ["R-WIDE"]),
+      task_definition("R-DIAMOND"), task_definition("DB", ["R-DIAMOND"]),
+      task_definition("DC", ["R-DIAMOND"]), task_definition("DD", ["DB", "DC"]),
+      task_definition("R-LESS"), task_definition("L1", ["R-LESS"]),
+      task_definition("L2", ["L1"]),
+      task_definition("R-STABLE-B"), task_definition("R-STABLE-A"),
+      task_definition("R-CYCLE", ["CYCLE-CHILD"]),
+      task_definition("CYCLE-CHILD", ["R-CYCLE"])
+    ]
+    coordinator = fake_status_coordinator(statuses, tasks:)
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, cli.run(%w[status --active])
+
+    visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
+    assert_equal %w[R-DEEP R-DIAMOND R-LESS R-WIDE R-CYCLE R-STABLE-B R-STABLE-A], visible_ready
+    assert_includes out.string, "R-DEEP: READY — Deep\n    downstream: 4 levels / 4 tasks\n"
+    assert_includes out.string, "R-DIAMOND: READY — Diamond\n    downstream: 2 levels / 3 tasks\n"
+    assert_includes out.string, "R-CYCLE: READY — Cycle\n    downstream: 1 level / 1 task\n"
+    assert_operator out.string.index("K: CANDIDATE"), :<, out.string.index("F: IN_FLIGHT")
+    assert_operator out.string.index("F: IN_FLIGHT"), :<, out.string.index("R-DEEP: READY")
+    assert_operator out.string.index("R-STABLE-A: READY"), :<, out.string.index("B: BLOCKED")
   end
 
   def test_status_formats_broad_in_flight_tasks_and_compacts_read_only_freshness
@@ -348,7 +486,7 @@ class CLITest < Minitest::Test
     assert_equal "F1: IN_FLIGHT — Running task\n    #{full_reason}\n", out.string
   end
 
-  def test_status_limits_blocked_tasks_to_five_ranked_by_incomplete_dependency_count
+  def test_status_limits_blocked_tasks_to_three_ranked_by_incomplete_dependency_count
     statuses = [
       { "id" => "B3", "status" => "BLOCKED", "title" => "Three blockers",
         "reason" => "dependencies incomplete: A, B, C" },
@@ -367,8 +505,7 @@ class CLITest < Minitest::Test
       { "id" => "B1C", "status" => "BLOCKED", "title" => "One blocker C",
         "reason" => "dependencies incomplete: C" }
     ]
-    fake_coordinator = Object.new
-    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| statuses }
+    fake_coordinator = fake_status_coordinator(statuses)
     out = StringIO.new
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
@@ -376,10 +513,27 @@ class CLITest < Minitest::Test
     assert_equal 0, cli.run(%w[status])
 
     visible_blocked = out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
-    assert_equal %w[B1A B1B B1C B2 B3], visible_blocked
+    assert_equal %w[B1A B1B B1C], visible_blocked
+    refute_includes out.string, "B2: BLOCKED"
+    refute_includes out.string, "B3: BLOCKED"
     refute_includes out.string, "B4: BLOCKED"
     refute_includes out.string, "B5: BLOCKED"
     refute_includes out.string, "MANUAL: BLOCKED"
+
+    active_out = StringIO.new
+    active_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd,
+                                          out: active_out, err: StringIO.new)
+    active_cli.instance_variable_set(:@coordinator, fake_coordinator)
+    assert_equal 0, active_cli.run(%w[status --active])
+    active_blocked = active_out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
+    assert_equal %w[B1A B1B B1C], active_blocked
+
+    explicit_out = StringIO.new
+    explicit_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd,
+                                            out: explicit_out, err: StringIO.new)
+    explicit_cli.instance_variable_set(:@coordinator, fake_coordinator)
+    assert_equal 0, explicit_cli.run(%w[status B5])
+    assert_includes explicit_out.string, "B5: BLOCKED — Five blockers"
   end
 
   def test_status_all_keeps_every_blocked_task
@@ -464,6 +618,19 @@ class CLITest < Minitest::Test
   end
 
   private
+
+  def fake_status_coordinator(statuses, tasks: [])
+    coordinator = Object.new
+    coordinator.define_singleton_method(:statuses) do |ids = nil, **_kwargs|
+      ids ? statuses.select { |status| ids.include?(status.fetch("id")) } : statuses
+    end
+    coordinator.define_singleton_method(:tasks) { tasks }
+    coordinator
+  end
+
+  def task_definition(id, depends_on = [])
+    { "id" => id, "depends_on" => depends_on }
+  end
 
   def run_status(dir, coordinator, argv)
     out = StringIO.new

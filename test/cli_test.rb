@@ -153,7 +153,8 @@ class CLITest < Minitest::Test
     assert_equal [
       "C1: COMPLETE — Complete task",
       "",
-      "F1: IN_FLIGHT — Running task",
+      "F1: IN_FLIGHT",
+      "    Running task",
       "",
       "R1: READY — Ready task",
       "",
@@ -162,6 +163,45 @@ class CLITest < Minitest::Test
       "B1: BLOCKED — Blocked task",
       "    waiting on: R1"
     ], lines
+  end
+
+  def test_status_formats_broad_in_flight_tasks_and_compacts_read_only_freshness
+    full_reason =
+      "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: " \
+      "af-data-pipeline, af-workloads"
+    statuses = [
+      { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Running with refresh", "reason" => full_reason },
+      { "id" => "F2", "status" => "IN_FLIGHT", "title" => "Running without refresh" }
+    ]
+    fake_coordinator = Object.new
+    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| statuses }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_coordinator)
+
+    assert_equal 0, cli.run(%w[status])
+    assert_equal [
+      "F1: IN_FLIGHT",
+      "    Running with refresh",
+      "    read-only refresh/reconcile: af-data-pipeline, af-workloads",
+      "F2: IN_FLIGHT",
+      "    Running without refresh"
+    ], out.string.lines.map(&:chomp)
+  end
+
+  def test_status_preserves_full_in_flight_freshness_reason_for_explicit_lookup
+    full_reason =
+      "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: " \
+      "af-data-pipeline"
+    status = { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Running task", "reason" => full_reason }
+    fake_coordinator = Object.new
+    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| [status] }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_coordinator)
+
+    assert_equal 0, cli.run(%w[status F1])
+    assert_equal "F1: IN_FLIGHT — Running task\n    #{full_reason}\n", out.string
   end
 
   def test_status_limits_blocked_tasks_to_five_ranked_by_incomplete_dependency_count

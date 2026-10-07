@@ -29,6 +29,8 @@ module AgentCodingTool
       "BLOCKED" => 31
     }.freeze
     DEPENDENCY_REASON_PREFIX = "dependencies incomplete: "
+    READ_ONLY_FRESHNESS_REASON_PREFIX =
+      "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: "
     BLOCKED_DISPLAY_LIMIT = 5
     ANSI_RESET = "\e[0m"
 
@@ -120,8 +122,14 @@ module AgentCodingTool
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
         status = item.fetch("status")
-        @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
-        @out.puts "    #{display_reason(item)}" if item["reason"]
+        if broad_dashboard && status == "IN_FLIGHT"
+          @out.puts "#{item.fetch('id')}: #{colorize_status(status)}"
+          @out.puts "    #{item.fetch('title')}"
+          @out.puts "    #{display_in_flight_reason(item.fetch('reason'))}" if item["reason"]
+        else
+          @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
+          @out.puts "    #{display_reason(item)}" if item["reason"]
+        end
         previous_bucket = bucket
       end
     end
@@ -171,6 +179,14 @@ module AgentCodingTool
       reason = item.fetch("reason")
       if item.fetch("status") == "BLOCKED" && reason.start_with?(DEPENDENCY_REASON_PREFIX)
         "waiting on: #{reason.delete_prefix(DEPENDENCY_REASON_PREFIX)}"
+      else
+        reason
+      end
+    end
+
+    def display_in_flight_reason(reason)
+      if reason.start_with?(READ_ONLY_FRESHNESS_REASON_PREFIX)
+        "read-only refresh/reconcile: #{reason.delete_prefix(READ_ONLY_FRESHNESS_REASON_PREFIX)}"
       else
         reason
       end

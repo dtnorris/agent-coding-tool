@@ -9,7 +9,10 @@ module AgentCodingTool
       lines = []
       lines << "# #{task.fetch('id')}: #{task.fetch('title')}"
       lines << ""
-      lines << "Use the connected GitHub account."
+      lines << "Use the connected GitHub integration for repository access."
+      lines << "For GitHub reads, prefer the connected GitHub tools/API. Do not open github.com in the cloud browser when the connected integration can perform the required repository read."
+      lines << "Do not request GitHub website-access permission merely to inspect repositories, branches, commits, files, or pushed heads."
+      lines << "If a required GitHub operation is unavailable through the connected tooling, report that limitation rather than silently switching to the browser."
       lines << ""
       lines << "The pushed branch heads recorded below are the preparation snapshot. Refresh these pushed heads before doing any work and again before finalizing."
       lines << "Writable repositories: if any pushed head differs from the preparation snapshot, stop and report STALE INPUT rather than silently continuing. A new preparation (with explicit retry if an outcome was recorded) is required."

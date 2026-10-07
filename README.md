@@ -14,6 +14,7 @@ The tool does not launch agents, plan architecture, parse chat prose, merge code
 - Each repository is explicitly `write` or `read_only` for each task.
 - Task dependencies must be explicitly complete before a dependent task can be prepared.
 - Preparing a task snapshots exact pushed heads and emits a worker prompt.
+- Generated worker prompts direct GitHub repository reads through the connected integration and prohibit unnecessary cloud-browser or website-permission fallback.
 - Preparing remains allowed when another prepared, in-flight, or candidate task has the same writable authority, but prints a collision warning.
 - Writable pushed-head movement after preparation makes the task stale; read-only movement requires refresh/reconciliation.
 - Starting a prepared task explicitly marks it in flight and rejects fresh write/write collisions with in-flight or candidate work unless the operator explicitly overrides; no agent liveness is detected.

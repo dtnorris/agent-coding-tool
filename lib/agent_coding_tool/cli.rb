@@ -6,10 +6,10 @@ module AgentCodingTool
   class CLI
     STATUS_ORDER = {
       "COMPLETE" => 0,
-      "IN_FLIGHT" => 10,
-      "READY" => 20,
-      "PREPARED" => 30,
-      "CANDIDATE" => 40,
+      "CANDIDATE" => 10,
+      "IN_FLIGHT" => 20,
+      "READY" => 30,
+      "PREPARED" => 40,
       "NEEDS_JUDGMENT" => 50,
       "STALE_CANDIDATE" => 60,
       "STALE" => 70,
@@ -168,10 +168,11 @@ module AgentCodingTool
     def status_bucket(status)
       case status
       when "COMPLETE" then 0
-      when "IN_FLIGHT" then 1
-      when "READY" then 2
-      when "BLOCKED" then 4
-      else 3
+      when "CANDIDATE" then 1
+      when "IN_FLIGHT" then 2
+      when "READY" then 3
+      when "BLOCKED" then 5
+      else 4
       end
     end
 

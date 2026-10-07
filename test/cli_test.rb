@@ -139,6 +139,7 @@ class CLITest < Minitest::Test
       { "id" => "P1", "status" => "PREPARED", "title" => "Prepared task" },
       { "id" => "R1", "status" => "READY", "title" => "Ready task" },
       { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Running task" },
+      { "id" => "K1", "status" => "CANDIDATE", "title" => "Candidate task" },
       { "id" => "C1", "status" => "COMPLETE", "title" => "Complete task" }
     ]
     fake_coordinator = Object.new
@@ -153,6 +154,8 @@ class CLITest < Minitest::Test
     assert_equal [
       "C1: COMPLETE — Complete task",
       "",
+      "K1: CANDIDATE — Candidate task",
+      "",
       "F1: IN_FLIGHT",
       "    Running task",
       "",
@@ -162,6 +165,33 @@ class CLITest < Minitest::Test
       "",
       "B1: BLOCKED — Blocked task",
       "    waiting on: R1"
+    ], lines
+  end
+
+  def test_candidate_moves_above_in_flight_and_multiple_ready_tasks
+    statuses = [
+      { "id" => "R1", "status" => "READY", "title" => "Ready one" },
+      { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Still running" },
+      { "id" => "R2", "status" => "READY", "title" => "Ready two" },
+      { "id" => "F2", "status" => "CANDIDATE", "title" => "Was in flight" }
+    ]
+    fake_coordinator = Object.new
+    fake_coordinator.define_singleton_method(:statuses) { |*_args, **_kwargs| statuses }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_coordinator)
+
+    assert_equal 0, cli.run(%w[status --active])
+
+    lines = out.string.lines.map(&:chomp)
+    assert_equal [
+      "F2: CANDIDATE — Was in flight",
+      "",
+      "F1: IN_FLIGHT",
+      "    Still running",
+      "",
+      "R1: READY — Ready one",
+      "R2: READY — Ready two"
     ], lines
   end
 

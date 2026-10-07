@@ -1,6 +1,9 @@
 ---
 id: EXAMPLE
 title: Replace this example with a real coding task
+worker_recommendation:
+  model: Example worker model
+  thinking: Example thinking level
 depends_on: []
 repositories:
   adventure-finder:

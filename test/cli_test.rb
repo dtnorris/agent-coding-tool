@@ -6,6 +6,40 @@ require_relative "test_helper"
 class CLITest < Minitest::Test
   include TestHelpers
 
+  def test_prepare_prints_optional_worker_recommendation_before_prompt
+    with_workspace do |dir|
+      write_task(dir, id: "T1", worker_recommendation: {
+                   "model" => "GPT-5.6 Sol", "thinking" => "High"
+                 })
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[prepare T1])
+      lines = out.string.lines
+      recommendation = lines.index("Recommended worker: GPT-5.6 Sol — High\n")
+      prompt = lines.index { |line| line.start_with?("Prompt: ") }
+      refute_nil recommendation
+      refute_nil prompt
+      assert_operator recommendation, :<, prompt
+    end
+  end
+
+  def test_prepare_without_worker_recommendation_preserves_existing_output
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[prepare T1])
+      assert_includes out.string, "  alpha: #{'a' * 40} (local matches)\nPrompt: "
+      refute_includes out.string, "Recommended worker:"
+    end
+  end
+
   def test_start_command_and_status
     with_workspace do |dir|
       write_task(dir, id: "T1")

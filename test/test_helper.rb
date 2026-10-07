@@ -37,7 +37,8 @@ module TestHelpers
     end
   end
 
-  def write_task(dir, id:, depends_on: [], repositories: { "alpha" => { "access" => "write" } }, title: "Task")
+  def write_task(dir, id:, depends_on: [], repositories: { "alpha" => { "access" => "write" } },
+                 title: "Task", worker_recommendation: nil)
     data = {
       "id" => id,
       "title" => title,
@@ -47,6 +48,7 @@ module TestHelpers
       "constraints" => ["Do not broaden scope."],
       "acceptance" => ["Focused tests pass."]
     }
+    data["worker_recommendation"] = worker_recommendation if worker_recommendation
     File.write(File.join(dir, "tasks", "#{id}.yml"), YAML.dump(data))
   end
 

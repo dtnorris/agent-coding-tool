@@ -47,7 +47,7 @@ The public repository also ignores legacy/local `config.yml`, `tasks/`, `state/`
 
 Copy `examples/tasks/EXAMPLE.yml` into the external data directory's `tasks/` directory and replace its contents. Repository keys default to directory names under `repo_root`; an individual repository may additionally set `path`, `remote`, or `branch` when it differs from the defaults.
 
-Required task fields are `id`, `title`, and a non-empty `repositories` mapping. `depends_on`, `constraints`, and `acceptance` are arrays. `goal` is free text.
+Required task fields are `id`, `title`, and a non-empty `repositories` mapping. `depends_on`, `constraints`, and `acceptance` are arrays. `goal` is free text. An optional `worker_recommendation` mapping supplies non-empty `model` and `thinking` strings as human-authored launch guidance.
 
 ## Typical workflow
 
@@ -75,7 +75,7 @@ Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGH
 
 `bin/agent-coding-tool prepare TASK`
 
-Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
+Checks dependencies, resolves exact pushed heads with `git ls-remote`, records local HEAD/dirtiness separately, and writes/prints a worker prompt into the external data directory. When task metadata includes `worker_recommendation`, the output prints the advisory model and thinking level after the pushed-head summary and before the prompt path. The recommendation is not copied into runtime state or snapshots, and the tool does not launch or configure a worker. A fresh preparation clears any in-flight marker, including when re-preparing a task without a recorded outcome.
 
 `bin/agent-coding-tool prepare TASK --retry`
 

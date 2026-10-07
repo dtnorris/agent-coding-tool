@@ -54,6 +54,19 @@ module AgentCodingTool
       depends_on = task.fetch("depends_on", [])
       raise InvalidTask, "#{path}: depends_on must be an array" unless depends_on.is_a?(Array)
 
+      if task.key?("worker_recommendation")
+        recommendation = task["worker_recommendation"]
+        unless recommendation.is_a?(Hash)
+          raise InvalidTask, "#{path}: worker_recommendation must be a mapping"
+        end
+        %w[model thinking].each do |field|
+          value = recommendation[field]
+          unless value.is_a?(String) && !value.empty?
+            raise InvalidTask, "#{path}: worker_recommendation #{field} must be a non-empty string"
+          end
+        end
+      end
+
       %w[constraints acceptance].each do |field|
         value = task.fetch(field, [])
         raise InvalidTask, "#{path}: #{field} must be an array" unless value.is_a?(Array)

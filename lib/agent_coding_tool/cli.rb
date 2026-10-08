@@ -270,11 +270,11 @@ module AgentCodingTool
     def display_dashboard_item(item, completion_metrics)
       id = item.fetch("id")
       status = item.fetch("status")
+      colored_prefix = "#{id}: #{colorize_status(status)} — "
+      title = normalize_dashboard_text(item.fetch("title"))
+      @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
+
       if status == "IN_FLIGHT"
-        plain_prefix = "#{id}: #{status} — "
-        colored_prefix = "#{id}: #{colorize_status(status)} — "
-        title_width = [dashboard_width - plain_prefix.length, 0].max
-        @out.puts "#{colored_prefix}#{truncate_title(item.fetch('title'), title_width)}"
         if item["reason"]
           puts_wrapped(display_in_flight_reason(item.fetch("reason")),
                        first_prefix: "    ", continuation_prefix: "    ")
@@ -282,11 +282,6 @@ module AgentCodingTool
         return
       end
 
-      plain_prefix = "#{id}: #{status} — "
-      colored_prefix = "#{id}: #{colorize_status(status)} — "
-      puts_wrapped(item.fetch("title"), first_prefix: colored_prefix,
-                                        first_prefix_width: plain_prefix.length,
-                                        continuation_prefix: " " * plain_prefix.length)
       if %w[READY CANDIDATE].include?(status)
         depth, count, unlock_count, parallel_width = completion_metrics.fetch(id, [0, 0, 0, 0])
         detail = "downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}; " \
@@ -334,8 +329,12 @@ module AgentCodingTool
     end
 
     def compact_detail_line(label, text)
-      normalized = text.to_s.gsub(/[[:space:]]+/, " ").strip
+      normalized = normalize_dashboard_text(text)
       truncate_display_line("    #{label}: #{normalized}", dashboard_width)
+    end
+
+    def normalize_dashboard_text(text)
+      text.to_s.gsub(/[[:space:]]+/, " ").strip
     end
 
     def truncate_display_line(text, width)
@@ -382,14 +381,6 @@ module AgentCodingTool
         (0x1F1E6..0x1F1FF).cover?(codepoint) ||
         (0x1F300..0x1FAFF).cover?(codepoint) ||
         (0x20000..0x3FFFD).cover?(codepoint)
-    end
-
-    def truncate_title(title, width)
-      return "" unless width.positive?
-      return title if title.length <= width
-      return "…" if width == 1
-
-      "#{title[0, width - 1].rstrip}…"
     end
 
     def pluralize(count, noun)

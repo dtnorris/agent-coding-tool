@@ -352,7 +352,7 @@ class CLITest < Minitest::Test
     ], lines
   end
 
-  def test_status_wraps_dashboard_titles_and_reasons_with_deliberate_indentation
+  def test_status_truncates_dashboard_headlines_and_wraps_reasons_with_deliberate_indentation
     statuses = [
       { "id" => "B1", "status" => "BLOCKED",
         "title" => "A blocked title with enough words to wrap cleanly",
@@ -371,23 +371,21 @@ class CLITest < Minitest::Test
 
     assert_equal 0, cli.run(%w[status])
     assert_equal [
-      "F1: IN_FLIGHT — An in flight title with e…",
+      "F1: IN_FLIGHT — An in flight title with...",
       "    A long diagnostic that remains visibly",
       "    subordinate when wrapped",
       "",
-      "R1: READY — A ready title with enough",
-      "            words to wrap cleanly",
+      "R1: READY — A ready title with enough w...",
       "    downstream: 0 levels / 0 tasks;",
       "    unlocks: 0 tasks / 0 parallel",
       "",
-      "B1: BLOCKED — A blocked title with enough",
-      "              words to wrap cleanly",
+      "B1: BLOCKED — A blocked title with enou...",
       "    waiting on: R1, R2, R3, R4"
     ], out.string.lines.map(&:chomp)
     in_flight_line = out.string.lines.find { |line| line.start_with?("F1: IN_FLIGHT") }
     assert_equal 1, out.string.lines.count { |line| line.start_with?("F1: IN_FLIGHT") }
-    assert in_flight_line.chomp.end_with?("…")
-    assert_operator in_flight_line.chomp.length, :<=, 42
+    assert in_flight_line.chomp.end_with?("...")
+    assert_operator visible_width(in_flight_line.chomp), :<=, 42
   end
 
   def test_status_wraps_colored_output_by_visible_width
@@ -409,6 +407,115 @@ class CLITest < Minitest::Test
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
     ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_every_broad_status_uses_the_same_single_line_headline_rule
+    statuses = %w[
+      COMPLETE CANDIDATE NEEDS_JUDGMENT IN_FLIGHT READY PREPARED STALE
+      STALE_CANDIDATE BLOCKED FAILED
+    ]
+    statuses.each do |status|
+      item = {
+        "id" => "T1",
+        "status" => status,
+        "title" => "A very long\nheadline\twith repeated   whitespace and TRAILINGTITLEWORD"
+      }
+      case status
+      when "NEEDS_JUDGMENT", "FAILED"
+        item["reason"] = "Short reason"
+        item["next_action"] = "Take the next action" if status == "NEEDS_JUDGMENT"
+        item["state"] = { "result" => { "outcome" => status.downcase } }
+      when "IN_FLIGHT"
+        item["reason"] = "In-flight diagnostic remains subordinate"
+      when "STALE", "STALE_CANDIDATE"
+        item["reason"] = "pushed branch changed: alpha"
+      when "BLOCKED"
+        item["reason"] = "dependencies incomplete: A"
+      end
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                     terminal_width: 44)
+      cli.instance_variable_set(:@coordinator, fake_status_coordinator([item]))
+
+      assert_equal 0, cli.run(%w[status --all]), status
+      headline, *details = out.string.lines.map(&:chomp)
+      assert headline.end_with?("..."), status
+      assert_operator visible_width(headline), :<=, 44, status
+      refute_includes headline, "\n", status
+      refute_includes headline, "\t", status
+      refute details.any? { |line| line.include?("TRAILINGTITLEWORD") }, status
+    end
+  end
+
+  def test_headline_truncation_adapts_to_three_terminal_widths_and_preserves_fitting_titles
+    long_status = {
+      "id" => "P1", "status" => "PREPARED",
+      "title" => "A prepared headline whose final words must never wrap onto another line"
+    }
+    headlines = [72, 46, 24].map do |width|
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                     terminal_width: width)
+      cli.instance_variable_set(:@coordinator, fake_status_coordinator([long_status]))
+
+      assert_equal 0, cli.run(%w[status])
+      assert_equal 1, out.string.lines.length
+      headline = out.string.chomp
+      assert headline.end_with?("...")
+      assert_operator visible_width(headline), :<=, width
+      headline
+    end
+    assert_equal 3, headlines.uniq.length
+
+    fitting = { "id" => "S1", "status" => "STALE", "title" => "Short title" }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 80)
+    cli.instance_variable_set(:@coordinator, fake_status_coordinator([fitting]))
+    assert_equal 0, cli.run(%w[status])
+    assert_equal "S1: STALE — Short title\n", out.string
+    refute_includes out.string, "..."
+  end
+
+  def test_headline_truncation_handles_ansi_wide_unicode_and_combining_graphemes
+    title = "\e[35m#{("界e\u0301" * 20)}\e[0m"
+    status = { "id" => "R1", "status" => "READY", "title" => title }
+    coordinator = fake_status_coordinator([status])
+    plain = StringIO.new
+    plain_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: plain, err: StringIO.new,
+                                         terminal_width: 37)
+    plain_cli.instance_variable_set(:@coordinator, coordinator)
+    tty = TTYOutput.new(37)
+    color_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: tty, err: StringIO.new)
+    color_cli.instance_variable_set(:@coordinator, coordinator)
+    previous_no_color = ENV.delete("NO_COLOR")
+
+    assert_equal 0, plain_cli.run(%w[status])
+    assert_equal 0, color_cli.run(%w[status])
+    plain_headline = plain.string.lines.first.chomp
+    color_headline = tty.string.lines.first.chomp
+    assert plain_headline.end_with?("...")
+    assert_operator visible_width(plain_headline), :<=, 37
+    assert_operator visible_width(color_headline), :<=, 37
+    assert_includes plain_headline, "\e[0m..."
+    assert_equal strip_ansi(plain_headline), strip_ansi(color_headline)
+    final_cluster = strip_ansi(plain_headline.delete_suffix("...")).scan(/\X/).last
+    refute final_cluster.match?(/\A\p{M}/)
+  ensure
+    ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_explicit_status_preserves_full_title_and_diagnostic
+    title = "A complete original title that is much wider than the requested dashboard width"
+    reason = "pushed branch changed: alpha"
+    status = { "id" => "S1", "status" => "STALE", "title" => title, "reason" => reason }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 20)
+    cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
+
+    assert_equal 0, cli.run(%w[status S1])
+    assert_equal "S1: STALE — #{title}\n    #{reason}\n", out.string
   end
 
   def test_status_compacts_needs_judgment_handoff_at_dynamic_widths
@@ -477,6 +584,7 @@ class CLITest < Minitest::Test
       cli.instance_variable_set(:@coordinator, coordinator)
       assert_equal 0, cli.run(%w[status])
 
+      assert_operator visible_width(out.string.lines.first.chomp), :<=, width
       out.string.lines.map(&:chomp).last(3).each do |line|
         assert_operator visible_width(line), :<=, width
       end
@@ -557,8 +665,8 @@ class CLITest < Minitest::Test
     assert_equal 0, plain_cli.run(%w[status])
     assert_equal 0, color_cli.run(%w[status])
     assert_equal 1, plain.string.lines.length
-    assert plain.string.chomp.end_with?("…")
-    assert_operator plain.string.chomp.length, :<=, 36
+    assert plain.string.chomp.end_with?("...")
+    assert_operator visible_width(plain.string.chomp), :<=, 36
     assert_includes tty.string, "\e[36mIN_FLIGHT\e[0m"
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
@@ -574,7 +682,7 @@ class CLITest < Minitest::Test
     cli.instance_variable_set(:@coordinator, coordinator)
 
     assert_equal 0, cli.run(%w[status])
-    assert_equal ["F1: IN_FLIGHT — "], out.string.lines.map(&:chomp)
+    assert_equal ["F1: IN_FL..."], out.string.lines.map(&:chomp)
   end
 
   def test_status_uses_columns_for_non_tty_output_and_honors_no_color
@@ -592,9 +700,7 @@ class CLITest < Minitest::Test
     assert_equal 0, cli.run(%w[status])
     refute_includes out.string, "\e["
     assert_equal [
-      "K1: CANDIDATE — A candidate title",
-      "                that wraps",
-      "                predictably",
+      "K1: CANDIDATE — A candidate tit...",
       "    downstream: 0 levels / 0",
       "    tasks; unlocks: 0 tasks / 0",
       "    parallel"
@@ -951,6 +1057,10 @@ class CLITest < Minitest::Test
 
   def visible_width(text)
     AgentCodingTool::CLI.allocate.send(:display_width, text)
+  end
+
+  def strip_ansi(text)
+    text.gsub(/\e\[[0-?]*[ -\/]*[@-~]/, "")
   end
 
   def task_definition(id, depends_on = [])

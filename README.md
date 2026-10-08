@@ -132,12 +132,13 @@ reserve repositories. Default and `--active` dashboards show only the three
 easiest dependency blockers, ranked by fewest incomplete dependencies; explicit
 `blocked` outcomes without measurable dependency counts rank after
 dependency-derived blockers. `--all` remains exhaustive. Major groups are
-separated by a blank line. Long broad-dashboard titles and diagnostics wrap to
-the terminal width with subordinate or hanging indentation, except IN_FLIGHT
-task rows, which remain on one line and truncate their title with an ellipsis
-when necessary. Reasons render on an indented second line, and dependency
-blockers use the compact `waiting on:` label. When output is a TTY, status
-labels are colored; set `NO_COLOR` to disable ANSI color.
+separated by a blank line. Every broad-dashboard task headline remains on one
+line; embedded title whitespace is normalized, and long headlines truncate to
+the terminal width with ASCII `...`. Subordinate details retain their own
+wrapping or truncation behavior. Explicit `status TASK` lookup shows the full
+original title and details. Dependency blockers use the compact `waiting on:`
+label. When output is a TTY, status labels are colored; set `NO_COLOR` to
+disable ANSI color.
 
 Recorded `NEEDS_JUDGMENT` rows provide a compact operator handoff: a `reason:`,
 an optional explicitly recorded `next:`, and the mechanical `resume: act

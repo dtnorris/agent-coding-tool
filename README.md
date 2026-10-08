@@ -151,6 +151,12 @@ Prepared, in-flight, and candidate tasks are compared against current pushed
 heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
 movement preserves the state with a refresh/reconciliation warning.
 Presentation filtering does not alter task state or dependency resolution.
+Fresh `PREPARED` rows also show live reasons when normal `start` is currently
+blocked by a fresh `IN_FLIGHT` or `CANDIDATE` writer with the same authoritative
+repository and branch. These terminal-width-aware diagnostics are recalculated
+on every status query and disappear with the collision; they do not change the
+task's `PREPARED` state. `PREPARED`/`PREPARED` overlap remains advisory, and
+explicit `status TASK` shows every blocker without dashboard truncation.
 
 Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` →
 `received` → `CANDIDATE` → `finish` → `COMPLETE`. `received` is shorthand for

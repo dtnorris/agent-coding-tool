@@ -27,14 +27,39 @@ module AgentCodingTool
     def statuses(ids = nil, completion_filter: :all)
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
       selected_tasks = filter_completed_tasks(selected_tasks, completion_filter) unless ids
-      contexts = selected_tasks.map { |task| status_context(task) }
+      selected_contexts = selected_tasks.map { |task| status_context(task) }
+      overlaps_by_id = {}
+      blocker_ids = selected_contexts.filter_map do |context|
+        pending = context["pending"]
+        next unless pending && !pending.fetch("outcome") && !pending.fetch("state")["started_at"]
+
+        task = pending.fetch("task")
+        overlaps = write_collision_overlaps(task.fetch("id"), task, pending.fetch("snapshot"))
+        overlaps_by_id[task.fetch("id")] = overlaps
+        overlaps.keys
+      end.flatten.uniq
+      selected_ids = selected_tasks.to_h { |task| [task.fetch("id"), true] }
+      blocker_contexts = blocker_ids.reject { |id| selected_ids.key?(id) }
+                                    .map { |id| status_context(@task_store.load(id)) }
+      contexts = selected_contexts + blocker_contexts
       references = contexts.filter_map { |context| context["pending"] }.flat_map do |pending|
         freshness_references(pending.fetch("task"), pending.fetch("snapshot"))
       end
       pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references)
 
-      contexts.map do |context|
-        context["status"] || freshness_status(context.fetch("pending"), pushed_heads)
+      resolved = contexts.to_h do |context|
+        status = context["status"] || freshness_status(context.fetch("pending"), pushed_heads)
+        [status.fetch("id"), status]
+      end
+
+      selected_contexts.map do |context|
+        id = (context["status"] || context.fetch("pending").fetch("task")).fetch("id")
+        status = resolved.fetch(id)
+        next status unless status.fetch("status") == "PREPARED"
+
+        collisions = collision_records(overlaps_by_id.fetch(id, {}), resolved.values,
+                                       states: START_COLLISION_STATES)
+        collisions.empty? ? status : status.merge("write_collisions" => collisions)
       end
     end
 
@@ -336,10 +361,17 @@ module AgentCodingTool
     end
 
     def write_collisions(id, task, snapshot, states:)
-      target_authorities = writable_authorities(task, snapshot)
-      return [] if target_authorities.empty?
+      overlaps = write_collision_overlaps(id, task, snapshot)
+      return [] if overlaps.empty?
 
-      overlaps = tasks.each_with_object({}) do |other_task, found|
+      collision_records(overlaps, statuses(overlaps.keys), states:)
+    end
+
+    def write_collision_overlaps(id, task, snapshot)
+      target_authorities = writable_authorities(task, snapshot)
+      return {} if target_authorities.empty?
+
+      tasks.each_with_object({}) do |other_task, found|
         other_id = other_task.fetch("id")
         next if other_id == id
 
@@ -351,10 +383,12 @@ module AgentCodingTool
 
         found[other_id] = shared.flat_map { |authority| target_authorities.fetch(authority) }.uniq.sort
       end
-      return [] if overlaps.empty?
+    end
 
-      statuses(overlaps.keys).filter_map do |status|
+    def collision_records(overlaps, effective_statuses, states:)
+      effective_statuses.filter_map do |status|
         next unless states.include?(status.fetch("status"))
+        next unless overlaps.key?(status.fetch("id"))
 
         {
           "task_id" => status.fetch("id"),

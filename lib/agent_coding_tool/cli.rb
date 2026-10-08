@@ -294,6 +294,7 @@ module AgentCodingTool
       elsif item["reason"]
         puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ")
       end
+      display_dashboard_write_collisions(item)
     end
 
     def display_compact_handoff(item)
@@ -303,14 +304,37 @@ module AgentCodingTool
     end
 
     def display_explicit_details(item)
-      unless recorded_retryable_outcome?(item)
+      if recorded_retryable_outcome?(item)
+        puts_full_detail("reason", item["reason"]) if item["reason"]
+        puts_full_detail("next", item["next_action"]) if item.key?("next_action")
+        puts_full_detail("resume", "act prepare #{item.fetch('id')} --retry")
+      else
         @out.puts "    #{display_reason(item)}" if item["reason"]
-        return
       end
 
-      puts_full_detail("reason", item["reason"]) if item["reason"]
-      puts_full_detail("next", item["next_action"]) if item.key?("next_action")
-      puts_full_detail("resume", "act prepare #{item.fetch('id')} --retry")
+      write_collisions(item).each do |collision|
+        puts_full_detail("reason", write_collision_detail(collision))
+      end
+    end
+
+    def display_dashboard_write_collisions(item)
+      collisions = write_collisions(item)
+      return if collisions.empty?
+
+      detail = collisions.map { |collision| write_collision_detail(collision, prefix: false) }.join("; ")
+      count = collisions.length
+      summary = count == 1 ? "cannot start; #{detail}" : "cannot start; #{count} blockers: #{detail}"
+      @out.puts compact_detail_line("reason", summary)
+    end
+
+    def write_collisions(item)
+      item.fetch("write_collisions", [])
+    end
+
+    def write_collision_detail(collision, prefix: true)
+      repositories = collision.fetch("repositories").join(", ")
+      detail = "#{collision.fetch('task_id')} (#{collision.fetch('status')}) writes #{repositories}"
+      prefix ? "cannot start; #{detail}" : detail
     end
 
     def recorded_retryable_outcome?(item)

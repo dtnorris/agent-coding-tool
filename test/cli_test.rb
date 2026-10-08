@@ -1000,6 +1000,103 @@ class CLITest < Minitest::Test
     assert_equal "B1: BLOCKED — Blocked task\n    waiting on: R1\n", out.string
   end
 
+  def test_status_dashboards_show_live_blocker_without_treating_prepared_tasks_as_blockers
+    with_workspace do |dir|
+      %w[IG-09C IG-07A IG-11C].each { |id| write_task(dir, id:, title: "Pipeline work") }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      %w[IG-09C IG-07A IG-11C].each { |id| coordinator.prepare(id) }
+      coordinator.start("IG-09C")
+
+      [%w[status], %w[status --active], %w[status --all]].each do |argv|
+        output = run_status(dir, coordinator, argv)
+        assert_includes output,
+                        "IG-07A: PREPARED — Pipeline work\n" \
+                        "    reason: cannot start; IG-09C (IN_FLIGHT) writes alpha\n"
+        assert_includes output,
+                        "IG-11C: PREPARED — Pipeline work\n" \
+                        "    reason: cannot start; IG-09C (IN_FLIGHT) writes alpha\n"
+        refute_includes output, "cannot start; IG-07A"
+        refute_includes output, "cannot start; IG-11C"
+      end
+    end
+  end
+
+  def test_collision_reason_is_width_bounded_and_unicode_and_ansi_aware
+    status = {
+      "id" => "P1", "status" => "PREPARED", "title" => "Prepared work",
+      "write_collisions" => [{
+        "task_id" => "RUNNER", "status" => "IN_FLIGHT",
+        "repositories" => ["\e[31m界界界界界\e[0m-repository"]
+      }]
+    }
+    coordinator = fake_status_coordinator([status])
+    saw_ansi_repository = false
+
+    [34, 52, 84].each do |width|
+      out = TTYOutput.new(width)
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[status --all])
+      reason = out.string.lines.find { |line| strip_ansi(line).include?("reason:") }.chomp
+      assert_operator visible_width(reason), :<=, width
+      assert_equal 1, out.string.lines.count { |line| strip_ansi(line).include?("reason:") }
+      assert reason.end_with?("...") if width < 84
+      if reason.include?("\e[31m")
+        saw_ansi_repository = true
+        assert_includes reason, "\e[0m"
+      end
+    end
+    assert saw_ansi_repository
+  end
+
+  def test_multiple_blockers_are_counted_in_broad_status_and_complete_in_explicit_status
+    status = {
+      "id" => "P1", "status" => "PREPARED", "title" => "Prepared work",
+      "write_collisions" => [
+        { "task_id" => "A", "status" => "IN_FLIGHT", "repositories" => %w[alpha beta] },
+        { "task_id" => "C", "status" => "CANDIDATE", "repositories" => ["gamma"] }
+      ]
+    }
+    coordinator = fake_status_coordinator([status])
+    broad = StringIO.new
+    broad_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: broad, err: StringIO.new,
+                                         terminal_width: 58)
+    broad_cli.instance_variable_set(:@coordinator, coordinator)
+
+    assert_equal 0, broad_cli.run(%w[status --all])
+    reason = broad.string.lines.find { |line| line.include?("reason:") }.chomp
+    assert_includes reason, "cannot start; 2 blockers:"
+    assert reason.end_with?("...")
+    assert_operator visible_width(reason), :<=, 58
+
+    explicit = StringIO.new
+    explicit_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: explicit, err: StringIO.new,
+                                            terminal_width: 20)
+    explicit_cli.instance_variable_set(:@coordinator, coordinator)
+    assert_equal 0, explicit_cli.run(%w[status P1])
+    assert_includes explicit.string, "    reason: cannot start; A (IN_FLIGHT) writes alpha, beta\n"
+    assert_includes explicit.string, "    reason: cannot start; C (CANDIDATE) writes gamma\n"
+  end
+
+  def test_read_only_refresh_and_collision_are_distinct_dashboard_diagnostics
+    status = {
+      "id" => "P1", "status" => "PREPARED", "title" => "Prepared work",
+      "reason" => "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: docs",
+      "write_collisions" => [{
+        "task_id" => "A", "status" => "IN_FLIGHT", "repositories" => ["pipeline"]
+      }]
+    }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 100)
+    cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
+
+    assert_equal 0, cli.run(%w[status --all])
+    assert_includes out.string, "read-only pushed branch changed"
+    assert_includes out.string, "    reason: cannot start; A (IN_FLIGHT) writes pipeline\n"
+  end
+
   def test_status_rejects_conflicting_completion_filters
     with_workspace do |dir|
       write_task(dir, id: "T1")

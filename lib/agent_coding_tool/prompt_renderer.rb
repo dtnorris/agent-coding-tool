@@ -2,7 +2,7 @@
 
 module AgentCodingTool
   class PromptRenderer
-    def render(task, snapshot)
+    def render(task, snapshot, dependencies: [])
       writable = task.fetch("repositories").select { |_name, spec| spec.fetch("access") == "write" }
       read_only = task.fetch("repositories").select { |_name, spec| spec.fetch("access") == "read_only" }
 
@@ -13,6 +13,7 @@ module AgentCodingTool
       lines << "For GitHub reads, prefer the connected GitHub tools/API. Do not open github.com in the cloud browser when the connected integration can perform the required repository read."
       lines << "Do not request GitHub website-access permission merely to inspect repositories, branches, commits, files, or pushed heads."
       lines << "If a required GitHub operation is unavailable through the connected tooling, report that limitation rather than silently switching to the browser."
+      lines << "Unless a task-specific constraint explicitly restricts reads, you may inspect other connected GitHub repositories for prerequisites and context. The repository lists below are not an exhaustive read allowlist."
       lines << ""
       lines << "The pushed branch heads recorded below are the preparation snapshot. Refresh these pushed heads before doing any work and again before finalizing."
       lines << "Writable repositories: if any pushed head differs from the preparation snapshot, stop and report STALE INPUT rather than silently continuing. A new preparation (with explicit retry if an outcome was recorded) is required."
@@ -29,9 +30,11 @@ module AgentCodingTool
       lines << ""
       append_repo_section(lines, "Writable repositories", writable)
       append_repo_section(lines, "Read-only repositories", read_only)
+      lines << "Only the repositories designated writable above may be modified for this task. Other connected repositories, including the task-data repository, may be read when needed; reading one does not grant write authority."
       lines << "Do not commit, push, create a PR, or otherwise mutate GitHub."
-      lines << "Do not broaden repository scope. If the task cannot be completed correctly within the stated boundary, report the dependency or compatibility defect instead."
+      lines << "Do not broaden write scope or override explicit task-specific read restrictions. If the task cannot be completed correctly within the stated boundary, report the dependency or compatibility defect instead."
       lines << ""
+      append_dependencies(lines, dependencies)
       lines << "## Goal"
       lines << ""
       lines << task.fetch("goal", task.fetch("title")).to_s.strip
@@ -42,6 +45,33 @@ module AgentCodingTool
     end
 
     private
+
+    def append_dependencies(lines, dependencies)
+      return if dependencies.empty?
+
+      lines << "## Prerequisites (required COMPLETE)"
+      lines << ""
+      lines << "These are ACT preparation-time observations from local task state, not independent proof of pushed completion. Before work, read the corresponding task/state in the connected task-data repository and verify any substantive pushed evidence required by the task. Resolve the state path's checkout remote; later pushed heads may differ from the recorded completion snapshot. If pushed completion or required evidence is absent, stop with the precise prerequisite failure. Reading task data is permitted, but writing it is not authorized by this prompt."
+      dependencies.each do |dependency|
+        lines << "- #{dependency.fetch('id')}: ACT outcome #{dependency.fetch('outcome') || 'missing'}"
+        lines << "  - local state: #{dependency.fetch('state_path')}"
+        completion = dependency["completion_snapshot"]
+        if completion.is_a?(Hash) && !completion.empty?
+          lines << "  - ACT recorded completion pushed heads (provenance, verify independently):"
+          completion.each do |name, repo|
+            unless repo.is_a?(Hash) && %w[remote_url branch pushed_sha].all? { |field| repo[field].is_a?(String) && !repo[field].empty? }
+              lines << "    - #{name}: incomplete completion provenance; verify pushed evidence independently"
+              next
+            end
+
+            lines << "    - #{name}: #{repo.fetch('remote_url')} #{repo.fetch('branch')} #{repo.fetch('pushed_sha')}"
+          end
+        else
+          lines << "  - completion snapshot: unavailable; pushed completion evidence is unverified"
+        end
+      end
+      lines << ""
+    end
 
     def append_repo_section(lines, title, repos)
       return if repos.empty?

@@ -198,6 +198,85 @@ class CoordinatorTest < Minitest::Test
     end
   end
 
+  def test_ig_13a_shaped_preparation_hands_off_both_dependencies_and_read_authority
+    with_workspace do |dir|
+      write_task(dir, id: "IG-05A", repositories: { "adventure-finder" => { "access" => "write" } })
+      write_task(dir, id: "IG-09C", repositories: { "af-data-pipeline" => { "access" => "write" } })
+      repositories = {
+        "af-data-pipeline" => { "access" => "write" },
+        "adventure-finder" => { "access" => "read_only" },
+        "af-workloads" => { "access" => "read_only" },
+        "af-cli-scoring-utility" => { "access" => "read_only" },
+        "af-xlsx-data-sources" => { "access" => "read_only" }
+      }
+      write_task(dir, id: "IG-13A", depends_on: %w[IG-05A IG-09C], repositories: repositories)
+      heads = repositories.keys.to_h { |name| [name, name == "af-data-pipeline" ? "b" * 40 : "a" * 40] }
+      coordinator = coordinator_for(dir, heads)
+      coordinator.record("IG-05A", outcome: "complete")
+      coordinator.record("IG-09C", outcome: "complete")
+
+      prompt = coordinator.prepare("IG-13A").fetch("prompt")
+      assert_includes prompt, "## Prerequisites (required COMPLETE)"
+      assert_includes prompt, "- IG-05A: ACT outcome complete"
+      assert_includes prompt, "- IG-09C: ACT outcome complete"
+      assert_includes prompt, "#{dir}/state/IG-05A.yml"
+      assert_includes prompt, "#{dir}/state/IG-09C.yml"
+      assert_includes prompt, "git@github.com:example/af-data-pipeline.git main #{'b' * 40}"
+      assert_includes prompt, "not independent proof of pushed completion"
+      assert_includes prompt, "read the corresponding task/state in the connected task-data repository"
+      assert_includes prompt, "including the task-data repository, may be read"
+      assert_includes prompt, "Only the repositories designated writable above may be modified"
+      assert_includes prompt, "## Writable repositories\n\n- af-data-pipeline\n"
+      refute_includes prompt, "## Writable repositories\n\n- agent-coding-tool-data"
+      assert_equal prompt, File.read(coordinator.status("IG-13A").dig("state", "prompt_path"))
+    end
+  end
+
+  def test_missing_dependency_completion_snapshot_is_explicitly_unverified
+    with_workspace do |dir|
+      write_task(dir, id: "A")
+      write_task(dir, id: "B", depends_on: ["A"])
+      store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+      store.write("A", { "id" => "A", "result" => { "outcome" => "complete" } })
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+
+      prompt = coordinator.prepare("B").fetch("prompt")
+      assert_includes prompt, "- A: ACT outcome complete"
+      assert_includes prompt, "completion snapshot: unavailable; pushed completion evidence is unverified"
+      refute_includes prompt, "ACT recorded completion pushed heads"
+    end
+  end
+
+  def test_incomplete_completion_provenance_is_not_presented_as_a_verified_head
+    with_workspace do |dir|
+      write_task(dir, id: "A")
+      write_task(dir, id: "B", depends_on: ["A"])
+      store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+      store.write("A", {
+                    "id" => "A", "result" => { "outcome" => "complete" },
+                    "completion_snapshot" => { "alpha" => { "pushed_sha" => "a" * 40 } }
+                  })
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+
+      prompt = coordinator.prepare("B").fetch("prompt")
+      assert_includes prompt, "alpha: incomplete completion provenance; verify pushed evidence independently"
+      refute_includes prompt, "alpha:  aaaaaaaaaa"
+    end
+  end
+
+  def test_incomplete_dependency_does_not_emit_prompt_or_snapshot
+    with_workspace do |dir|
+      write_task(dir, id: "IG-05A")
+      write_task(dir, id: "IG-13A", depends_on: ["IG-05A"])
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+
+      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.prepare("IG-13A") }
+      assert_equal "IG-13A: dependencies incomplete: IG-05A", error.message
+      assert_empty Dir[File.join(dir, "state/prompts/IG-13A-*.txt")]
+      assert_empty coordinator.status("IG-13A").fetch("state")
+    end
+  end
+
   def test_prepare_renders_exact_pushed_heads_and_scope
     with_workspace do |dir|
       repos = {
@@ -222,7 +301,7 @@ class CoordinatorTest < Minitest::Test
       assert_includes prompt, "## Writable repositories"
       assert_includes prompt, "## Read-only repositories"
       assert_includes prompt, "report STALE INPUT"
-      assert_includes prompt, "Do not broaden repository scope"
+      assert_includes prompt, "Do not broaden write scope or override explicit task-specific read restrictions"
       assert File.file?(result.dig("state", "prompt_path"))
     end
   end

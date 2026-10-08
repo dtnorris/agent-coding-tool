@@ -101,7 +101,8 @@ module AgentCodingTool
     def prepare(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
-      incomplete = incomplete_dependencies(task)
+      dependencies = preparation_dependencies(task)
+      incomplete = dependencies.filter_map { |dependency| dependency.fetch("id") unless dependency.fetch("outcome") == "complete" }
       unless incomplete.empty?
         raise InvalidState, "#{id}: dependencies incomplete: #{incomplete.join(', ')}"
       end
@@ -115,7 +116,7 @@ module AgentCodingTool
       end
 
       snapshot = snapshot_task(task)
-      prompt = @prompt_renderer.render(task, snapshot)
+      prompt = @prompt_renderer.render(task, snapshot, dependencies: dependencies)
       collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
       timestamp = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
       prompt_path = File.join(@prompt_root, "#{id}-#{timestamp}.txt")
@@ -288,6 +289,18 @@ module AgentCodingTool
     def incomplete_dependencies(task)
       task.fetch("depends_on", []).reject do |dependency|
         @state_store.load(dependency).dig("result", "outcome") == "complete"
+      end
+    end
+
+    def preparation_dependencies(task)
+      task.fetch("depends_on", []).map do |id|
+        state = @state_store.load(id)
+        {
+          "id" => id,
+          "outcome" => state.dig("result", "outcome"),
+          "state_path" => @state_store.state_path(id),
+          "completion_snapshot" => state["completion_snapshot"]
+        }
       end
     end
 

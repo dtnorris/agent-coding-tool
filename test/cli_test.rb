@@ -75,6 +75,55 @@ class CLITest < Minitest::Test
     end
   end
 
+  def test_prepare_writes_and_prints_one_documentation_section_for_spec_and_source_only_tasks
+    with_workspace do |dir|
+      write_task(dir, id: "SPEC", repositories: { "spec" => { "access" => "write" } })
+      write_task(dir, id: "SOURCE", repositories: { "source" => { "access" => "write" } })
+      path = File.join(dir, "tasks", "SPEC.yml")
+      spec = YAML.safe_load_file(path)
+      spec["constraints"] << "Create VERSIONED_SPEC.md as the authoritative v0.1 contract."
+      File.write(path, YAML.dump(spec))
+      inspector = Class.new(TestHelpers::FakeInspector) do
+        attr_reader :snapshots, :head_batches
+
+        def snapshot(name, spec)
+          @snapshots = (@snapshots || 0) + 1
+          super
+        end
+
+        def pushed_heads(references)
+          @head_batches = (@head_batches || 0) + 1
+          super
+        end
+      end.new(heads: { "spec" => "a" * 40, "source" => "b" * 40 })
+      coordinator = AgentCodingTool::Coordinator.new(
+        task_store: AgentCodingTool::TaskStore.new(File.join(dir, "tasks")),
+        state_store: AgentCodingTool::StateStore.new(File.join(dir, "state")),
+        repo_inspector: inspector, prompt_renderer: AgentCodingTool::PromptRenderer.new,
+        prompt_root: File.join(dir, "state", "prompts")
+      )
+
+      %w[SPEC SOURCE].each do |id|
+        out = StringIO.new
+        cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 0, cli.run(["prepare", id])
+        prompt = File.read(Dir[File.join(dir, "state", "prompts", "#{id}-*.txt")].fetch(0))
+        assert_includes out.string, prompt
+        assert_equal 1, prompt.scan(/^## Documentation discipline$/).length
+        assert_equal 1, out.string.scan(/^## Documentation discipline$/).length
+        assert_includes prompt, "## Goal\n\nDo the bounded thing.\n"
+        assert_includes prompt, "## Acceptance\n\n- Focused tests pass.\n"
+        assert_includes prompt, "git@github.com:example/#{id.downcase}.git"
+        assert_includes prompt, "Only the repositories designated writable above may be modified"
+        assert_includes prompt, "- Create VERSIONED_SPEC.md" if id == "SPEC"
+        refute_includes prompt, "VERSIONED_SPEC.md" if id == "SOURCE"
+      end
+      assert_equal 2, inspector.snapshots
+      assert_nil inspector.head_batches
+    end
+  end
+
   def test_start_command_and_status
     with_workspace do |dir|
       write_task(dir, id: "T1")

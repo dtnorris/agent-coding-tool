@@ -41,6 +41,13 @@ module AgentCodingTool
       lines << ""
       append_list(lines, "Constraints", task.fetch("constraints", []))
       append_list(lines, "Acceptance", task.fetch("acceptance", []))
+      lines << "## Documentation discipline"
+      lines << ""
+      lines << "- Before adding Markdown, inspect relevant existing docs and canonical code contracts. Update an authoritative document when it can capture the change."
+      lines << "- Add a new document when existing docs cannot serve a distinct public or cross-repository contract, architectural decision, safety invariant, operator procedure, required specification, or audience. State its relationship to existing authority; link to normative rules instead of copying them, and distinguish binding contracts from examples."
+      lines << "- Preserve lasting rationale, responsibility boundaries, guarantees, compatibility, and operational consequences in proportion to the change. Code and tests alone may suffice. Avoid Markdown that retells control flow or tests, and keep patch notes, test summaries, temporary analysis, and progress in the handoff or existing outcome records."
+      lines << "- Explicit task documentation and safety requirements take precedence. In the final handoff, briefly explain the enduring purpose of each new Markdown file or summarize relevant updates to existing docs."
+      lines << ""
       lines.join("\n").rstrip + "\n"
     end
 

@@ -65,5 +65,38 @@ class PromptRendererTest < Minitest::Test
     assert_includes prompt, "## Goal\n\nExpose checkout identity.\n"
     assert_includes prompt, "## Constraints\n\n- No paid capacity.\n"
     assert_includes prompt, "## Acceptance\n\n- Focused tests pass.\n"
+    assert_equal 1, prompt.scan(/^## Documentation discipline$/).length
+    assert_operator prompt.index("## Documentation discipline"), :>, prompt.index("## Acceptance")
+    assert_includes prompt, "Code and tests alone may suffice."
+    assert_includes prompt, "Explicit task documentation and safety requirements take precedence."
+  end
+
+  def test_documentation_guidance_is_static_for_explicit_specification_and_source_only_tasks
+    renderer = AgentCodingTool::PromptRenderer.new
+    base = {
+      "id" => "SPEC", "title" => "Define a versioned contract",
+      "repositories" => { "pipeline" => { "access" => "write" } },
+      "goal" => "Publish the public contract.",
+      "constraints" => ["Create VERSIONED_SPEC.md as the authoritative v0.1 contract."],
+      "acceptance" => ["The versioned specification is present."]
+    }
+    snapshot = { "pipeline" => TestHelpers::FakeInspector.new(heads: { "pipeline" => "a" * 40 })
+                                                      .snapshot("pipeline", base.fetch("repositories").fetch("pipeline")) }
+    explicit = renderer.render(base, snapshot)
+    source_only = renderer.render(base.merge(
+      "id" => "SOURCE", "title" => "Adjust source and tests", "goal" => "Fix the source path.",
+      "constraints" => ["Keep the patch to source and tests."], "acceptance" => ["Tests pass."]
+    ), snapshot)
+
+    section = explicit.split("## Documentation discipline\n\n", 2).fetch(1)
+    assert_equal section, source_only.split("## Documentation discipline\n\n", 2).fetch(1)
+    assert_equal 1, explicit.scan(/^## Documentation discipline$/).length
+    assert_equal 1, source_only.scan(/^## Documentation discipline$/).length
+    assert_includes explicit, "## Constraints\n\n- Create VERSIONED_SPEC.md as the authoritative v0.1 contract.\n"
+    assert_includes explicit, "## Acceptance\n\n- The versioned specification is present.\n"
+    assert_includes section, "required specification"
+    assert_includes section, "link to normative rules instead of copying them"
+    assert_includes section, "enduring purpose of each new Markdown file"
+    assert_includes source_only, "## Constraints\n\n- Keep the patch to source and tests.\n"
   end
 end

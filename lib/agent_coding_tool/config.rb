@@ -7,7 +7,8 @@ module AgentCodingTool
     DEFAULTS = {
       "repo_root" => "..",
       "default_remote" => "origin",
-      "default_branch" => "main"
+      "default_branch" => "main",
+      "publish_repository" => "dtnorris/agent-coding-tool-data"
     }.freeze
 
     def self.load(path)
@@ -23,5 +24,6 @@ module AgentCodingTool
     def repo_root = File.expand_path(@data.fetch("repo_root"), @base_dir)
     def default_remote = @data.fetch("default_remote")
     def default_branch = @data.fetch("default_branch")
+    def publish_repository = @data.fetch("publish_repository")
   end
 end

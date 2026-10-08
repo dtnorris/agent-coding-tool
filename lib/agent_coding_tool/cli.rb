@@ -68,6 +68,7 @@ module AgentCodingTool
       when "finish" then finish_command(argv)
       when "record" then record_command(argv)
       when "reset" then reset_command(argv)
+      when "publish" then publish_command(argv)
       when "help", nil then help
       else
         raise Error, "unknown command: #{command}"
@@ -79,6 +80,44 @@ module AgentCodingTool
     end
 
     private
+
+    def publish_command(argv)
+      unless argv.count("--dry-run") <= 1 && argv.count("--all") <= 1 &&
+             argv.all? { |arg| !arg.start_with?("-") || %w[--all --dry-run].include?(arg) }
+        raise Error, "usage: agent-coding-tool publish [TASK | --all] [--dry-run]"
+      end
+      dry_run = argv.delete("--dry-run")
+      all = argv.delete("--all")
+      if argv.length > 1 || (all && !argv.empty?) || argv.any? { |arg| arg.start_with?("-") }
+        raise Error, "usage: agent-coding-tool publish [TASK | --all] [--dry-run]"
+      end
+
+      task_id = argv.first
+      config = Config.load(File.join(@data_root, "config.yml"))
+      publisher = Publisher.new(data_root: @data_root, config: config,
+                                task_store: TaskStore.new(File.join(@data_root, "tasks")))
+      result = publisher.publish(mode: all ? :all : task_id ? :task : :default,
+                                 task_id: task_id, dry_run: !!dry_run)
+      @out.puts(dry_run ? "DRY RUN (no changes made)" : "ACTD publication")
+      @out.puts "Mode: #{result.fetch(:mode)}"
+      @out.puts "Repository: #{result.fetch(:repository)}"
+      @out.puts "Destination: #{result.fetch(:remote)}/#{result.fetch(:branch)}"
+      @out.puts "Files (#{result.fetch(:files).length}):"
+      result.fetch(:files).each { |path| @out.puts "  #{path}" }
+      @out.puts "Existing staged changes: #{result.fetch(:staged).join(', ')}" if dry_run
+      @out.puts "Commit needed: #{result.fetch(:commit_needed)}" if dry_run
+      @out.puts "Push needed: #{result.fetch(:push_needed)}" if dry_run
+      if result[:blocker]
+        @out.puts "BLOCKED: #{result.fetch(:blocker)}"
+        raise Error, "publication blocked: #{result.fetch(:blocker)}" unless dry_run
+      elsif dry_run
+        @out.puts "Remote publication was not attempted."
+      elsif result[:pushed]
+        @out.puts "PUBLISHED: #{result.fetch(:sha)} (remote ref verified)"
+      else
+        @out.puts "No selected local changes; already synchronized with remote."
+      end
+    end
 
     def coordinator
       @coordinator ||= begin
@@ -605,6 +644,8 @@ module AgentCodingTool
           record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]
                               generic/manual outcome primitive
           reset TASK
+          publish [TASK | --all] [--dry-run]
+                              explicitly commit and push ACTD changes
 
         Outcomes:
           candidate_complete  worker result is ready for human application/review

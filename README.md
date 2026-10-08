@@ -8,9 +8,9 @@ Operational task definitions, project details, generated prompts, and runtime
 state live in a separate data directory and are never required to be committed
 here.
 
-The tool does not launch agents, plan architecture, parse chat prose, merge
-code, commit, push, or mutate GitHub. Its first job is to make the existing
-human-directed workflow cheaper and safer.
+The tool does not launch agents, plan architecture, parse chat prose, or merge
+code. Lifecycle commands remain local. The explicit `publish` command commits
+and pushes selected changes in the configured private data checkout only.
 
 ## V1 contract
 
@@ -36,7 +36,8 @@ human-directed workflow cheaper and safer.
   attempted.
 - `needs_judgment` and `blocked` are normal outcomes, not failures to be
   auto-retried.
-- The tool never commits, pushes, opens PRs, or otherwise mutates GitHub.
+- Lifecycle commands never commit or push. `publish` is a separate operator
+  action limited to the verified data checkout; it never opens PRs.
 
 ## Source/data separation
 
@@ -57,7 +58,7 @@ The data directory may itself be a private Git repository. Its expected
 contents are:
 
 - `config.yml` — optional overrides for repository root and default
-  remote/branch.
+  remote/branch and optional `publish_repository` identity.
 - `tasks/*.yml` — durable human-authored task definitions.
 - `state/*.yml` — explicit runtime/result state.
 - `state/prompts/*.txt` — generated worker prompts.
@@ -66,6 +67,10 @@ When `config.yml` is absent, `repo_root` defaults to the parent of the data
 directory, `default_remote` to `origin`, and `default_branch` to `main`.
 Relative `repo_root` values are resolved from the data directory. See
 `examples/config.yml`.
+Publication expects `dtnorris/agent-coding-tool-data` by default. The
+`publish_repository` setting can explicitly name another `owner/repository`
+or an absolute local bare-repository path for offline fixtures. GitHub SSH
+and HTTPS remote forms are normalized for identity verification.
 
 The public repository also ignores legacy/local `config.yml`, `tasks/`,
 `state/`, and `data/` paths as a fail-safe against accidentally committing
@@ -97,6 +102,8 @@ An optional `worker_recommendation` mapping supplies non-empty `model` and
 6. Apply/review the worker artifact yourself. Once the task has actually landed
    on authoritative pushed state, run `bin/agent-coding-tool finish TASK`.
 7. Dependent tasks become ready only after that explicit completion.
+8. Run `bin/agent-coding-tool publish` when ready to commit and push pending
+   lifecycle state. Publication is never implicit in steps 3–6.
 
 A worker that discovers a bad task breakout should be recorded as `blocked` or
 `needs_judgment`, not encouraged to broaden scope.
@@ -248,11 +255,40 @@ that moment.
 Clears runtime state for a task, including the in-flight marker. The task
 definition is untouched.
 
+`bin/agent-coding-tool publish [TASK | --all] [--dry-run]`
+
+Publication is an explicit operator action against the configured data
+checkout. Without arguments it commits pending `state/*.yml` and
+`state/prompts/*.txt` changes across tasks. With a task ID it selects only
+that task's state and timestamped generated prompts. `--all` commits all
+ordinary tracked and nonignored untracked ACTD changes, including task
+definitions and documentation. Each mode accepts `--dry-run`, which previews
+the selected files, existing staged paths, commit/push need, and blockers
+without staging or updating refs.
+
+The command verifies the checkout root, expected remote identity, configured
+branch, and exact remote head. Narrow modes use a path-specific commit, so
+unrelated staged work is preserved; a selected file with conflicting staged
+and working versions blocks publication. A previously unpublished local
+commit blocks new publication unless it is exactly one commit created by the
+same `publish` mode over the unchanged remote base. In that case the command
+retries the normal push. No force push, merge, reset, or rebase occurs. A
+failed push retains the local commit and reports its SHA; retry the same
+`publish` invocation after resolving the blocker. The command reports
+`PUBLISHED` only after reading back the remote ref.
+
 ## Development
 
 Run `rake` for the full test suite. Tests use explicit temporary data
-directories and do not depend on personal task data.
+directories and do not depend on personal task data. The publisher tests in
+the normal suite use a deterministic Git runner fake, so they do not launch
+Git subprocesses. Run the slower disposable-repository smoke tests explicitly
+when changing Git staging or push behavior:
+
+```sh
+ruby -Ilib:test test/integration/publisher_git_integration.rb
+```
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous
-planner, agent-to-agent messaging, or GitHub write path. Add those only when
+planner, or agent-to-agent messaging. Add those only when
 repeated real workflow friction demonstrates a need.

@@ -3,3 +3,5 @@
 repo_root: ..
 default_remote: origin
 default_branch: main
+# Expected identity for the explicit publish command (SSH/HTTPS GitHub remotes).
+publish_repository: dtnorris/agent-coding-tool-data

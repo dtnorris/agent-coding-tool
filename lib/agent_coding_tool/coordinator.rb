@@ -17,14 +17,13 @@ module AgentCodingTool
       @repo_inspector = repo_inspector
       @prompt_renderer = prompt_renderer
       @prompt_root = prompt_root
-      FileUtils.mkdir_p(@prompt_root)
     end
 
     def tasks = @task_store.all
 
     def status(id) = statuses([id]).first
 
-    def statuses(ids = nil, completion_filter: :all)
+    def statuses(ids = nil, completion_filter: :all, strict_freshness: false)
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
       selected_tasks = filter_completed_tasks(selected_tasks, completion_filter) unless ids
       selected_contexts = selected_tasks.map { |task| status_context(task) }
@@ -42,10 +41,13 @@ module AgentCodingTool
       blocker_contexts = blocker_ids.reject { |id| selected_ids.key?(id) }
                                     .map { |id| status_context(@task_store.load(id)) }
       contexts = selected_contexts + blocker_contexts
+      validate_prepared_provenance!(contexts) if strict_freshness
       references = contexts.filter_map { |context| context["pending"] }.flat_map do |pending|
         freshness_references(pending.fetch("task"), pending.fetch("snapshot"))
       end
+      validate_freshness_references!(references) if strict_freshness
       pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references)
+      validate_freshness!(references, pushed_heads) if strict_freshness
 
       resolved = contexts.to_h do |context|
         status = context["status"] || freshness_status(context.fetch("pending"), pushed_heads)
@@ -98,6 +100,51 @@ module AgentCodingTool
       end.to_h
     end
 
+    # Advisory selection over one caller-supplied effective-state snapshot.
+    # The caller supplies the dashboard's existing priority ordering.
+    def next_start_set(statuses, ranked_statuses)
+      by_id = tasks.to_h { |task| [task.fetch("id"), task] }
+      occupied = statuses.filter_map do |status|
+        next unless START_COLLISION_STATES.include?(status.fetch("status"))
+
+        task = by_id.fetch(status.fetch("id"))
+        { "id" => status.fetch("id"), "status" => status.fetch("status"),
+          "authorities" => checked_authorities!(status.fetch("id"), writable_authorities(task, status.fetch("state").fetch("snapshot")).keys) }
+      end
+      reservations = occupied.dup
+      starts = []
+      waiting_capacity = []
+      authority_cache = {}
+
+      ranked_statuses.each do |status|
+        label = status.fetch("status")
+        next unless %w[READY PREPARED].include?(label)
+
+        id = status.fetch("id")
+        task = by_id.fetch(id)
+        authorities = if label == "PREPARED"
+                        writable_authorities(task, status.fetch("state").fetch("snapshot")).keys
+                      else
+                        task_writable_authorities(task, authority_cache)
+                      end
+        authorities = checked_authorities!(id, authorities)
+        conflicts = reservations.filter_map do |reserved|
+          shared = authorities & reserved.fetch("authorities")
+          next if shared.empty?
+
+          { "task_id" => reserved.fetch("id"), "status" => reserved.fetch("status"), "authorities" => shared }
+        end
+        row = { "id" => id, "status" => label, "authorities" => authorities }
+        if conflicts.empty?
+          starts << row
+          reservations << row.merge("status" => "SELECTED")
+        else
+          waiting_capacity << row.merge("conflicts" => conflicts)
+        end
+      end
+      { "starts" => starts, "waiting_capacity" => waiting_capacity, "occupied" => occupied }
+    end
+
     def prepare(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -120,6 +167,7 @@ module AgentCodingTool
       collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
       timestamp = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
       prompt_path = File.join(@prompt_root, "#{id}-#{timestamp}.txt")
+      FileUtils.mkdir_p(@prompt_root)
       File.write(prompt_path, prompt)
 
       new_state = state.merge(
@@ -201,6 +249,58 @@ module AgentCodingTool
     end
 
     private
+
+    def validate_prepared_provenance!(contexts)
+      contexts.each do |context|
+        pending = context["pending"]
+        next unless pending
+
+        task = pending.fetch("task")
+        snapshot = pending.fetch("snapshot")
+        unless snapshot.is_a?(Hash)
+          raise RepositoryError, "#{task.fetch('id')}: prepared freshness provenance is malformed"
+        end
+        task.fetch("repositories").each_key do |name|
+          repository = snapshot[name]
+          unless repository.is_a?(Hash) &&
+                 %w[remote_url branch].all? { |field| repository[field].is_a?(String) && !repository[field].empty? } &&
+                 repository["pushed_sha"].is_a?(String) && repository["pushed_sha"].match?(/\A[0-9a-f]{40}\z/)
+            raise RepositoryError, "#{task.fetch('id')}/#{name}: prepared freshness provenance is missing or malformed"
+          end
+        end
+      end
+    end
+
+    def validate_freshness_references!(references)
+      references.each do |reference|
+        unless reference.is_a?(Hash) &&
+               %w[name remote_url branch].all? { |field| reference[field].is_a?(String) && !reference[field].empty? }
+          raise RepositoryError, "next: remote freshness reference is missing or malformed"
+        end
+      end
+    end
+
+    def validate_freshness!(references, pushed_heads)
+      unless pushed_heads.is_a?(Hash)
+        raise RepositoryError, "next: pushed-head evidence is unavailable"
+      end
+      references.each do |reference|
+        key = [reference.fetch("remote_url"), reference.fetch("branch")]
+        sha = pushed_heads[key]
+        unless sha.is_a?(String) && sha.match?(/\A[0-9a-f]{40}\z/)
+          raise RepositoryError, "#{reference.fetch('name')}: pushed-head evidence is missing or malformed"
+        end
+      end
+    end
+
+    def checked_authorities!(id, authorities)
+      unless authorities.is_a?(Array) && authorities.all? { |remote, branch|
+        remote.is_a?(String) && !remote.empty? && branch.is_a?(String) && !branch.empty?
+      }
+        raise RepositoryError, "#{id}: writable remote/branch authority is missing or malformed"
+      end
+      authorities.uniq
+    end
 
     def filter_completed_tasks(selected_tasks, completion_filter)
       unless %i[all active recent].include?(completion_filter)

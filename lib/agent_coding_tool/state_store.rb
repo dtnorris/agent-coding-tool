@@ -7,7 +7,6 @@ module AgentCodingTool
   class StateStore
     def initialize(root)
       @root = root
-      FileUtils.mkdir_p(@root)
     end
 
     def load(id)

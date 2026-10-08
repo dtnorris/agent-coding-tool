@@ -62,6 +62,7 @@ module AgentCodingTool
       command = argv.shift
       case command
       when "status" then status_command(argv)
+      when "next" then next_command(argv)
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "received" then received_command(argv)
@@ -179,6 +180,86 @@ module AgentCodingTool
         end
         previous_bucket = bucket
       end
+    end
+
+    def next_command(argv)
+      raise Error, "usage: agent-coding-tool next" unless argv.empty?
+
+      statuses = coordinator.statuses(completion_filter: :all, strict_freshness: true)
+      metrics = completion_dashboard_metrics(statuses)
+      ranked = sort_statuses(statuses, metrics)
+      selection = coordinator.next_start_set(statuses, ranked)
+      tasks_by_id = coordinator.tasks.to_h { |task| [task.fetch("id"), task] }
+
+      @out.puts "Next safe parallel starts (READY priority first; never trade a higher-ranked task for width):"
+      if selection.fetch("starts").empty?
+        @out.puts "  None currently available."
+      else
+        selection.fetch("starts").each do |row|
+          id = row.fetch("id")
+          @out.puts "  #{id} (#{row.fetch('status')}) — #{tasks_by_id.fetch(id).fetch('title')}"
+          @out.puts "    act prepare #{id}" if row.fetch("status") == "READY"
+          @out.puts "    act start #{id}"
+          if (recommendation = tasks_by_id.fetch(id)["worker_recommendation"])
+            @out.puts "    worker: #{recommendation.fetch('model')} / #{recommendation.fetch('thinking')}"
+          end
+          print_expected_unlock(id, metrics)
+        end
+      end
+      @out.puts "  Prepare and start still recheck their safety gates before worker handoff."
+
+      display_next_section("Waiting for write capacity", selection.fetch("waiting_capacity")) do |row|
+        conflicts = row.fetch("conflicts").map do |conflict|
+          "#{conflict.fetch('task_id')} (#{conflict.fetch('status')}) on " \
+            "#{format_authorities(conflict.fetch('authorities'))}"
+        end
+        @out.puts "  #{row.fetch('id')} (#{row.fetch('status')}): #{conflicts.join('; ')}"
+      end
+      display_next_section("Running lanes", selection.fetch("occupied").select { |row| row.fetch("status") == "IN_FLIGHT" }) do |row|
+        @out.puts "  #{row.fetch('id')}: #{format_authorities(row.fetch('authorities'))}"
+      end
+      candidates = ranked.select { |status| status.fetch("status") == "CANDIDATE" }
+      display_next_section("Awaiting human review/application", candidates) do |status|
+        @out.puts "  #{status.fetch('id')}: review the candidate and verify landing; completion is not inferred."
+        @out.puts "    artifact: #{status.dig('state', 'result', 'artifact')}" if status.dig("state", "result", "artifact")
+        @out.puts "    #{status.fetch('reason')}" if status["reason"]
+        print_expected_unlock(status.fetch("id"), metrics)
+      end
+      interventions = ranked.select do |status|
+        %w[STALE STALE_CANDIDATE NEEDS_JUDGMENT FAILED].include?(status.fetch("status")) ||
+          (status.fetch("status") == "BLOCKED" && status.dig("state", "result", "outcome") == "blocked")
+      end
+      display_next_section("Interventions", interventions) do |status|
+        @out.puts "  #{status.fetch('id')} (#{status.fetch('status')}): #{status.fetch('reason')}"
+        @out.puts "    recorded next: #{status.fetch('next_action')}" if status.key?("next_action")
+      end
+      dependency_waits = ranked.select do |status|
+        status.fetch("status") == "BLOCKED" && status["reason"]&.start_with?(DEPENDENCY_REASON_PREFIX)
+      end
+      display_next_section("Waiting for dependencies", dependency_waits) do |status|
+        @out.puts "  #{status.fetch('id')}: #{display_reason(status)}"
+      end
+      @out.puts "Unlock counts are conditional on verified completion, not present eligibility."
+    end
+
+    def display_next_section(title, rows)
+      return if rows.empty?
+
+      @out.puts
+      @out.puts "#{title}:"
+      rows.each { |row| yield row }
+    end
+
+    def print_expected_unlock(id, metrics)
+      depth, count, unlock_count, parallel_width = metrics.fetch(id, [0, 0, 0, 0])
+      @out.puts "    downstream: #{depth} levels / #{count} tasks; " \
+                "expected immediate unlocks: #{unlock_count} tasks / #{parallel_width} parallel (conditional)"
+    end
+
+    def format_authorities(authorities)
+      return "no writable authority" if authorities.empty?
+
+      authorities.map { |remote, branch| "#{remote} [#{branch}]" }.join(", ")
     end
 
     def sort_statuses(statuses, completion_metrics)
@@ -634,6 +715,7 @@ module AgentCodingTool
 
         Commands:
           status [TASK] [--all | --active]
+          next                advise safe parallel work without changing state
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)

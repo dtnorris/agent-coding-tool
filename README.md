@@ -110,6 +110,22 @@ A worker that discovers a bad task breakout should be recorded as `blocked` or
 
 ## Commands
 
+`bin/agent-coding-tool next`
+
+Read-only advisory for work that can be started now. It uses the same effective
+status/freshness snapshot, READY priority ranking, dependency-unlock metrics,
+and remote URL plus branch writable authorities as `status` and `start`.
+Fresh IN_FLIGHT and CANDIDATE writers occupy lanes; PREPARED work is available
+but does not reserve one. The compatible start set is selected in priority
+order, not rearranged to maximize the number of workers. READY rows show
+`act prepare TASK` followed by `act start TASK`; fresh PREPARED rows show only
+`act start TASK`. Both lifecycle commands recheck their own gates before a
+prompt can be handed to a worker. The output also separates capacity waits,
+running lanes, candidates awaiting human review/application, dependency waits,
+and recorded interventions. Expected unlock counts are conditional consequences
+of verified completion, not claims that downstream work is already eligible.
+No state, prompt, Git ref, or agent is changed by `next`.
+
 `bin/agent-coding-tool status [TASK] [--all | --active]`
 
 Shows effective task state. The default dashboard includes every non-blocked

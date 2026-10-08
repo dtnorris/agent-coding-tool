@@ -116,9 +116,10 @@ task while retaining the three-blocker dashboard limit. The two options are
 mutually exclusive. Explicit `status TASK` lookup always shows the named task.
 
 Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`,
-`IN_FLIGHT`, `READY`, then other active or exceptional states, with `BLOCKED`
-last. READY tasks are ranked by immediate collision-aware parallel unlock
-width, immediate unlock count, longest downstream dependency path, then
+`NEEDS_JUDGMENT`, `IN_FLIGHT`, `READY`, then other active or exceptional
+states, with `BLOCKED` last. READY tasks are ranked by immediate
+collision-aware parallel unlock width, immediate unlock count, longest
+downstream dependency path, then
 distinct downstream task count. READY and fresh CANDIDATE rows show downstream
 depth/count and `unlocks: N tasks / M parallel`: `N` is the number of
 dependency-blocked tasks that would become READY if the row's task completed,
@@ -137,6 +138,13 @@ task rows, which remain on one line and truncate their title with an ellipsis
 when necessary. Reasons render on an indented second line, and dependency
 blockers use the compact `waiting on:` label. When output is a TTY, status
 labels are colored; set `NO_COLOR` to disable ANSI color.
+
+Recorded `NEEDS_JUDGMENT` rows provide a compact operator handoff: a `reason:`,
+an optional explicitly recorded `next:`, and the mechanical `resume: act
+prepare TASK --retry` command. Each handoff field is normalized to one line and
+dynamically truncated to the terminal width with ASCII `...`; the stored values
+are unchanged. Use explicit `status TASK` to see the complete, untruncated
+summary and next action.
 
 Prepared, in-flight, and candidate tasks are compared against current pushed
 heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
@@ -211,13 +219,15 @@ the preferred human-facing shorthand for `record TASK complete`; the stored
 outcome remains `complete`, the fresh completion snapshot is captured, and the
 effective status remains `COMPLETE`.
 
-`bin/agent-coding-tool record TASK OUTCOME --summary "..." --artifact "..."
---test "rake=pass"`
+`bin/agent-coding-tool record TASK OUTCOME --summary "..." --next "..."
+--artifact "..." --test "rake=pass"`
 
 Generic/manual outcome primitive. Valid outcomes: `candidate_complete`,
 `complete`, `blocked`, `needs_judgment`, `failed`. The existing `record TASK
 candidate_complete` and `record TASK complete` forms remain supported alongside
-the preferred shorthands.
+the preferred shorthands. `--next` stores an optional explicit operator action
+for `blocked`, `needs_judgment`, or `failed`; it is rejected for successful
+outcomes and is never inferred from the summary.
 
 Every recorded result clears the in-flight marker. `IN_FLIGHT` is not an
 outcome, and recording results without first calling `start` remains supported.

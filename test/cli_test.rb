@@ -220,6 +220,29 @@ class CLITest < Minitest::Test
     end
   end
 
+  def test_record_persists_next_action_and_rejects_it_for_successful_outcomes
+    with_workspace do |dir|
+      %w[JUDGMENT CANDIDATE COMPLETE].each { |id| write_task(dir, id:) }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      %w[JUDGMENT CANDIDATE COMPLETE].each { |id| coordinator.prepare(id) }
+      action = "Land IG-05C4, then retry IG-09C."
+
+      out = StringIO.new
+      err = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(["record", "JUDGMENT", "needs_judgment", "--summary", "Missing authority.",
+                               "--next", action])
+      assert_equal action, coordinator.status("JUDGMENT").dig("state", "result", "next_action")
+
+      %w[CANDIDATE COMPLETE].zip(%w[candidate_complete complete]).each do |id, outcome|
+        assert_equal 2, cli.run(["record", id, outcome, "--next", "not valid"])
+      end
+      assert_equal 2, err.string.scan("--next is only supported").length
+    end
+  end
+
   def test_help_documents_received_finish_and_generic_record
     out = StringIO.new
 
@@ -228,7 +251,7 @@ class CLITest < Minitest::Test
     assert_includes out.string, "worker result is ready for human review/application"
     assert_includes out.string, "finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]"
     assert_includes out.string, "landed task is complete on authoritative pushed state"
-    assert_includes out.string, "record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]"
+    assert_includes out.string, "record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]"
     assert_includes out.string, "generic/manual outcome primitive"
   end
 
@@ -264,6 +287,9 @@ class CLITest < Minitest::Test
       { "id" => "R1", "status" => "READY", "title" => "Ready task" },
       { "id" => "F1", "status" => "IN_FLIGHT", "title" => "Running task" },
       { "id" => "K1", "status" => "CANDIDATE", "title" => "Candidate task" },
+      { "id" => "N1", "status" => "NEEDS_JUDGMENT", "title" => "Needs judgment",
+        "reason" => "Operator decision required",
+        "state" => { "result" => { "outcome" => "needs_judgment" } } },
       { "id" => "C1", "status" => "COMPLETE", "title" => "Complete task" }
     ]
     fake_coordinator = Object.new
@@ -280,6 +306,10 @@ class CLITest < Minitest::Test
       "",
       "K1: CANDIDATE — Candidate task",
       "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
+      "",
+      "N1: NEEDS_JUDGMENT — Needs judgment",
+      "    reason: Operator decision required",
+      "    resume: act prepare N1 --retry",
       "",
       "F1: IN_FLIGHT — Running task",
       "",
@@ -379,6 +409,136 @@ class CLITest < Minitest::Test
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
     ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_status_compacts_needs_judgment_handoff_at_dynamic_widths
+    status = {
+      "id" => "IG-09C",
+      "status" => "NEEDS_JUDGMENT",
+      "title" => "Successor boundary",
+      "reason" => "Missing authoritative successor-version binding.\nAdditional\t evidence   remains unresolved.",
+      "next_action" => "Land IG-05C4, then retry IG-09C after the authoritative binding is available.",
+      "state" => { "result" => { "outcome" => "needs_judgment" } }
+    }
+    coordinator = fake_status_coordinator([status])
+    rendered = [76, 52, 32].to_h do |width|
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                     terminal_width: width)
+      cli.instance_variable_set(:@coordinator, coordinator)
+
+      assert_equal 0, cli.run(%w[status --all])
+      detail_lines = out.string.lines.map(&:chomp).select do |line|
+        line.match?(/\A    (?:reason|next|resume):/)
+      end
+      assert_equal 3, detail_lines.length
+      assert_equal 1, detail_lines.count { |line| line.start_with?("    reason: ") }
+      assert_equal 1, detail_lines.count { |line| line.start_with?("    next: ") }
+      assert detail_lines.first.end_with?("...")
+      assert detail_lines.fetch(1).end_with?("...")
+      detail_lines.each { |line| assert_operator visible_width(line), :<=, width }
+      refute_includes out.string, "Additional\n"
+      [width, detail_lines]
+    end
+
+    assert_equal 3, rendered.values.map { |lines| lines.first }.uniq.length
+  end
+
+  def test_status_keeps_fitting_needs_judgment_reason_and_omits_missing_next_action
+    status = {
+      "id" => "J1", "status" => "NEEDS_JUDGMENT", "title" => "Judgment",
+      "reason" => "Short reason.",
+      "state" => { "result" => { "outcome" => "needs_judgment" } }
+    }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                   terminal_width: 80)
+    cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
+
+    assert_equal 0, cli.run(%w[status])
+    assert_includes out.string, "    reason: Short reason.\n"
+    refute_includes out.string, "    next:"
+    refute_includes out.string.lines.find { |line| line.include?("reason:") }, "..."
+  end
+
+  def test_status_bounds_needs_judgment_details_for_extreme_widths_and_ansi_unicode
+    status = {
+      "id" => "J1", "status" => "NEEDS_JUDGMENT", "title" => "J",
+      "reason" => "\e[31m界界界界界界\e[0m unresolved authority",
+      "next_action" => "retry after owner approval",
+      "state" => { "result" => { "outcome" => "needs_judgment" } }
+    }
+    coordinator = fake_status_coordinator([status])
+
+    [1, 2, 3, 8, 18].each do |width|
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
+                                     terminal_width: width)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, cli.run(%w[status])
+
+      out.string.lines.map(&:chomp).last(3).each do |line|
+        assert_operator visible_width(line), :<=, width
+      end
+    end
+
+    tty = TTYOutput.new(30)
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: tty, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, coordinator)
+    previous_no_color = ENV.delete("NO_COLOR")
+    assert_equal 0, cli.run(%w[status])
+    reason = tty.string.lines.find { |line| line.include?("reason:") }
+    assert reason.chomp.end_with?("...")
+    assert_operator visible_width(reason.chomp), :<=, 30
+    assert_includes tty.string, "\e[33mNEEDS_JUDGMENT\e[0m"
+  ensure
+    ENV["NO_COLOR"] = previous_no_color if previous_no_color
+  end
+
+  def test_needs_judgment_broad_status_truncates_but_explicit_status_preserves_full_details
+    with_workspace do |dir|
+      write_task(dir, id: "IG-09C", title: "Successor boundary")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.prepare("IG-09C")
+      summary = "Missing authoritative successor-version binding. " \
+                "This legacy-style explanation contains all evidence and must remain stored."
+      next_action = "Land IG-05C4, then retry IG-09C.\nConfirm the authoritative binding first."
+      coordinator.record("IG-09C", outcome: "needs_judgment", summary:, next_action:)
+      state_path = AgentCodingTool::StateStore.new(File.join(dir, "state")).state_path("IG-09C")
+      stored_state = File.binread(state_path)
+
+      broad = StringIO.new
+      broad_cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: broad, err: StringIO.new,
+                                           terminal_width: 54)
+      broad_cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, broad_cli.run(%w[status --all])
+      assert broad.string.lines.find { |line| line.include?("reason:") }.chomp.end_with?("...")
+      refute_includes broad.string, summary
+
+      explicit = run_status(dir, coordinator, %w[status IG-09C])
+      assert_includes explicit, "    reason: #{summary}\n"
+      assert_includes explicit, "    next: Land IG-05C4, then retry IG-09C.\n"
+      assert_includes explicit, "          Confirm the authoritative binding first.\n"
+      assert_includes explicit, "    resume: act prepare IG-09C --retry\n"
+      state = coordinator.status("IG-09C").fetch("state")
+      assert_equal summary, state.dig("result", "summary")
+      assert_equal next_action, state.dig("result", "next_action")
+      assert_equal stored_state, File.binread(state_path)
+    end
+  end
+
+  def test_dependency_only_blocked_status_does_not_show_retry_guidance
+    status = {
+      "id" => "B1", "status" => "BLOCKED", "title" => "Waiting",
+      "reason" => "dependencies incomplete: A", "state" => {}
+    }
+    out = StringIO.new
+    cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+    cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
+
+    assert_equal 0, cli.run(%w[status --all])
+    assert_includes out.string, "    waiting on: A\n"
+    refute_includes out.string, "resume:"
   end
 
   def test_status_truncates_colored_in_flight_title_at_same_visible_location_as_plain_output
@@ -787,6 +947,10 @@ class CLITest < Minitest::Test
     coordinator.define_singleton_method(:tasks) { tasks }
     coordinator.define_singleton_method(:completion_unlock_metrics) { |_statuses| unlock_metrics }
     coordinator
+  end
+
+  def visible_width(text)
+    AgentCodingTool::CLI.allocate.send(:display_width, text)
   end
 
   def task_definition(id, depends_on = [])

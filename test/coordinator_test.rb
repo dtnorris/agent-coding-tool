@@ -292,6 +292,50 @@ class CoordinatorTest < Minitest::Test
     end
   end
 
+  def test_retryable_outcomes_preserve_explicit_next_action_and_legacy_results_remain_valid
+    AgentCodingTool::Coordinator::NEXT_ACTION_OUTCOMES.each do |outcome|
+      with_workspace do |dir|
+        write_task(dir, id: "T1")
+        coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+        coordinator.prepare("T1")
+        action = "Land prerequisite\nthen retry\twithout rewriting this text"
+
+        state = coordinator.record("T1", outcome:, summary: "operator judgment", next_action: action)
+        status = coordinator.status("T1")
+
+        assert_equal action, state.dig("result", "next_action")
+        assert_equal action, status.fetch("next_action")
+      end
+    end
+
+    with_workspace do |dir|
+      write_task(dir, id: "LEGACY")
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      coordinator.prepare("LEGACY")
+      state = coordinator.record("LEGACY", outcome: "needs_judgment", summary: "legacy summary only")
+
+      refute state.fetch("result").key?("next_action")
+      refute coordinator.status("LEGACY").key?("next_action")
+    end
+  end
+
+  def test_next_action_is_rejected_for_successful_outcomes
+    %w[candidate_complete complete].each do |outcome|
+      with_workspace do |dir|
+        write_task(dir, id: "T1")
+        coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+        coordinator.prepare("T1")
+
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          coordinator.record("T1", outcome:, next_action: "should not be stored")
+        end
+
+        assert_includes error.message, "--next is only supported"
+        refute coordinator.status("T1").fetch("state").key?("result")
+      end
+    end
+  end
+
   def test_read_only_movement_requires_reconciliation_without_invalidating_prepared_or_candidate_tasks
     [false, true].each do |mixed|
       with_workspace do |dir|

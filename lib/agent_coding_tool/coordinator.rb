@@ -6,6 +6,7 @@ require "time"
 module AgentCodingTool
   class Coordinator
     OUTCOMES = %w[candidate_complete complete blocked needs_judgment failed].freeze
+    NEXT_ACTION_OUTCOMES = %w[blocked needs_judgment failed].freeze
     PREPARE_COLLISION_STATES = %w[PREPARED IN_FLIGHT CANDIDATE].freeze
     START_COLLISION_STATES = %w[IN_FLIGHT CANDIDATE].freeze
     RECENT_COMPLETE_LIMIT = 5
@@ -139,8 +140,11 @@ module AgentCodingTool
       state
     end
 
-    def record(id, outcome:, summary: nil, artifact: nil, tests: [])
+    def record(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [])
       raise InvalidState, "invalid outcome: #{outcome}" unless OUTCOMES.include?(outcome)
+      if !next_action.nil? && !NEXT_ACTION_OUTCOMES.include?(outcome)
+        raise InvalidState, "--next is only supported for blocked, needs_judgment, and failed outcomes"
+      end
 
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -152,6 +156,7 @@ module AgentCodingTool
         "outcome" => outcome,
         "recorded_at" => Time.now.utc.iso8601,
         "summary" => summary,
+        "next_action" => next_action,
         "artifact" => artifact,
         "tests" => tests
       }.reject { |_key, value| value.nil? || value == [] }
@@ -382,13 +387,16 @@ module AgentCodingTool
     end
 
     def status_hash(label, task, state, reason = nil)
-      {
+      status = {
         "id" => task.fetch("id"),
         "title" => task.fetch("title"),
         "status" => label,
         "reason" => reason,
         "state" => state
       }
+      result = state["result"]
+      status["next_action"] = result["next_action"] if result&.key?("next_action")
+      status
     end
   end
 end

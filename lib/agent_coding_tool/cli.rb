@@ -9,10 +9,10 @@ module AgentCodingTool
     STATUS_ORDER = {
       "COMPLETE" => 0,
       "CANDIDATE" => 10,
-      "IN_FLIGHT" => 20,
-      "READY" => 30,
-      "PREPARED" => 40,
-      "NEEDS_JUDGMENT" => 50,
+      "NEEDS_JUDGMENT" => 20,
+      "IN_FLIGHT" => 30,
+      "READY" => 40,
+      "PREPARED" => 50,
       "STALE_CANDIDATE" => 60,
       "STALE" => 70,
       "FAILED" => 80,
@@ -36,6 +36,8 @@ module AgentCodingTool
     BLOCKED_DISPLAY_LIMIT = 3
     DEFAULT_DASHBOARD_WIDTH = 100
     ANSI_RESET = "\e[0m"
+    ANSI_SEQUENCE = /\e\[[0-?]*[ -\/]*[@-~]/
+    DISPLAY_TOKEN = /#{ANSI_SEQUENCE}|\X/
 
     def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
       new(root: root, out: out, err: err, data_root: data_root).run(argv)
@@ -134,7 +136,7 @@ module AgentCodingTool
         else
           status = item.fetch("status")
           @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
-          @out.puts "    #{display_reason(item)}" if item["reason"]
+          display_explicit_details(item)
         end
         previous_bucket = bucket
       end
@@ -240,10 +242,11 @@ module AgentCodingTool
       case status
       when "COMPLETE" then 0
       when "CANDIDATE" then 1
-      when "IN_FLIGHT" then 2
-      when "READY" then 3
-      when "BLOCKED" then 5
-      else 4
+      when "NEEDS_JUDGMENT" then 2
+      when "IN_FLIGHT" then 3
+      when "READY" then 4
+      when "BLOCKED" then 6
+      else 5
       end
     end
 
@@ -291,7 +294,94 @@ module AgentCodingTool
         puts_wrapped(detail,
                      first_prefix: "    ", continuation_prefix: "    ")
       end
-      puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ") if item["reason"]
+      if recorded_retryable_outcome?(item)
+        display_compact_handoff(item)
+      elsif item["reason"]
+        puts_wrapped(display_reason(item), first_prefix: "    ", continuation_prefix: "    ")
+      end
+    end
+
+    def display_compact_handoff(item)
+      @out.puts compact_detail_line("reason", item["reason"]) if item["reason"]
+      @out.puts compact_detail_line("next", item["next_action"]) if item.key?("next_action")
+      @out.puts compact_detail_line("resume", "act prepare #{item.fetch('id')} --retry")
+    end
+
+    def display_explicit_details(item)
+      unless recorded_retryable_outcome?(item)
+        @out.puts "    #{display_reason(item)}" if item["reason"]
+        return
+      end
+
+      puts_full_detail("reason", item["reason"]) if item["reason"]
+      puts_full_detail("next", item["next_action"]) if item.key?("next_action")
+      puts_full_detail("resume", "act prepare #{item.fetch('id')} --retry")
+    end
+
+    def recorded_retryable_outcome?(item)
+      return true if %w[NEEDS_JUDGMENT FAILED].include?(item.fetch("status"))
+
+      item.fetch("status") == "BLOCKED" && item.dig("state", "result", "outcome") == "blocked"
+    end
+
+    def puts_full_detail(label, text)
+      prefix = "    #{label}: "
+      lines = text.to_s.lines(chomp: true)
+      lines = [""] if lines.empty?
+      @out.puts "#{prefix}#{lines.shift}"
+      continuation = " " * prefix.length
+      lines.each { |line| @out.puts "#{continuation}#{line}" }
+    end
+
+    def compact_detail_line(label, text)
+      normalized = text.to_s.gsub(/[[:space:]]+/, " ").strip
+      truncate_display_line("    #{label}: #{normalized}", dashboard_width)
+    end
+
+    def truncate_display_line(text, width)
+      return text if display_width(text) <= width
+      return "." * width if width < 3
+
+      available = width - 3
+      prefix = +""
+      used = 0
+      text.scan(DISPLAY_TOKEN).each do |token|
+        token_width = display_width(token)
+        break if used + token_width > available
+
+        prefix << token
+        used += token_width
+      end
+      prefix << ANSI_RESET if prefix.match?(ANSI_SEQUENCE)
+      "#{prefix}..."
+    end
+
+    def display_width(text)
+      text.gsub(ANSI_SEQUENCE, "").scan(/\X/).sum { |cluster| grapheme_width(cluster) }
+    end
+
+    def grapheme_width(cluster)
+      return 0 if cluster.match?(/\A\p{M}+\z/)
+
+      codepoints = cluster.codepoints
+      return 2 if codepoints.include?(0xFE0F) || codepoints.any? { |codepoint| wide_codepoint?(codepoint) }
+
+      1
+    end
+
+    def wide_codepoint?(codepoint)
+      (0x1100..0x115F).cover?(codepoint) ||
+        [0x2329, 0x232A].include?(codepoint) ||
+        ((0x2E80..0xA4CF).cover?(codepoint) && codepoint != 0x303F) ||
+        (0xAC00..0xD7A3).cover?(codepoint) ||
+        (0xF900..0xFAFF).cover?(codepoint) ||
+        (0xFE10..0xFE19).cover?(codepoint) ||
+        (0xFE30..0xFE6F).cover?(codepoint) ||
+        (0xFF00..0xFF60).cover?(codepoint) ||
+        (0xFFE0..0xFFE6).cover?(codepoint) ||
+        (0x1F1E6..0x1F1FF).cover?(codepoint) ||
+        (0x1F300..0x1FAFF).cover?(codepoint) ||
+        (0x20000..0x3FFFD).cover?(codepoint)
     end
 
     def truncate_title(title, width)
@@ -429,7 +519,7 @@ module AgentCodingTool
     def record_command(argv)
       record_result(
         argv,
-        usage: "agent-coding-tool record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]"
+        usage: "agent-coding-tool record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]"
       )
     end
 
@@ -455,6 +545,9 @@ module AgentCodingTool
       options = { tests: [] }
       parser = OptionParser.new do |opts|
         opts.on("--summary TEXT", "short explicit result summary") { |value| options[:summary] = value }
+        opts.on("--next TEXT", "explicit operator next action for a retryable outcome") do |value|
+          options[:next_action] = value
+        end
         opts.on("--artifact PATH", "patch or other handoff artifact") { |value| options[:artifact] = value }
         opts.on("--test RESULT", "record a test result such as 'rake=pass'; repeatable") { |value| options[:tests] << value }
       end
@@ -494,7 +587,7 @@ module AgentCodingTool
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               landed task is complete on authoritative pushed state
-          record TASK OUTCOME [--summary TEXT] [--artifact PATH] [--test RESULT]
+          record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]
                               generic/manual outcome primitive
           reset TASK
 

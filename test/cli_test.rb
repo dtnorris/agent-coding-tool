@@ -1059,7 +1059,7 @@ class CLITest < Minitest::Test
       [%w[status], %w[status --active], %w[status --all]].each do |argv|
         output = run_status(dir, coordinator, argv)
         assert_includes output,
-                        "IG-07A: PREPARED — Pipeline work\n" \
+                        "IG-07A: PREPARED (NEXT) — Pipeline work\n" \
                         "    reason: cannot start; IG-09C (IN_FLIGHT) writes alpha\n"
         assert_includes output,
                         "IG-11C: PREPARED — Pipeline work\n" \

@@ -49,7 +49,12 @@ class StatusNextSummaryTest < Minitest::Test
       before = state_bytes(dir)
 
       dashboard = output_for(dir, coordinator, %w[status])
-      assert_match(/\ANEXT: A \(READY\) — prepare then start; \+2 parallel; details: act next\n/, dashboard)
+      refute_match(/^NEXT:/, dashboard)
+      assert_match(/^A: READY \(NEXT\) — Task$/, dashboard)
+      assert_match(/^B: READY — Task$/, dashboard)
+      assert_match(/^C: READY — Task$/, dashboard)
+      assert_match(/^D: PREPARED — Task$/, dashboard)
+      assert_equal 1, dashboard.scan("(NEXT)").length
       assert_equal 1, inspector.head_batches.length
       assert_empty inspector.snapshot_calls
       assert_equal before, state_bytes(dir)
@@ -70,7 +75,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator = coordinator_for_inspector(dir, ProbeInspector.new(heads: { "alpha" => "a" * 40 }))
       coordinator.prepare("A")
 
-      assert_match(/\ANEXT: A \(PREPARED\) — start; details: act next\n/,
+      assert_match(/^A: PREPARED \(NEXT\) — Task$/,
                    output_for(dir, coordinator, %w[status]))
       assert_includes output_for(dir, coordinator, %w[next]), "    act start A"
     end
@@ -87,7 +92,9 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.record("A-CANDIDATE", outcome: "candidate_complete")
 
       dashboard = output_for(dir, coordinator, %w[status])
-      assert_match(/\ANEXT: review A-CANDIDATE \(CANDIDATE\); details: act next\n/, dashboard)
+      refute_match(/^NEXT:/, dashboard)
+      assert_match(/^A-CANDIDATE: CANDIDATE \(NEXT\) — Task$/, dashboard)
+      assert_match(/^B-WAIT: READY — Task$/, dashboard)
       assert_includes output_for(dir, coordinator, %w[next]), "Waiting for write capacity:"
       refute_includes dashboard, "act finish"
     end
@@ -102,7 +109,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator = coordinator_for_inspector(dir, inspector)
       coordinator.prepare("A-RUN")
       coordinator.start("A-RUN")
-      assert_match(/\ANEXT: B-WAIT waits for write capacity; details: act next\n/,
+      assert_match(/^B-WAIT: READY \(NEXT\) — Task$/,
                    output_for(dir, coordinator, %w[status]))
     end
 
@@ -113,7 +120,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.record("A-JUDGMENT", outcome: "needs_judgment", summary: "choose scope",
                          next_action: "ask operator")
       dashboard = output_for(dir, coordinator, %w[status])
-      assert_match(/\ANEXT: A-JUDGMENT \(NEEDS_JUDGMENT\) needs intervention; details: act next\n/, dashboard)
+      assert_match(/^A-JUDGMENT: NEEDS_JUDGMENT \(NEXT\) — Task$/, dashboard)
       assert_includes dashboard, "ask operator"
       assert_includes dashboard, "resume: act prepare A-JUDGMENT --retry"
     end
@@ -126,7 +133,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator = coordinator_for_inspector(dir, ProbeInspector.new(heads:))
       coordinator.prepare("A-STALE")
       heads["alpha"] = "b" * 40
-      assert_match(/\ANEXT: A-STALE \(STALE\) needs intervention; details: act next\n/,
+      assert_match(/^A-STALE: STALE \(NEXT\) — Task$/,
                    output_for(dir, coordinator, %w[status]))
     end
 
@@ -134,8 +141,9 @@ class StatusNextSummaryTest < Minitest::Test
       write_task(dir, id: "A", depends_on: ["B"])
       write_task(dir, id: "B", depends_on: ["A"])
       coordinator = coordinator_for_inspector(dir, ProbeInspector.new(heads: {}))
-      assert_match(/\ANEXT: waiting for dependencies; details: act next\n/,
-                   output_for(dir, coordinator, %w[status]))
+      dashboard = output_for(dir, coordinator, %w[status])
+      refute_match(/^NEXT:/, dashboard)
+      refute_includes dashboard, "(NEXT)"
     end
   end
 
@@ -150,16 +158,17 @@ class StatusNextSummaryTest < Minitest::Test
           dashboard = output_for(dir, coordinator, %w[status], out:)
           first = dashboard.lines.first.chomp
           assert_operator AgentCodingTool::CLI.allocate.send(:display_width, first), :<=, width
-          assert_includes first, "NEXT:"
-          assert_includes first, "act next" if width == 38
+          refute_includes dashboard, "NEXT:"
         end
         colored = output_for(dir, coordinator, %w[status], out: TTYOutput.new(80))
-        assert_match(/\e\[\d+mREADY\e\[0m/, colored.lines.first)
+        assert_match(/A: \e\[\d+mREADY\e\[0m \(NEXT\) — Task/, colored.lines.first)
+        assert_equal 1, colored.scan("(NEXT)").length
         ENV["NO_COLOR"] = "1"
         plain = output_for(dir, coordinator, %w[status], out: TTYOutput.new(80))
         refute_match(/\e\[/, plain)
+        assert_match(/^A: READY \(NEXT\) — Task$/, plain)
         explicit = output_for(dir, coordinator, %w[status A])
-        refute_includes explicit, "NEXT:"
+        refute_includes explicit, "(NEXT)"
         assert_match(/\AA: READY/, explicit)
       ensure
         previous ? ENV["NO_COLOR"] = previous : ENV.delete("NO_COLOR")

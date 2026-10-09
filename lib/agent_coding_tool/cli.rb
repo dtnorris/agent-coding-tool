@@ -163,6 +163,10 @@ module AgentCodingTool
       if broad_dashboard
         completion_metrics = completion_dashboard_metrics(statuses)
         statuses = sort_statuses(statuses, completion_metrics)
+        if coordinator.respond_to?(:next_start_set)
+          selection = coordinator.next_start_set(statuses, statuses)
+          display_next_summary(selection, statuses)
+        end
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -240,6 +244,41 @@ module AgentCodingTool
         @out.puts "  #{status.fetch('id')}: #{display_reason(status)}"
       end
       @out.puts "Unlock counts are conditional on verified completion, not present eligibility."
+    end
+
+    def display_next_summary(selection, ranked_statuses)
+      first = selection.fetch("starts").first
+      text = if first
+               id = first.fetch("id")
+               label = first.fetch("status")
+               action = label == "READY" ? "prepare then start" : "start"
+               summary = "NEXT: #{id} (#{colorize_status(label)}) — #{action}"
+               others = selection.fetch("starts").length - 1
+               summary << "; +#{others} parallel" if others.positive?
+               summary
+             elsif (candidate = ranked_statuses.find { |item| item.fetch("status") == "CANDIDATE" })
+               "NEXT: review #{candidate.fetch('id')} (#{colorize_status('CANDIDATE')})"
+             elsif (waiting = selection.fetch("waiting_capacity").first)
+               "NEXT: #{waiting.fetch('id')} waits for write capacity"
+             elsif (intervention = ranked_statuses.find do |item|
+                       %w[STALE STALE_CANDIDATE NEEDS_JUDGMENT FAILED].include?(item.fetch("status")) ||
+                         (item.fetch("status") == "BLOCKED" && item.dig("state", "result", "outcome") == "blocked")
+                     end)
+               "NEXT: #{intervention.fetch('id')} (#{colorize_status(intervention.fetch('status'))}) needs intervention"
+             elsif ranked_statuses.any? { |item| item.fetch("status") == "BLOCKED" }
+               "NEXT: waiting for dependencies"
+             elsif selection.fetch("occupied").any?
+               "NEXT: work in flight; no safe new starts"
+             else
+               "NEXT: no startable work"
+             end
+      suffix = "; details: act next"
+      width = dashboard_width
+      line = "#{text}#{suffix}"
+      if display_width(line) > width && width >= display_width(suffix) + 10
+        line = "#{truncate_display_line(text, width - display_width(suffix))}#{suffix}"
+      end
+      @out.puts truncate_display_line(line, width)
     end
 
     def display_next_section(title, rows)

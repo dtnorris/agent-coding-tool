@@ -93,10 +93,10 @@ An optional `worker_recommendation` mapping supplies non-empty `model` and
 1. Create a task YAML file in the external data directory.
 2. Run `bin/agent-coding-tool status` to see active work, blockers, and recent
    progress.
-3. Run `bin/agent-coding-tool prepare TASK` immediately before launching a
-   coding agent.
-4. Paste the generated prompt into the worker and run `bin/agent-coding-tool
-   start TASK`.
+3. Run `bin/agent-coding-tool prepare TASK` immediately before the work.
+4. Run `bin/agent-coding-tool start TASK` to reserve the writable lane. Only
+   after start succeeds, hand the generated prompt to the worker. Start is a
+   human assertion; it does not launch a worker process.
 5. Run `bin/agent-coding-tool received TASK` when the worker result is ready
    for review/application.
 6. Apply/review the worker artifact yourself. Once the task has actually landed

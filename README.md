@@ -126,6 +126,25 @@ and recorded interventions. Expected unlock counts are conditional consequences
 of verified completion, not claims that downstream work is already eligible.
 No state, prompt, Git ref, or agent is changed by `next`.
 
+`bin/agent-coding-tool next --json` exports that same plan as one JSON
+document on stdout. Its binding `agent-coding-tool-next/v0.1` contract has
+`schema_version`, `advisory: true`, `snapshot`, `facts`, and
+`recommendations`. `facts.tasks` records effective statuses, reasons,
+dependencies, one-based priority ranks, and prepared pushed-head bindings
+with an explicit checked/not-checked freshness state; `facts.reservations` records
+current IN_FLIGHT/CANDIDATE writable remote URL and branch pairs.
+`recommendations` contains ordered `starts`, `waiting_capacity`,
+`candidate_review`, `interventions`, and `waiting_dependencies` arrays.
+Start rows include the same grounded lifecycle commands as the text view,
+optional configured model/thinking advice, and conditional downstream counts.
+Capacity rows identify selected or occupied conflicting authorities. Empty
+sections remain empty arrays. Array ordering follows the existing ranked
+planner and stable task-store order; no clock-generated plan ID is introduced.
+The snapshot states which freshness was observed and that prepare/start must
+revalidate. It does not grant authority, launch a worker, or resolve a stale
+candidate or human judgment. Malformed or unavailable pushed-head evidence
+produces no partial JSON, an error on stderr, and a nonzero exit.
+
 `bin/agent-coding-tool status [TASK] [--all | --active]`
 
 Shows effective task state. The default dashboard includes every non-blocked

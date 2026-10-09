@@ -3,6 +3,7 @@
 require "optparse"
 require "io/console"
 require "time"
+require "json"
 
 module AgentCodingTool
   class CLI
@@ -38,6 +39,7 @@ module AgentCodingTool
     ANSI_RESET = "\e[0m"
     ANSI_SEQUENCE = /\e\[[0-?]*[ -\/]*[@-~]/
     DISPLAY_TOKEN = /#{ANSI_SEQUENCE}|\X/
+    NEXT_JSON_VERSION = "agent-coding-tool-next/v0.1"
 
     def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
       new(root: root, out: out, err: err, data_root: data_root).run(argv)
@@ -187,14 +189,32 @@ module AgentCodingTool
     end
 
     def next_command(argv)
-      raise Error, "usage: agent-coding-tool next" unless argv.empty?
+      json = argv == ["--json"]
+      raise Error, "usage: agent-coding-tool next [--json]" unless argv.empty? || json
 
+      plan = next_plan
+      if json
+        @out.puts JSON.generate(next_json_document(plan))
+        return
+      end
+
+      selection = plan.fetch(:selection)
+      ranked = plan.fetch(:ranked)
+      metrics = plan.fetch(:metrics)
+      tasks_by_id = plan.fetch(:tasks_by_id)
+      render_next_plan(selection, ranked, metrics, tasks_by_id)
+    end
+
+    def next_plan
       statuses = coordinator.statuses(completion_filter: :all, strict_freshness: true)
       metrics = completion_dashboard_metrics(statuses)
       ranked = sort_statuses(statuses, metrics)
       selection = coordinator.next_start_set(statuses, ranked)
       tasks_by_id = coordinator.tasks.to_h { |task| [task.fetch("id"), task] }
+      { statuses:, ranked:, metrics:, selection:, tasks_by_id: }
+    end
 
+    def render_next_plan(selection, ranked, metrics, tasks_by_id)
       @out.puts "Next safe parallel starts (READY priority first; never trade a higher-ranked task for width):"
       if selection.fetch("starts").empty?
         @out.puts "  None currently available."
@@ -244,6 +264,119 @@ module AgentCodingTool
         @out.puts "  #{status.fetch('id')}: #{display_reason(status)}"
       end
       @out.puts "Unlock counts are conditional on verified completion, not present eligibility."
+    end
+
+    def next_json_document(plan)
+      selection = plan.fetch(:selection)
+      ranked = plan.fetch(:ranked)
+      tasks = plan.fetch(:tasks_by_id)
+      metrics = plan.fetch(:metrics)
+      priority = ranked.each_with_index.to_h { |status, index| [status.fetch("id"), index + 1] }
+      occupied = selection.fetch("occupied")
+      candidates = ranked.select { |status| status.fetch("status") == "CANDIDATE" }
+      interventions = ranked.select do |status|
+        %w[STALE STALE_CANDIDATE NEEDS_JUDGMENT FAILED].include?(status.fetch("status")) ||
+          (status.fetch("status") == "BLOCKED" && status.dig("state", "result", "outcome") == "blocked")
+      end
+      dependencies = ranked.select do |status|
+        status.fetch("status") == "BLOCKED" && status["reason"]&.start_with?(DEPENDENCY_REASON_PREFIX)
+      end
+
+      {
+        "schema_version" => NEXT_JSON_VERSION,
+        "advisory" => true,
+        "snapshot" => {
+          "freshness" => "strict_pushed_heads_for_prepared_work",
+          "ready_authorities" => "local_repository_configuration",
+          "revalidation" => "prepare and start independently recheck safety gates"
+        },
+        "facts" => {
+          "tasks" => ranked.map do |status|
+            id = status.fetch("id")
+            { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
+              "depends_on" => tasks.fetch(id).fetch("depends_on", []),
+              "priority_rank" => priority.fetch(id),
+              "freshness" => next_freshness(status, tasks.fetch(id)) }
+          end,
+          "reservations" => occupied.map { |row| next_authority_row(row) }
+        },
+        "recommendations" => {
+          "starts" => selection.fetch("starts").map do |row|
+            id = row.fetch("id")
+            next_action_row(row, priority, metrics).merge(
+              "category" => "start",
+              "commands" => (row.fetch("status") == "READY" ? ["act prepare #{id}", "act start #{id}"] : ["act start #{id}"]),
+              "worker_recommendation" => tasks.fetch(id)["worker_recommendation"]
+            )
+          end,
+          "waiting_capacity" => selection.fetch("waiting_capacity").map do |row|
+            next_action_row(row, priority, metrics).merge(
+              "category" => "wait_write_capacity",
+              "conflicts" => row.fetch("conflicts").map { |conflict| next_authority_row(conflict) }
+            )
+          end,
+          "candidate_review" => candidates.map do |status|
+            next_status_row(status, priority, metrics).merge(
+              "category" => "review_candidate",
+              "artifact" => status.dig("state", "result", "artifact"),
+              "next_action" => "review candidate and verify landing; completion is not inferred"
+            )
+          end,
+          "interventions" => interventions.map do |status|
+            next_status_row(status, priority, metrics).merge(
+              "category" => "intervene", "next_action" => status["next_action"]
+            )
+          end,
+          "waiting_dependencies" => dependencies.map do |status|
+            next_status_row(status, priority, metrics).merge("category" => "wait_dependencies")
+          end
+        }
+      }
+    end
+
+    def next_authority_row(row)
+      { "id" => row["id"] || row["task_id"], "status" => row.fetch("status"),
+        "authorities" => row.fetch("authorities").map { |remote, branch| { "remote_url" => remote, "branch" => branch } } }
+    end
+
+    def next_freshness(status, task)
+      snapshot = status.fetch("state")["snapshot"]
+      label = status.fetch("status")
+      checked = %w[PREPARED IN_FLIGHT CANDIDATE STALE STALE_CANDIDATE].include?(label)
+      {
+        "state" => if checked
+                     %w[STALE STALE_CANDIDATE].include?(label) ? "changed_writable_head" : "checked"
+                   elsif snapshot
+                     "not_checked_effective_state"
+                   else
+                     "not_prepared"
+                   end,
+        "prepared_repositories" => task.fetch("repositories").filter_map do |name, spec|
+          binding = snapshot&.[](name)
+          next unless binding
+
+          { "name" => name, "access" => spec.fetch("access"),
+            "remote_url" => binding.fetch("remote_url"), "branch" => binding.fetch("branch"),
+            "prepared_pushed_sha" => binding.fetch("pushed_sha") }
+        end
+      }
+    end
+
+    def next_action_row(row, priority, metrics)
+      next_authority_row(row).merge("priority_rank" => priority.fetch(row.fetch("id")),
+                                    "downstream" => next_downstream(row.fetch("id"), metrics))
+    end
+
+    def next_status_row(status, priority, metrics)
+      id = status.fetch("id")
+      { "id" => id, "status" => status.fetch("status"), "priority_rank" => priority.fetch(id),
+        "reason" => status["reason"], "downstream" => next_downstream(id, metrics) }
+    end
+
+    def next_downstream(id, metrics)
+      depth, count, unlock_count, parallel_width = metrics.fetch(id, [0, 0, 0, 0])
+      { "depth" => depth, "count" => count, "immediate_unlock_count" => unlock_count,
+        "conditional_parallel_width" => parallel_width }
     end
 
     def display_next_summary(selection, ranked_statuses)
@@ -754,7 +887,7 @@ module AgentCodingTool
 
         Commands:
           status [TASK] [--all | --active]
-          next                advise safe parallel work without changing state
+          next [--json]       advise safe parallel work without changing state
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)

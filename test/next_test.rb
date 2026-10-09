@@ -233,6 +233,123 @@ class NextTest < Minitest::Test
     end
   end
 
+  def test_json_empty_plan_and_stable_priority_match_human_next
+    with_workspace do |dir|
+      inspector = ProbeInspector.new(heads: {})
+      coordinator = coordinator_with(dir, inspector)
+      empty = json_next(dir, coordinator)
+      assert_equal "agent-coding-tool-next/v0.1", empty.fetch("schema_version")
+      assert_equal true, empty.fetch("advisory")
+      assert_empty empty.dig("facts", "tasks")
+      assert empty.fetch("recommendations").values.all?(&:empty?)
+
+      write_task(dir, id: "A-BRIDGE", repositories: repos("x", "y"),
+                 worker_recommendation: { "model" => "GPT-6 Sol", "thinking" => "High" })
+      write_task(dir, id: "B-LEFT", repositories: repos("left"))
+      write_task(dir, id: "C-FREE", repositories: repos("free"))
+      write_task(dir, id: "D-CHILD", depends_on: ["A-BRIDGE"], repositories: repos("child"))
+      inspector = ProbeInspector.new(heads: {}, remote_urls: { "left" => remote("x") })
+      coordinator = coordinator_with(dir, inspector)
+      before = state_bytes(dir)
+      document = json_next(dir, coordinator)
+      human = next_output(dir, coordinator)
+      starts = document.dig("recommendations", "starts")
+      waits = document.dig("recommendations", "waiting_capacity")
+
+      assert_equal section_ids(human, "Next safe parallel starts"), starts.map { |row| row.fetch("id") }
+      assert_equal section_ids(human, "Waiting for write capacity"), waits.map { |row| row.fetch("id") }
+      assert_equal %w[A-BRIDGE C-FREE], starts.map { |row| row.fetch("id") }
+      assert_equal ["act prepare A-BRIDGE", "act start A-BRIDGE"], starts.first.fetch("commands")
+      assert_equal({ "model" => "GPT-6 Sol", "thinking" => "High" }, starts.first.fetch("worker_recommendation"))
+      assert_equal "SELECTED", waits.first.fetch("conflicts").first.fetch("status")
+      assert_equal remote("x"), starts.first.fetch("authorities").first.fetch("remote_url")
+      assert_equal "main", starts.first.fetch("authorities").first.fetch("branch")
+      assert_equal 1, starts.first.dig("downstream", "immediate_unlock_count")
+      assert_equal document, json_next(dir, coordinator)
+      assert_equal before, state_bytes(dir)
+    end
+  end
+
+  def test_json_separates_reservations_candidate_review_and_interventions
+    with_workspace do |dir|
+      %w[A-RUN B-CANDIDATE C-PREPARED D-COLLISION E-JUDGMENT F-CHILD].each do |id|
+        write_task(dir, id:, repositories: repos(id.downcase),
+                   depends_on: id == "F-CHILD" ? ["E-JUDGMENT"] : [])
+      end
+      heads = %w[a-run b-candidate c-prepared d-collision e-judgment f-child]
+              .to_h { |name| [name, "a" * 40] }
+      inspector = ProbeInspector.new(heads:, remote_urls: {
+        "d-collision" => remote("a-run")
+      })
+      coordinator = coordinator_with(dir, inspector)
+      %w[A-RUN B-CANDIDATE C-PREPARED E-JUDGMENT].each { |id| coordinator.prepare(id) }
+      coordinator.start("A-RUN")
+      coordinator.record("B-CANDIDATE", outcome: "candidate_complete", artifact: "candidate.patch")
+      coordinator.record("E-JUDGMENT", outcome: "needs_judgment", summary: "choose scope",
+                         next_action: "request decision")
+      before = state_bytes(dir)
+      document = json_next(dir, coordinator)
+      recommendations = document.fetch("recommendations")
+
+      assert_equal ["C-PREPARED"], recommendations.fetch("starts").map { |row| row.fetch("id") }
+      assert_equal ["act start C-PREPARED"], recommendations.fetch("starts").first.fetch("commands")
+      assert_equal ["D-COLLISION"], recommendations.fetch("waiting_capacity").map { |row| row.fetch("id") }
+      assert_equal %w[A-RUN B-CANDIDATE], document.dig("facts", "reservations").map { |row| row.fetch("id") }
+      assert_equal ["B-CANDIDATE"], recommendations.fetch("candidate_review").map { |row| row.fetch("id") }
+      assert_equal "candidate.patch", recommendations.fetch("candidate_review").first.fetch("artifact")
+      assert_equal "request decision", recommendations.fetch("interventions").first.fetch("next_action")
+      assert_equal ["F-CHILD"], recommendations.fetch("waiting_dependencies").map { |row| row.fetch("id") }
+      refute recommendations.to_s.include?("--allow-write-collision")
+      assert_equal before, state_bytes(dir)
+    end
+  end
+
+  def test_json_freshness_failure_and_bad_arguments_leave_stdout_empty
+    with_workspace do |dir|
+      write_task(dir, id: "A")
+      inspector = ProbeInspector.new(heads: { "alpha" => "a" * 40 })
+      coordinator = coordinator_with(dir, inspector)
+      coordinator.prepare("A")
+      inspector.head_result = {}
+      before = state_bytes(dir)
+      output = StringIO.new
+      errors = StringIO.new
+      assert_equal 2, cli_for(dir, coordinator, out: output, err: errors).run(%w[next --json])
+      assert_empty output.string
+      assert_match(/pushed-head evidence is missing or malformed/, errors.string)
+      assert_equal before, state_bytes(dir)
+
+      output = StringIO.new
+      errors = StringIO.new
+      assert_equal 2, cli_for(dir, coordinator, out: output, err: errors).run(%w[next --json TASK])
+      assert_empty output.string
+      assert_match(/usage: agent-coding-tool next/, errors.string)
+    end
+  end
+
+  def test_json_stale_work_is_intervention_without_start_authority
+    with_workspace do |dir|
+      write_task(dir, id: "A-STALE")
+      write_task(dir, id: "B-READY")
+      heads = { "alpha" => "a" * 40 }
+      inspector = ProbeInspector.new(heads:)
+      coordinator = coordinator_with(dir, inspector)
+      coordinator.prepare("A-STALE")
+      heads["alpha"] = "b" * 40
+
+      document = json_next(dir, coordinator)
+      assert_equal ["B-READY"], document.dig("recommendations", "starts").map { |row| row.fetch("id") }
+      stale = document.dig("recommendations", "interventions").first
+      assert_equal "A-STALE", stale.fetch("id")
+      assert_equal "STALE", stale.fetch("status")
+      assert_match(/pushed branch changed/, stale.fetch("reason"))
+      fact = document.dig("facts", "tasks").find { |row| row.fetch("id") == "A-STALE" }
+      assert_equal "changed_writable_head", fact.dig("freshness", "state")
+      assert_equal "a" * 40, fact.dig("freshness", "prepared_repositories", 0, "prepared_pushed_sha")
+      refute document.to_s.include?("act start A-STALE")
+    end
+  end
+
   def test_next_rejects_arguments_without_reading_or_changing_state
     output = StringIO.new
     errors = StringIO.new
@@ -273,6 +390,14 @@ class NextTest < Minitest::Test
     assert_equal 0, cli_for(dir, coordinator, out: output, err: errors).run(["next"]), errors.string
     assert_empty errors.string
     output.string
+  end
+
+  def json_next(dir, coordinator)
+    output = StringIO.new
+    errors = StringIO.new
+    assert_equal 0, cli_for(dir, coordinator, out: output, err: errors).run(%w[next --json]), errors.string
+    assert_empty errors.string
+    JSON.parse(output.string)
   end
 
   def state_bytes(dir)

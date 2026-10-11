@@ -21,6 +21,26 @@ module AgentCodingTool
 
     def tasks = @task_store.all
 
+    # Launch-only adapters: existing manual lifecycle commands retain their semantics.
+    def launch_prompt(id)
+      task = @task_store.load(id)
+      state = @state_store.load(id)
+      @prompt_renderer.render(task, state.fetch("snapshot"), dependencies: preparation_dependencies(task))
+    end
+
+    def launch_heads(id)
+      task = @task_store.load(id)
+      snapshot = @state_store.load(id).fetch("snapshot")
+      context = { "pending" => { "task" => task, "snapshot" => snapshot } }
+      validate_prepared_provenance!([context])
+      references = freshness_references(task, snapshot)
+      heads = @repo_inspector.pushed_heads(references)
+      validate_freshness!(references, heads)
+      snapshot.to_h do |name, repo|
+        [name, repo.slice("remote_url", "branch").merge("pushed_sha" => heads.fetch(repo.values_at("remote_url", "branch")))]
+      end
+    end
+
     def status(id) = statuses([id]).first
 
     def statuses(ids = nil, completion_filter: :all, strict_freshness: false)
@@ -48,6 +68,7 @@ module AgentCodingTool
       validate_freshness_references!(references) if strict_freshness
       pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references)
       validate_freshness!(references, pushed_heads) if strict_freshness
+      yield pushed_heads if block_given?
 
       resolved = contexts.to_h do |context|
         status = context["status"] || freshness_status(context.fetch("pending"), pushed_heads)

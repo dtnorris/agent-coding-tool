@@ -67,6 +67,7 @@ module AgentCodingTool
       when "next" then next_command(argv)
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
+      when "launch" then return launch_command(argv)
       when "received" then received_command(argv)
       when "finish" then finish_command(argv)
       when "record" then record_command(argv)
@@ -83,6 +84,23 @@ module AgentCodingTool
     end
 
     private
+
+    def launch_command(argv)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
+        opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
+        opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
+      end
+      parser.parse!(argv)
+      unless options.delete(:codex) && argv.length == 1
+        raise Error, "usage: agent-coding-tool launch TASK --codex [--model MODEL] [--reasoning LEVEL]"
+      end
+      Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err)
+              .launch(argv.first, **options)
+    rescue Psych::Exception, TypeError, ArgumentError, KeyError => e
+      raise InvalidTask, "launch: malformed configuration/task data: #{e.message}"
+    end
 
     def publish_command(argv)
       unless argv.count("--dry-run") <= 1 && argv.count("--all") <= 1 &&
@@ -869,6 +887,8 @@ module AgentCodingTool
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)
+          launch TASK --codex [--model MODEL] [--reasoning LEVEL]
+                              prepare/start and run one foreground local worker
           received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]

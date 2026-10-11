@@ -8,8 +8,9 @@ Operational task definitions, project details, generated prompts, and runtime
 state live in a separate data directory and are never required to be committed
 here.
 
-The tool does not launch agents, plan architecture, parse chat prose, or merge
-code. Lifecycle commands remain local. The explicit `publish` command commits
+The opt-in `launch TASK --codex` command runs one local foreground worker.
+The tool does not plan architecture, interpret worker prose, or merge code.
+Lifecycle commands remain local. The explicit `publish` command commits
 and pushes selected changes in the configured private data checkout only.
 
 ## V1 contract
@@ -216,7 +217,7 @@ the operator can stage later work and choose which prepared task starts first.
 When task metadata includes `worker_recommendation`, the terminal output prints
 the advisory model and thinking level after the complete generated prompt. The
 recommendation is not copied into the prompt file, runtime state, or snapshots,
-and the tool does not launch or configure a worker. A fresh preparation clears
+and manual preparation does not configure a worker. A fresh preparation clears
 any in-flight marker and prior collision override record, including when
 re-preparing a task without a recorded outcome.
 
@@ -248,9 +249,111 @@ time and conflicting tasks/repositories. The flag is per start invocation;
 there is no global disable switch.
 
 Collision checks are advisory scheduling safety for a human-operated workflow,
-not a process lock or autonomous scheduler. The tool still does not launch,
-inspect, or control agents or check liveness. Existing pushed-head freshness
+not a process lock or autonomous scheduler. Manual lifecycle commands do not
+launch, inspect, or control agents or check liveness. The opt-in launch command
+below manages only its own child process. Existing pushed-head freshness
 semantics remain authoritative.
+
+`bin/agent-coding-tool launch TASK --codex [--model MODEL] [--reasoning LEVEL]`
+
+Opt-in local execution for the existing `act` wrapper. Launch prepares READY
+work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
+remote freshness and collisions, then calls the existing `start` reservation
+before delivering stdin to exactly one foreground `codex exec` process.
+Launch never uses collision overrides or `prepare --retry`, clears an outcome,
+records received/finish, or stages, commits, pushes or opens a PR. Existing
+manual lifecycle commands retain their contracts; `publish` remains ACTD-only.
+Do not use manual prepare/reset/start to change a reservation while its worker
+may still be running.
+
+V1 requires exactly one writable repository on authoritative `main`. SSH/HTTPS
+GitHub remotes and absolute local remotes (for offline fixtures) are supported;
+other remote/provider/branch forms fail closed. The ordinary checkout supplies
+repository identity according to `repo_root`; its local HEAD and dirtiness
+remain observations. Launch clones the verified prepared remote and branch
+into a new task-owned detached checkout at the exact prepared pushed SHA. It
+never reuses, cleans or repairs an existing workspace. Project or ancestor
+`.codex` project configuration (excluding the normal home authentication store)
+and submodules require operator judgment and are not
+supported in V1. Read-only snapshots may move and are disclosed in launch/exit
+provenance for reconciliation; writable movement before spawn blocks launch.
+Required external freshness failures block prompt handoff.
+Launch also rejects overlapping manual IN_FLIGHT reservations when they are
+stale: pushed movement cannot prove worker termination. This additional guard
+does not change the manual `start` collision contract.
+
+Install Codex and authenticate locally with `codex login` using a ChatGPT
+account. Launch verifies installed `exec`/`login` help and requires the recognized
+ChatGPT login status. It strips API-key and other unneeded environment variables,
+ignores user configuration and execpolicy rules, fixes provider/login to
+OpenAI/ChatGPT, uses `--sandbox workspace-write -c approval_policy=never`,
+disables shell network and additional writable roots (including temporary
+roots), and disables multiple agents. No API-key billing, cloud provisioning,
+profile, arbitrary provider, sandbox escalation or approval override is offered.
+The CLI's built-in default model is used unless `--model` supplies an explicit
+Codex model ID. `worker_recommendation` remains advisory and is retained in the
+handoff; UI model names are never guessed into CLI IDs. `--reasoning` maps
+`minimal`, `low`, `medium`, `high`, or `xhigh` directly to
+`model_reasoning_effort`. Model/account availability is enforced by Codex;
+there is no automatic fallback or retry.
+
+The exact generated prompt bytes go to stdin, followed by a clearly separated
+execution envelope binding its writable repository to the isolated checkout.
+The envelope identifies host `git ls-remote` checks, discloses the absent
+ChatGPT GitHub connector and disabled sandbox network, and requires a limitation
+report when required reads, prerequisites or final freshness cannot be proved.
+Host checks are never represented as CLI checks. Tasks that require that
+connector cannot complete those requirements in this worker. The host checks
+refs again at exit, recording movement or an unavailable check; this neither
+proves worker reconciliation nor grants publication authority.
+
+Evidence lives in a private sibling `<canonical-data-directory>-runs/TASK/`
+directory, outside ACTD and public source, so even `publish --all` does not
+select it. Every started attempt has a timestamped directory containing its
+checkout, exact prompt and stdin, streamed `stdout.jsonl` and `stderr.txt`, final
+response when supplied, and atomic `handoff.json`. Progress streams to the
+terminal; the final response is also printed. No credential/environment dumps
+are collected. Keep this directory private; it contains task contents and
+worker transcripts. Symlinked, foreign or partial artifacts fail closed and
+are preserved. A nonblocking local lock serializes launch reservations.
+
+The small `agent-coding-tool-run/v1` handoff is execution evidence, never task
+or lifecycle authority. It records task/attempt/invocation identity, timestamps,
+host/child PIDs, exact preparation/launch/exit remote+branch+SHA provenance,
+argv/model/reasoning, executable/help hashes, process exit code and signal,
+final-output validity,
+artifact paths, byte counts and SHA-256 identities. `session_id` comes from a
+Codex `thread.started` event when present. `jsonl_path` is ACT's captured event
+transcript; `session_transcript_path` is null because V1 does not discover
+Codex's private rollout path. Missing session metadata is reported as null.
+A future publication gate must independently verify freshness, artifact
+integrity and human lifecycle decisions; NC-02 is not implemented or registered.
+
+Worker exit retains ACT's IN_FLIGHT reservation. `exited` describes process
+termination, including nonzero codes, and never means task completion.
+`invalid_final` means the final output is missing, empty or invalid UTF-8.
+The command returns the actual worker exit status even in that case (including
+zero), prints an explicit error and sets `final_valid: false`; exit zero alone
+is not a valid handoff. Child-spawn failure returns 127 with `child_start_failed`
+and retains the reservation. Ctrl-C/TERM/HUP forward to the worker process
+group, with bounded termination and descendant cleanup; signal exits use
+128 plus the signal number. Failed and interrupted evidence is retained.
+
+Recovery is deliberately manual. `preflight`, `reserving`, `reserved`, `running`
+or `judgment_required` left in a handoff after host failure means liveness is
+unknown, even if a recorded PID is absent (PIDs can be reused). Partial artifacts
+also require judgment. A host crash or SIGKILL cannot guarantee child cleanup.
+Launch will not infer that the worker stopped, erase its reservation, reprepare
+or relaunch it, and unresolved evidence blocks the same writable authority even
+if manual lifecycle state was reset. Inspect artifacts and independently confirm
+that the host, worker and descendants have stopped before resolving anything.
+Then record the appropriate ACT outcome explicitly; only a human-reviewed result
+should use `received`. For another attempt, use explicit `prepare --retry` after
+a non-complete outcome. Preserve and move unresolved/partial run directories to
+an operator-managed archive outside the runs root only after that liveness
+judgment; launch does not provide an automatic recovery switch. An already
+attempted preparation cannot be silently reused. Manual lifecycle commands
+remain human assertions, not process locks.
 
 `bin/agent-coding-tool received TASK --summary "..." --artifact "..." --test
 "rake=pass"`

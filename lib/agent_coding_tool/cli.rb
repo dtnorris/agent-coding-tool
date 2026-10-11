@@ -68,6 +68,7 @@ module AgentCodingTool
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
+      when "deliver" then return deliver_command(argv)
       when "worktrees" then worktree_command(argv, cleanup: false)
       when "cleanup" then worktree_command(argv, cleanup: true)
       when "received" then received_command(argv)
@@ -87,6 +88,18 @@ module AgentCodingTool
 
     private
 
+    def deliver_command(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool deliver TASK" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && argv.empty?
+      root = File.join("#{@data_root}-runs", id)
+      raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
+      dirs = Dir.children(root).map { |entry| File.join(root, entry) }.select { |path| File.directory?(path) }
+      raise InvalidState, "#{id}: ambiguous run evidence" unless dirs.length == 1
+      result = DeliveryManager.new(data_root: @data_root, coordinator: coordinator).deliver(id, run_dir: dirs.first)
+      @out.puts "Draft PR: #{result.fetch('pr').fetch('url')} (CANDIDATE)"
+      0
+    end
+
     def worktree_command(argv, cleanup:)
       id = argv.shift
       if !id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) ||
@@ -101,10 +114,25 @@ module AgentCodingTool
         path = File.join(directory, "worktrees.json")
         raise InvalidState, "#{id}: partial/foreign worktree record" unless File.file?(path) && !File.symlink?(path)
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root, record_path: path)
-        cleanup ? manager.cleanup_preflight : manager.inspect!
+        delivery_path = File.join(directory, "delivery.json")
+        overrides = {}
+        if File.exist?(delivery_path) || File.symlink?(delivery_path)
+          raise InvalidState, "#{id}: foreign delivery evidence" if File.symlink?(delivery_path) || !File.file?(delivery_path)
+          delivery = JSON.parse(File.binread(delivery_path))
+          if %w[committed pushed draft_pr].include?(delivery["stage"])
+            raise InvalidState, "#{id}: invalid delivered commit" unless
+              delivery["schema"] == DeliveryManager::SCHEMA && delivery["task_id"] == id &&
+              delivery["commit_sha"].is_a?(String) && delivery["commit_sha"].match?(/\A[0-9a-f]{40}\z/)
+            name = JSON.parse(File.binread(path)).fetch("entries").find { |entry| entry["access"] == "write" }.fetch("name")
+            overrides[name] = delivery.fetch("commit_sha")
+          end
+        end
+        cleanup ? manager.cleanup_preflight(head_overrides: overrides) : manager.inspect!(head_overrides: overrides)
       end
       @out.puts JSON.pretty_generate("task_id" => id, "dry_run" => cleanup, "attempts" => records)
       0
+    rescue JSON::ParserError, KeyError, TypeError
+      raise InvalidState, "#{id}: malformed worktree/delivery evidence"
     end
 
     def launch_command(argv)

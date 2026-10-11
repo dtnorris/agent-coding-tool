@@ -132,7 +132,20 @@ module AgentCodingTool
         @coordinator.start(id)
         @report["status"] = "reserved"
         save_report
-        execute(command, lock)
+        result = execute(command, lock)
+        if result == 0 && @report["status"] == "exited"
+          delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
+          if delivery.configured?(id)
+            begin
+              delivered = delivery.deliver(id, run_dir: run_dir)
+              @out.puts "Draft PR: #{delivered.fetch('pr').fetch('url')} (CANDIDATE)"
+            rescue StandardError => e
+              @err.puts "DELIVERY BLOCKED: #{e.class}: #{e.message}; implementation and evidence retained"
+              return 2
+            end
+          end
+        end
+        result
       rescue StandardError => e
         @report["status"] = @report["status"] == "preflight" ? "preflight_failed" : "judgment_required"
         @report["error"] = "#{e.class}: #{e.message}"

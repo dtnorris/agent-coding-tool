@@ -71,7 +71,7 @@ module AgentCodingTool
       raise InvalidState, "worktrees: #{e.message}; inspect #{@record_path}; no automatic repair"
     end
 
-    def inspect!
+    def inspect!(head_overrides: {})
       raise InvalidState, "worktrees: missing/foreign ownership record" if File.symlink?(@record_path) || !File.file?(@record_path)
       inventory = JSON.parse(File.read(@record_path))
       unless inventory.is_a?(Hash) && inventory["schema_version"] == SCHEMA &&
@@ -87,15 +87,15 @@ module AgentCodingTool
                entry["branch"] == (entry["access"] == "write" ? "act/#{inventory.fetch('task_id')}/attempt-#{inventory.fetch('attempt')}" : nil)
           raise InvalidState, "worktrees: partial or conflicting ownership; inspect #{@record_path}"
         end
-        verify_entry!(entry)
+        verify_entry!(entry, expected_head: head_overrides.fetch(entry.fetch("name"), entry.fetch("base_sha")))
       end
       inventory
     rescue JSON::ParserError, KeyError, TypeError
       raise InvalidState, "worktrees: malformed ownership; inspect #{@record_path}"
     end
 
-    def cleanup_preflight
-      inventory = inspect!
+    def cleanup_preflight(head_overrides: {})
+      inventory = inspect!(head_overrides: head_overrides)
       inventory.fetch("entries").map do |entry|
         dirty = !git!(entry.fetch("path"), "status", "--porcelain", "--untracked-files=all").empty?
         { "path" => entry.fetch("path"), "branch" => entry["branch"],
@@ -155,7 +155,7 @@ module AgentCodingTool
       [parent, common]
     end
 
-    def verify_entry!(entry)
+    def verify_entry!(entry, expected_head:)
       path, parent = entry.fetch("path"), entry.fetch("parent")
       safe_path!(path)
       raise InvalidState, "worktrees: missing path #{path}" unless File.directory?(path)
@@ -167,12 +167,12 @@ module AgentCodingTool
       common, head = git!(path, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD").lines.map(&:strip)
       common = File.expand_path(common)
       raise InvalidState, "worktrees: Git administration changed" unless common == expected_common
-      raise InvalidState, "worktrees: base changed" unless head == entry.fetch("base_sha")
+      raise InvalidState, "worktrees: HEAD changed" unless head == expected_head
       registry = git!(parent, "worktree", "list", "--porcelain", "-z").split("\0")
       rows = registry.slice_before { |row| row.start_with?("worktree ") }
       matches = rows.select { |row| row.first == "worktree #{path}" }.to_a
       raise InvalidState, "worktrees: Git registry mismatch" unless matches.length == 1 &&
-        matches.first.include?("HEAD #{entry.fetch('base_sha')}") &&
+        matches.first.include?("HEAD #{expected_head}") &&
         matches.first.include?(entry["branch"] ? "branch refs/heads/#{entry['branch']}" : "detached")
       # Git's .git pointer is a file, never a directory controlled by the worker.
       raise InvalidState, "worktrees: foreign Git pointer" unless File.file?(File.join(path, ".git")) && !File.symlink?(File.join(path, ".git"))

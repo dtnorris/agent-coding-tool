@@ -10,8 +10,11 @@ here.
 
 The opt-in `launch TASK --codex` command runs one local foreground worker.
 The tool does not plan architecture, interpret worker prose, or merge code.
-Lifecycle commands remain local. The explicit `publish` command commits
-and pushes selected changes in the configured private data checkout only.
+With an operator-installed private validation contract, a successful launch
+continues through trusted host validation to one task branch and draft PR.
+Human review and integration remain required. The explicit `publish`
+command commits and pushes selected changes in the configured private data
+checkout only.
 
 ## V1 contract
 
@@ -260,9 +263,12 @@ Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch never uses collision overrides or `prepare --retry`, clears an outcome,
-records received/finish, or stages, commits, pushes or opens a PR. Existing
-manual lifecycle commands retain their contracts; `publish` remains ACTD-only.
+Launch never uses collision overrides or `prepare --retry`. Without an installed
+validation contract it retains the NC-02A handoff behavior. With a contract,
+successful worker exit continues to host validation and draft delivery. The
+delivery path can record CANDIDATE only after independently verified publication;
+it never records COMPLETE. Existing manual lifecycle commands retain their
+contracts; `publish` remains ACTD-only.
 Do not use manual prepare/reset/start to change a reservation while its worker
 may still be running.
 
@@ -347,8 +353,8 @@ artifact paths, byte counts and SHA-256 identities. `session_id` comes from a
 Codex `thread.started` event when present. `jsonl_path` is ACT's captured event
 transcript; `session_transcript_path` is null because V1 does not discover
 Codex's private rollout path. Missing session metadata is reported as null.
-A future publication gate must independently verify freshness, artifact
-integrity and human lifecycle decisions; NC-02 is not implemented or registered.
+The optional delivery gate independently verifies freshness, artifact integrity
+and the human-authored validation contract before publication.
 
 Worker exit retains ACT's IN_FLIGHT reservation. `exited` describes process
 termination, including nonzero codes, and never means task completion.
@@ -436,6 +442,85 @@ failed push retains the local commit and reports its SHA; retry the same
 `publish` invocation after resolving the blocker. The command reports
 `PUBLISHED` only after reading back the remote ref.
 
+## Trusted draft delivery (NC-02B)
+
+An operator can opt a task into automatic delivery by installing a private
+`<canonical-data-directory>-validation/TASK.yml` before launch. The sibling
+directory must be operator-owned with mode 0700; the file must be operator-owned
+and not group/world writable. It stays outside ACTD publication and the
+worker's writable sandbox. No ACTD task schema fields are added. The contract
+must list authorized source paths, the exact host commands for final acceptance,
+minimum test/assertion counts, a runtime ceiling, an optional coverage floor,
+and the publication guard. Each listed command must emit a Minitest-style
+summary with zero failures, errors and skips; use a suite command, not a
+worker-supplied result or a standalone command without counts. The host also
+runs `git diff --check`. Example shape (replace all values with the actual
+repository acceptance contract):
+
+```yaml
+allowed_paths:
+  - lib/example.rb
+  - test/example_test.rb
+base_branch: main
+commands:
+  - [ruby, -Ilib:test, test/example_test.rb]
+  - [rake, test]
+min_tests: 1
+min_assertions: 1
+max_seconds: 120
+coverage_min_percent: 90
+publication_guard:
+  trigger_assessment: "Reviewed workflow and external CI triggers; bounded lease XYZ"
+  lease_check: [/absolute/path/to/independent-lease-checker]
+```
+
+The example is a format illustration, not a safe default. The host checks
+contract identity before and after validation, the prepared pushed SHA, task
+authority, native worktree registry, changed paths and file modes. It captures
+full stdout/stderr with hashes and timestamps in the private run directory.
+Missing, skipped, failed, low-coverage or altered evidence blocks publication.
+After validation it rechecks every implementation byte, stages only the
+authorized paths and verifies the committed bytes and single parent. Draft PR
+content includes the actual accepted command output, exits and log hashes.
+Content containing credential patterns or private paths blocks publication
+before push; oversized output also blocks instead of silently truncating it.
+The local logs retain full output and are never copied to the public PR.
+
+Automatic live push requires an external, operator-controlled checker that
+classifies feature-push and draft-PR triggers, including Actions and other
+metered services, and verifies a finite cumulative budget and runtime lease
+enforced independently of ACT. It receives the remote, mutation kind
+(`push` or `pr`) and exact commit SHA. It must classify the exact proposed
+commit (including workflow changes) and return JSON with `independently_enforced: true`,
+`triggers_classified: true`, `crash_surviving: true`, the contract's exact
+`assessment`, the exact `commit_sha`, finite nonnegative `remaining_usd` and
+`maximum_additional_loss_usd`, `expected_cost_usd` and
+`maximum_hourly_rate_usd`, positive finite `maximum_runtime_seconds`,
+and future ISO 8601 `expires_at`. The checker must enforce the stated bounds
+outside ACT even if ACT crashes just after publication. A rate cap, a prose
+claim, or a checker inside the worker worktree does not supply this guarantee.
+No checker is bundled or assumed; absent independent enforcement, the
+validated local candidate remains unpublished with evidence retained.
+
+Delivery stages are recorded in private `delivery.json`. If interrupted,
+`bin/agent-coding-tool deliver TASK` rechecks the existing worktree, tested
+bytes, logs, pushed ref and PR identity without rerunning the coding worker.
+It refuses ambiguous runs, competing refs or a changed authoritative main.
+Local commit, feature push and PR lookup are verified on recovery. No force
+push, automatic rebase, merge or direct main push is performed. A verified
+draft PR records CANDIDATE; `finish` remains a human-reviewed assertion of
+integration. `act publish` continues to address ACTD alone.
+
+**Mac-local pilot, requiring separate authorization:** Install a task-specific
+private contract after reviewing the repository's test and coverage rules.
+Inspect workflows, webhooks and external CI, then provision and independently
+test the bounded lease checker. In a disposable task-owned worktree, confirm
+`act worktrees TASK` ownership before running one `act launch TASK --codex`.
+Review its private `handoff.json` and `delivery.json`, full validation logs,
+feature commit/tree, remote task branch, and draft PR. Exercise `act deliver
+TASK` once to check idempotence. Do not use this browser implementation run as
+evidence that any Mac pilot or real publication occurred.
+
 ## Development
 
 Run `rake` for the full test suite. Tests use explicit temporary data
@@ -446,6 +531,7 @@ when changing Git staging or push behavior:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
+ruby -Ilib:test test/integration/delivery_manager_git_integration.rb
 ```
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous

@@ -399,7 +399,46 @@ class LauncherTest < Minitest::Test
       assert_includes stdout, 'progress'
       assert_includes stderr, 'Run evidence:'
       assert_equal 'exited', report['status']
+      assert_equal "linux", report.fetch("sandbox_probe").fetch("platform") if RUBY_PLATFORM.include?("linux")
       refute @store.load('T')['result']
+    end
+  end
+
+  def test_launch_fails_before_reservation_if_sandbox_can_write_private_evidence
+    fixture do
+      write_fake('leaky')
+      error = assert_raises(AgentCodingTool::InvalidState) { launcher(real_sandbox_probe: true).launch("T") }
+      assert_includes error.message, "sandbox boundary unverified"
+      refute @store.load("T")["started_at"]
+      assert_nil report["sandbox_probe"]
+      refute File.exist?(File.join(@root, "worker-pid"))
+      assert_equal "preflight_failed", report.fetch("status")
+    end
+  end
+
+  def test_launch_handoff_pins_read_only_dependency_and_probes_its_boundary
+    fixture do
+      @dep_ordinary = File.join(@root, "reader")
+      dep_remote = File.join(@root, "dep.git")
+      FileUtils.mkdir_p([@dep_ordinary, dep_remote])
+      File.write(File.join(@dep_ordinary, "file.txt"), "dependency")
+      dep_base = "b" * 40
+      @inspector.heads["dep"] = dep_base
+      @inspector.remote_urls["dep"] = dep_remote
+      task_path = File.join(@data, "tasks", "T.yml")
+      task = YAML.safe_load_file(task_path)
+      task["repositories"]["dep"] = { "access" => "read_only", "path" => @dep_ordinary }
+      File.write(task_path, YAML.dump(task))
+      assert_equal 0, launcher(real_sandbox_probe: true).launch("T")
+      dependency = report.fetch("worktrees").fetch("entries").find { |entry| entry["name"] == "dep" }
+      assert_equal dep_base, dependency.fetch("base_sha")
+      assert_equal dep_base, report.fetch("preparation").fetch("dep").fetch("pushed_sha")
+      assert_nil dependency.fetch("branch")
+      assert_equal dep_remote, dependency.fetch("remote_url")
+      assert_equal File.join(@root, "worktrees", "T", "dep"), dependency.fetch("path")
+      assert_includes File.binread(report.fetch("stdin_path")), dependency.fetch("path")
+      assert_equal 4, report.fetch("sandbox_probe").fetch("protected_paths")
+      assert_equal "exited", report.fetch("status")
     end
   end
 end

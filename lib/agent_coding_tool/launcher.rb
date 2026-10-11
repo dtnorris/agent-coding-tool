@@ -4,6 +4,7 @@ require "digest"
 require "json"
 require "securerandom"
 require "open3"
+require "rbconfig"
 
 module AgentCodingTool
   # Execution evidence is deliberately separate from canonical lifecycle state.
@@ -75,19 +76,27 @@ module AgentCodingTool
       base = state.fetch("snapshot").fetch(name)
       validate_authorities!(task, state)
       reject_unknown_reservations!(base)
+      config = Config.load(File.join(@data_root, "config.yml"))
+      root = WorktreeManager.canonical_system_path(config.worktree_root)
+      [@source_root, @data_root, @run_root].map { |path| WorktreeManager.canonical_system_path(path) }.each do |protected|
+        if root == protected || root.start_with?("#{protected}/") || protected.start_with?("#{root}/")
+          raise InvalidState, "launch: worktree root overlaps source or private task data"
+        end
+      end
       task_root = File.join(@run_root, id)
       raise InvalidState, "#{id}: symlinked task evidence" if File.symlink?(task_root)
       FileUtils.mkdir_p(task_root, mode: 0o700)
       attempt = Dir.children(task_root).length + 1
       run_dir = File.join(task_root, "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{SecureRandom.hex(6)}")
       Dir.mkdir(run_dir, 0o700)
-      workspace = File.join(run_dir, "checkout")
       @report_path = File.join(run_dir, "handoff.json")
+      manager = WorktreeManager.new(root: config.worktree_root, record_path: File.join(run_dir, "worktrees.json"))
       @report = {
         "schema_version" => SCHEMA, "task_id" => id, "attempt" => attempt,
         "invocation_id" => SecureRandom.uuid, "host_pid" => Process.pid,
         "created_at" => Time.now.utc.iso8601, "prepared_at" => state.fetch("prepared_at"),
-        "preparation" => state.fetch("snapshot"), "workspace" => workspace,
+        "preparation" => state.fetch("snapshot"), "workspace" => nil,
+        "worktrees_path" => File.join(run_dir, "worktrees.json"), "worktrees" => nil,
         "writable_repository" => name, "writable_authority" => base.slice("remote_url", "branch", "pushed_sha"),
         "status" => "preflight", "session_id" => nil, "session_transcript_path" => nil,
         "jsonl_path" => File.join(run_dir, "stdout.jsonl"),
@@ -102,13 +111,18 @@ module AgentCodingTool
       save_report
       begin
         File.binwrite(@report.fetch("prompt_path"), prompt)
-        git!("clone", "--no-checkout", "--no-local", "--single-branch", "--branch", base.fetch("branch"), "--", base.fetch("remote_url"), workspace)
-        git!("checkout", "--detach", base.fetch("pushed_sha"), chdir: workspace)
+        inventory = manager.create(task_id: id, attempt: attempt, task: task, snapshot: state.fetch("snapshot"))
+        @report["worktrees"] = inventory
+        workspace = inventory.fetch("entries").find { |entry| entry.fetch("access") == "write" }.fetch("path")
+        @report["workspace"] = workspace
+        save_report
         verify_checkout!(workspace, base)
         heads = checked_status!(id)
         @report["launch_checked_at"] = Time.now.utc.iso8601
         @report["launch_heads"] = heads
         changed_write!(task, state, @report.fetch("launch_heads"))
+        manager.inspect!
+        sandbox_probe!(inventory, workspace, run_dir)
         envelope = execution_envelope(name, workspace, @report.fetch("launch_heads"))
         File.binwrite(@report.fetch("stdin_path"), prompt + envelope)
         command = codex_command(workspace, model, reasoning)
@@ -319,11 +333,62 @@ module AgentCodingTool
     def execution_envelope(name, workspace, heads)
       "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n" \
         "The exact ACT prompt above retains task authority. Work only in #{workspace} for writable repository #{name}; original paths are observations, not writable roots.\n" \
+        "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
         "If required external reads, prerequisites or final freshness cannot be established, stop and report that limitation. Do not claim refreshed GitHub refs.\n" \
         "Run one foreground worker only. Do not delegate, commit, stage, push, publish, or change ACT lifecycle/task data. Return a local patch and review handoff.\n" \
         "--- END ACT LOCAL CLI EXECUTION ENVELOPE ---\n"
+    end
+
+    def sandbox_probe!(inventory, workspace, run_dir)
+      platform = RbConfig::CONFIG.fetch("host_os").match?(/darwin/) ? "macos" :
+                 RbConfig::CONFIG.fetch("host_os").match?(/linux/) ? "linux" : nil
+      raise InvalidState, "launch: unsupported sandbox platform" unless platform
+      help, _stderr, status = Open3.capture3(worker_env, @codex, "sandbox", platform, "--help", unsetenv_others: true)
+      raise InvalidState, "launch: installed CLI lacks sandbox probe" unless status.success? && help.include?("--full-auto")
+      marker = "ACT sandbox probe #{SecureRandom.hex(12)}"
+      targets = [[File.join(workspace, ".act-probe-#{SecureRandom.hex(6)}"), true],
+                 [File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
+      inventory.fetch("entries").each do |entry|
+        next if entry.fetch("access") == "write"
+        targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), false]
+      end
+      inventory.fetch("entries").map { |entry| entry.fetch("parent") }.uniq.each do |parent|
+        admin = git!("rev-parse", "--path-format=absolute", "--git-common-dir", chdir: parent)
+        targets << [File.join(admin, "act-probe-#{SecureRandom.hex(6)}"), false]
+      end
+      begin
+        created = []
+        targets.each do |path, _allowed|
+          File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(marker) }
+          created << path
+        end
+        stdout, _stderr, result = Open3.capture3(
+          worker_env, @codex, "--ignore-user-config",
+          "-c", "sandbox_workspace_write.network_access=false",
+          "-c", "sandbox_workspace_write.writable_roots=[]",
+          "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+          "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+          "sandbox", platform, "--full-auto", "--",
+          "/bin/sh", "-c", 'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\\n"; else printf "0\\n"; fi; done',
+          "act-probe", *targets.map(&:first),
+          chdir: workspace, unsetenv_others: true
+        )
+        results = stdout.lines.map(&:strip)
+        targets.each_with_index do |(path, allowed), index|
+          actual = File.binread(path)
+          unless result.success? && results.length == targets.length &&
+                 results[index] == (allowed ? "1" : "0") && actual == (allowed ? "breach" : marker)
+            raise InvalidState, "launch: sandbox boundary unverified for #{path}; worker not started"
+          end
+        end
+      ensure
+        created.each { |path| File.unlink(path) if File.file?(path) && !File.symlink?(path) }
+      end
+      @report["sandbox_probe"] = { "platform" => platform, "checked_at" => Time.now.utc.iso8601,
+                                   "protected_paths" => targets.count { |_path, allowed| !allowed } }
+      save_report
     end
 
     def git!(*args, chdir: nil)
@@ -333,13 +398,13 @@ module AgentCodingTool
     end
 
     def verify_checkout!(workspace, base)
-      unless git!("remote", "get-url", "origin", chdir: workspace) == base.fetch("remote_url") &&
+      unless git!("remote", "get-url", base.fetch("remote"), chdir: workspace) == base.fetch("remote_url") &&
              git!("rev-parse", "HEAD", chdir: workspace) == base.fetch("pushed_sha") &&
              git!("status", "--porcelain", "--untracked-files=all", chdir: workspace).empty?
         raise InvalidState, "launch: unsafe checkout identity/state"
       end
       _stdout, _stderr, status = Open3.capture3("git", "symbolic-ref", "-q", "HEAD", chdir: workspace)
-      raise InvalidState, "launch: workspace must have detached HEAD" if status.success?
+      raise InvalidState, "launch: workspace must have a dedicated feature branch" unless status.success?
       directory = workspace
       loop do
         # HOME/.codex is the normal authentication store, not project configuration.

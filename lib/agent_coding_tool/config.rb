@@ -8,6 +8,7 @@ module AgentCodingTool
       "repo_root" => "..",
       "default_remote" => "origin",
       "default_branch" => "main",
+      "worktree_root" => "/Users/davidnorris/code/ACT-Worktrees",
       "publish_repository" => "dtnorris/agent-coding-tool-data"
     }.freeze
 
@@ -25,5 +26,6 @@ module AgentCodingTool
     def default_remote = @data.fetch("default_remote")
     def default_branch = @data.fetch("default_branch")
     def publish_repository = @data.fetch("publish_repository")
+    def worktree_root = File.expand_path(@data.fetch("worktree_root"), @base_dir)
   end
 end

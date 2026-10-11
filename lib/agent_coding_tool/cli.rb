@@ -68,6 +68,8 @@ module AgentCodingTool
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
+      when "worktrees" then worktree_command(argv, cleanup: false)
+      when "cleanup" then worktree_command(argv, cleanup: true)
       when "received" then received_command(argv)
       when "finish" then finish_command(argv)
       when "record" then record_command(argv)
@@ -84,6 +86,26 @@ module AgentCodingTool
     end
 
     private
+
+    def worktree_command(argv, cleanup:)
+      id = argv.shift
+      if !id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) ||
+         (cleanup ? argv != ["--dry-run"] : !argv.empty?)
+        raise Error, "usage: agent-coding-tool #{cleanup ? 'cleanup TASK --dry-run' : 'worktrees TASK'}"
+      end
+      root = File.join("#{@data_root}-runs", id)
+      raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
+      records = Dir.children(root).sort.map do |attempt|
+        directory = File.join(root, attempt)
+        raise InvalidState, "#{id}: partial/foreign run evidence" if File.symlink?(directory) || !File.directory?(directory)
+        path = File.join(directory, "worktrees.json")
+        raise InvalidState, "#{id}: partial/foreign worktree record" unless File.file?(path) && !File.symlink?(path)
+        manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root, record_path: path)
+        cleanup ? manager.cleanup_preflight : manager.inspect!
+      end
+      @out.puts JSON.pretty_generate("task_id" => id, "dry_run" => cleanup, "attempts" => records)
+      0
+    end
 
     def launch_command(argv)
       options = {}
@@ -889,6 +911,9 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+          worktrees TASK      verify and show task-owned worktree ownership
+          cleanup TASK --dry-run
+                              inspect removal targets and blockers; changes nothing
           received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]

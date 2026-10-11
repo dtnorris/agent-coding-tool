@@ -6,6 +6,29 @@ require 'minitest/mock'
 # prompt rendering, locks, trust checks and durable evidence use production code.
 # `git: true` and `process: true` select the genuine integration paths explicitly.
 module LauncherSupport
+  class FakeWorktrees
+    def initialize(root, ordinary, remote, base)
+      @root, @ordinary, @remote, @base = root, ordinary, remote, base
+    end
+
+    def create(task_id:, attempt:, task:, snapshot:)
+      entries = task.fetch('repositories').map do |name, spec|
+        path = File.join(@root, 'worktrees', task_id, name)
+        FileUtils.mkdir_p(path)
+        source = snapshot.fetch(name)
+        file = File.join(source.fetch('path'), 'file.txt')
+        FileUtils.cp(file, path) if File.file?(file)
+        { 'name' => name, 'path' => path, 'access' => spec.fetch('access'),
+          'parent' => source.fetch('path'),
+          'branch' => spec.fetch('access') == 'write' ? "act/#{task_id}/attempt-#{attempt}" : nil,
+          'base_sha' => source.fetch('pushed_sha'), 'remote_url' => source.fetch('remote_url') }
+      end
+      { 'entries' => entries }
+    end
+
+    def inspect! = true
+  end
+
   class Inspector < TestHelpers::FakeInspector
     def initialize(ordinary, remote, base)
       super(heads: { 'repo' => base }, remote_urls: { 'repo' => remote })
@@ -53,6 +76,23 @@ module LauncherSupport
     File.write(@@fake_executable, <<~RUBY)
       #!#{RbConfig.ruby}
       require 'json'
+      if ARGV.include?('sandbox')
+        if ARGV.include?('--help')
+          puts '--full-auto'
+          exit
+        end
+        targets = ARGV.drop(ARGV.index('act-probe') + 1)
+        settings = JSON.parse(File.read(File.expand_path('../../../fake-settings.json', Dir.pwd)))
+        targets.each do |target|
+          if settings.fetch('mode') == 'leaky' || (target.start_with?(Dir.pwd + '/') && !target.include?('/.git/'))
+            File.write(target, 'breach')
+            puts '1'
+          else
+            puts '0'
+          end
+        end
+        exit
+      end
       if ARGV == ['exec', '--help']
         puts '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model'
         exit
@@ -90,6 +130,7 @@ module LauncherSupport
   end
 
   def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true)
+    @fake_mode = mode
     @fake_auth = auth
     @fake_help = help ? '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model' : '--sandbox'
     raise 'real preflight requires default fake help/auth' if @real_git && (!help || auth != 'Logged in using ChatGPT')
@@ -126,6 +167,8 @@ module LauncherSupport
   def fixture(git: false, process: false)
     Dir.mktmpdir('act-launch-') do |root|
       @root = File.realpath(root)
+      @unit_workspace = nil
+      @dep_ordinary = nil
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
@@ -140,7 +183,7 @@ module LauncherSupport
         File.write(File.join(@ordinary, 'file.txt'), "base\n")
         @base = 'a' * 40
       end
-      File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root))
+      File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root, 'worktree_root' => File.join(@root, 'worktrees')))
       write_task(@data, id: 'T', repositories: { 'repo' => { 'access' => 'write', 'path' => @ordinary } })
       write_fake
       @config = AgentCodingTool::Config.load(File.join(@data, 'config.yml'))
@@ -155,7 +198,9 @@ module LauncherSupport
         yield
       else
         AgentCodingTool::RepoInspector.stub(:new, @inspector) do
-          Open3.stub(:capture3, method(:unit_capture)) { yield }
+          AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do
+            Open3.stub(:capture3, method(:unit_capture)) { yield }
+          end
         end
       end
     end
@@ -164,41 +209,51 @@ module LauncherSupport
   def unit_capture(*command, **options)
     if command.first.is_a?(Hash)
       env = command.shift
-      raise 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? && options == { unsetenv_others: true }
+      allowed_options = [{ unsetenv_others: true },
+                         { chdir: File.join(@root, 'worktrees', 'T', 'repo'), unsetenv_others: true }]
+      raise 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
+                                                    allowed_options.include?(options)
       raise "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
       case command
       when ['exec', '--help'] then [@fake_help, '', Status.new(true)]
       when ['login', '--help'] then ['status Show login status', '', Status.new(true)]
       when ['login', 'status'] then ['', @fake_auth, Status.new(!@fake_auth.empty?)]
+      when ['sandbox', 'linux', '--help'] then ['--full-auto', '', Status.new(true)]
+      when ['sandbox', 'macos', '--help'] then ['--full-auto', '', Status.new(true)]
+      when ->(args) { args.include?('sandbox') && args.include?('act-probe') }
+        paths = command.drop(command.index('act-probe') + 1)
+        output = paths.map do |path|
+          allowed = @fake_mode == 'leaky' || path.start_with?(File.join(@root, 'worktrees', 'T', 'repo') + '/')
+          File.write(path, 'breach') if allowed
+          allowed ? "1\n" : "0\n"
+        end.join
+        [output, '', Status.new(true)]
       else raise "unexpected preflight: #{command.inspect}"
       end
     else
       raise "unexpected external command: #{command.inspect}" unless command.shift == 'git'
-      case command.first
-      when 'clone'
-        raise "unexpected clone: #{command.inspect}" unless command == ['clone', '--no-checkout', '--no-local', '--single-branch', '--branch', 'main', '--', @remote, command.last]
-        raise 'unexpected clone options' unless options.empty?
-        @unit_workspace = command.last
-        FileUtils.mkdir_p(command.last)
-        FileUtils.cp(File.join(@ordinary, 'file.txt'), command.last)
-        ['', '', Status.new(true)]
-      else
-        raise 'unexpected Git working directory' unless options == { chdir: @unit_workspace }
-        case command
-        when ['checkout', '--detach', @base] then ['', '', Status.new(true)]
-        when ['remote', 'get-url', 'origin'] then [@remote, '', Status.new(true)]
-        when ['rev-parse', 'HEAD'] then [@base, '', Status.new(true)]
-        when ['status', '--porcelain', '--untracked-files=all'] then ['', '', Status.new(true)]
-        when ['symbolic-ref', '-q', 'HEAD'] then ['', '', Status.new(false)]
-        else raise "unexpected Git operation: #{command.inspect}"
-        end
+      if command == ['rev-parse', '--path-format=absolute', '--git-common-dir'] &&
+         [@ordinary, @dep_ordinary].compact.include?(options[:chdir])
+        admin = File.join(@root, options.fetch(:chdir) == @ordinary ? 'admin' : 'admin-dep')
+        FileUtils.mkdir_p(admin)
+        return [admin, '', Status.new(true)]
+      end
+      @unit_workspace ||= File.join(@root, 'worktrees', 'T', 'repo')
+      raise 'unexpected Git working directory' unless options == { chdir: @unit_workspace }
+      case command
+      when ['remote', 'get-url', 'origin'] then [@remote, '', Status.new(true)]
+      when ['rev-parse', 'HEAD'] then [@base, '', Status.new(true)]
+      when ['status', '--porcelain', '--untracked-files=all'] then ['', '', Status.new(true)]
+      when ['symbolic-ref', '-q', 'HEAD'] then ['refs/heads/act/T/attempt-1', '', Status.new(true)]
+      else raise "unexpected Git operation: #{command.inspect}"
       end
     end
   end
 
-  def launcher(**extra)
+  def launcher(real_sandbox_probe: false, **extra)
     instance = AgentCodingTool::Launcher.new(coordinator: @coordinator, data_root: @data, source_root: Dir.pwd,
                                            out: @out, err: @err, codex: @fake, **extra)
+    instance.define_singleton_method(:sandbox_probe!) { |_inventory, _workspace, _run_dir| true } unless real_sandbox_probe
     unless @real_process
       root, store = @root, @store
       instance.define_singleton_method(:execute) do |command, _lock|

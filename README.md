@@ -270,9 +270,13 @@ V1 requires exactly one writable repository on authoritative `main`. SSH/HTTPS
 GitHub remotes and absolute local remotes (for offline fixtures) are supported;
 other remote/provider/branch forms fail closed. The ordinary checkout supplies
 repository identity according to `repo_root`; its local HEAD and dirtiness
-remain observations. Launch clones the verified prepared remote and branch
-into a new task-owned detached checkout at the exact prepared pushed SHA. It
-never reuses, cleans or repairs an existing workspace. Project or ancestor
+remain observations. Launch creates native Git worktrees under
+`/Users/davidnorris/code/ACT-Worktrees/TASK/repository/` by default. Private
+ACTD `config.yml` can set a dedicated `worktree_root`. The sole writer gets
+branch `act/TASK/attempt-N` at the prepared pushed SHA; readers are pinned
+detached at their prepared SHAs. Missing local commit objects fail closed.
+The ordinary checkout is never reset, switched, stashed or cleaned. Occupied
+paths and conflicting branches require operator inspection. Project or ancestor
 `.codex` project configuration (excluding the normal home authentication store)
 and submodules require operator judgment and are not
 supported in V1. Read-only snapshots may move and are disclosed in launch/exit
@@ -288,7 +292,12 @@ ChatGPT login status. It strips API-key and other unneeded environment variables
 ignores user configuration and execpolicy rules, fixes provider/login to
 OpenAI/ChatGPT, uses `--sandbox workspace-write -c approval_policy=never`,
 disables shell network and additional writable roots (including temporary
-roots), and disables multiple agents. No API-key billing, cloud provisioning,
+roots), and disables multiple agents. Before reserving ACT state, a no-inference
+Codex sandbox probe checks writable access inside the writer worktree and
+denied writes to private evidence, each reader worktree and the shared Git
+administration directories. Unsupported CLI probe or a failed boundary check
+blocks worker handoff. The operator's installed Mac CLI must pass this probe.
+No API-key billing, cloud provisioning,
 profile, arbitrary provider, sandbox escalation or approval override is offered.
 The CLI's built-in default model is used unless `--model` supplies an explicit
 Codex model ID. `worker_recommendation` remains advisory and is retained in the
@@ -310,12 +319,24 @@ proves worker reconciliation nor grants publication authority.
 Evidence lives in a private sibling `<canonical-data-directory>-runs/TASK/`
 directory, outside ACTD and public source, so even `publish --all` does not
 select it. Every started attempt has a timestamped directory containing its
-checkout, exact prompt and stdin, streamed `stdout.jsonl` and `stderr.txt`, final
+`worktrees.json` ownership record, exact prompt and stdin, streamed `stdout.jsonl` and `stderr.txt`, final
 response when supplied, and atomic `handoff.json`. Progress streams to the
 terminal; the final response is also printed. No credential/environment dumps
 are collected. Keep this directory private; it contains task contents and
-worker transcripts. Symlinked, foreign or partial artifacts fail closed and
+worker transcripts. Source worktrees live in the separate visible parent.
+The record binds task/attempt, real parent repository, remote, branch or
+detached status, base SHA, path and access. Fresh-process inspection verifies
+Git's registry and these identities. Symlinked, foreign or partial artifacts fail closed and
 are preserved. A nonblocking local lock serializes launch reservations.
+On macOS, the root-owned `/var` and `/tmp` aliases are canonicalized to their
+`/private` targets before checking the remaining path components. Arbitrary
+symlinks within those paths remain forbidden.
+
+`act worktrees TASK` verifies ownership and shows the worktree inventory.
+`act cleanup TASK --dry-run` lists targets and dirty-worktree blockers without
+changing filesystem or Git state. Actual deletion belongs to NC-02C.
+Interrupted creation preserves its operation marker and any created paths
+and branches for manual recovery.
 
 The small `agent-coding-tool-run/v1` handoff is execution evidence, never task
 or lifecycle authority. It records task/attempt/invocation identity, timestamps,

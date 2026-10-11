@@ -138,33 +138,17 @@ module LauncherSupport
     File.write(File.join(@root, 'fake-settings.json'), JSON.generate('mode' => mode))
   end
 
-  # Build once, then copy independent repositories (no shared mutable Git refs,
-  # object alternates, hard links or worktrees). Fixture operations aren't product
-  # assertions; fail loudly on a setup error without inflating assertion counts.
-  def git_seed
-    return @@git_seed if defined?(@@git_seed)
-
-    @@git_seed = Dir.mktmpdir('act-launch-seed-')
-    Minitest.after_run { FileUtils.remove_entry(@@git_seed) }
-    checkout = File.join(@@git_seed, 'ordinary')
-    remote = File.join(@@git_seed, 'remote.git')
-    setup_git('init', '--initial-branch=main', checkout)
-    setup_git('config', 'user.email', 'fixture@example.test', chdir: checkout)
-    setup_git('config', 'user.name', 'Fixture', chdir: checkout)
-    File.write(File.join(checkout, 'file.txt'), "base\n")
-    setup_git('add', 'file.txt', chdir: checkout)
-    setup_git('commit', '-m', 'fixture', chdir: checkout)
-    setup_git('clone', '--bare', checkout, remote)
-    @@git_seed
-  end
-
+  # Copy independent ordinary repositories; only read-only cases share the
+  # immutable seed remote. No refs, alternates, hard links or worktrees are
+  # shared with cases that mutate their remote. Fixture setup fails loudly
+  # without inflating product assertion counts.
   def setup_git(*args, chdir: nil)
     stdout, stderr, status = Open3.capture3('git', *args, **(chdir ? { chdir: chdir } : {}))
     raise "Git fixture failed: #{stderr}" unless status.success?
     stdout.strip
   end
 
-  def fixture(git: false, process: false)
+  def fixture(git: false, process: false, mutable_remote: false)
     Dir.mktmpdir('act-launch-') do |root|
       @root = File.realpath(root)
       @unit_workspace = nil
@@ -173,11 +157,17 @@ module LauncherSupport
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
       if git
-        seed = git_seed
-        FileUtils.cp_r(File.join(seed, 'ordinary'), @ordinary)
-        FileUtils.cp_r(File.join(seed, 'remote.git'), @remote)
-        setup_git('remote', 'add', 'origin', @remote, chdir: @ordinary)
-        @base = setup_git('rev-parse', 'HEAD', chdir: @ordinary)
+        seed = TestHelpers.git_seed
+        FileUtils.cp_r(File.join(seed.fetch(:root), 'ordinary'), @ordinary)
+        if mutable_remote
+          FileUtils.cp_r(File.join(seed.fetch(:root), 'remote.git'), @remote)
+          setup_git('remote', 'set-url', 'origin', @remote, chdir: @ordinary)
+        else
+          # Other tests read the seed remote; their Git refs and worktrees live
+          # only in the independently copied ordinary checkout.
+          @remote = File.join(seed.fetch(:root), 'remote.git')
+        end
+        @base = seed.fetch(:base)
       else
         FileUtils.mkdir_p([@ordinary, @remote])
         File.write(File.join(@ordinary, 'file.txt'), "base\n")

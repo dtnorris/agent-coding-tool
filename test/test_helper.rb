@@ -6,6 +6,30 @@ require "tmpdir"
 require "agent_coding_tool"
 
 module TestHelpers
+  def self.git_seed
+    return @git_seed if @git_seed
+
+    directory = Dir.mktmpdir("act-git-seed-")
+    ordinary = File.join(directory, "ordinary")
+    remote = File.join(directory, "remote.git")
+    run = lambda do |*args, chdir: nil|
+      _out, err, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
+      raise "Git seed failed: #{err}" unless status.success?
+    end
+    run.call("init", "--initial-branch=main", ordinary)
+    run.call("config", "user.email", "fixture@example.test", chdir: ordinary)
+    run.call("config", "user.name", "Fixture", chdir: ordinary)
+    File.write(File.join(ordinary, "file.txt"), "base\n")
+    run.call("add", "file.txt", chdir: ordinary)
+    run.call("commit", "-m", "base", chdir: ordinary)
+    run.call("clone", "--bare", ordinary, remote)
+    run.call("remote", "add", "origin", remote, chdir: ordinary)
+    base, err, status = Open3.capture3("git", "rev-parse", "HEAD", chdir: ordinary)
+    raise "Git seed failed: #{err}" unless status.success?
+    Minitest.after_run { FileUtils.remove_entry(directory) }
+    @git_seed = { root: directory, base: base.strip }.freeze
+  end
+
   FakeInspector = Struct.new(:heads, :local_dirty, :remote_urls, keyword_init: true) do
     def snapshot(name, _spec)
       sha = heads.fetch(name)

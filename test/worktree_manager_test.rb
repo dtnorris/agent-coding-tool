@@ -10,34 +10,25 @@ class WorktreeManagerTest < Minitest::Test
     stdout.strip
   end
 
-  def git_seed
-    return @@git_seed if defined?(@@git_seed)
-
-    @@git_seed = Dir.mktmpdir("act-worktree-seed-")
-    Minitest.after_run { FileUtils.remove_entry(@@git_seed) }
-    ordinary = File.join(@@git_seed, "ordinary")
-    git("init", "--initial-branch=main", ordinary)
-    git("config", "user.email", "fixture@example.test", chdir: ordinary)
-    git("config", "user.name", "Fixture", chdir: ordinary)
-    File.write(File.join(ordinary, "file.txt"), "base\n")
-    git("add", "file.txt", chdir: ordinary)
-    git("commit", "-m", "base", chdir: ordinary)
-    git("clone", "--bare", ordinary, File.join(@@git_seed, "remote.git"))
-    @@git_seed
-  end
-
-  def fixture
+  def fixture(git: true)
     Dir.mktmpdir("act-worktrees-") do |root|
       @root = File.realpath(root)
       @ordinary = File.join(@root, "ordinary")
-      @remote = File.join(@root, "remote.git")
+      seed = TestHelpers.git_seed if git
+      @remote = git ? File.join(seed.fetch(:root), "remote.git") : File.join(@root, "remote.git")
       @record = File.join(@root, "private", "worktrees.json")
       @visible = File.join(@root, "ACT-Worktrees")
       FileUtils.mkdir_p(File.dirname(@record))
-      FileUtils.cp_r(File.join(git_seed, "ordinary"), @ordinary)
-      FileUtils.cp_r(File.join(git_seed, "remote.git"), @remote)
-      git("remote", "add", "origin", @remote, chdir: @ordinary)
-      @base = git("rev-parse", "HEAD", chdir: @ordinary)
+      if git
+        # The seed remote is immutable in this suite; each test owns its copied
+        # ordinary checkout, refs, worktrees and ownership record.
+        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), @ordinary)
+        @base = seed.fetch(:base)
+      else
+        # These failures occur before Git identity is consulted.
+        FileUtils.mkdir_p([@ordinary, @remote])
+        @base = "a" * 40
+      end
       @snapshot = { "repo" => { "path" => @ordinary, "remote" => "origin", "remote_url" => @remote,
                                   "branch" => "main", "pushed_sha" => @base } }
       @task = { "repositories" => { "repo" => { "access" => "write" } } }
@@ -127,7 +118,7 @@ class WorktreeManagerTest < Minitest::Test
   end
 
   def test_symlinked_root_and_interrupted_add_preserve_evidence
-    fixture do
+    fixture(git: false) do
       alias_root = File.join(@root, "foreign-alias")
       File.symlink(@ordinary, alias_root)
       foreign_manager = AgentCodingTool::WorktreeManager.new(root: alias_root, record_path: @record)

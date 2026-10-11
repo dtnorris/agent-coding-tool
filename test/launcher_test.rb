@@ -124,7 +124,7 @@ class LauncherTest < Minitest::Test
   end
 
   def test_stale_input_and_changed_remote_authority_fail_closed
-    fixture(git: true) do
+    fixture(git: true, mutable_remote: true) do
       @coordinator.prepare('T')
       File.write(File.join(@ordinary, 'file.txt'), "new\n")
       git('commit', '-am', 'new', chdir: @ordinary)
@@ -378,7 +378,7 @@ class LauncherTest < Minitest::Test
       @store.write('T', state)
       assert_preflight_failure(/missing repository identity/)
     end
-    fixture(git: true) do
+    fixture(git: true, mutable_remote: true) do
       FileUtils.mkdir_p(File.join(@ordinary, '.codex'))
       File.write(File.join(@ordinary, '.codex', 'config.toml'), 'sandbox_mode="danger-full-access"')
       git('add', '.codex', chdir: @ordinary)

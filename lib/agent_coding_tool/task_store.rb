@@ -54,6 +54,22 @@ module AgentCodingTool
       depends_on = task.fetch("depends_on", [])
       raise InvalidTask, "#{path}: depends_on must be an array" unless depends_on.is_a?(Array)
 
+      if task.key?("checkpoint")
+        policy = task["checkpoint"]
+        unless policy.is_a?(Hash) && %w[required exempt].include?(policy["mode"]) &&
+               (policy.keys - %w[mode category reason]).empty?
+          raise InvalidTask, "#{path}: checkpoint mode must be required or exempt"
+        end
+        if policy["mode"] == "exempt"
+          unless %w[planning inspection no_code].include?(policy["category"]) &&
+                 policy["reason"].is_a?(String) && !policy["reason"].strip.empty?
+            raise InvalidTask, "#{path}: checkpoint exemption requires category and reason"
+          end
+        elsif policy.keys != ["mode"]
+          raise InvalidTask, "#{path}: required checkpoint takes only mode"
+        end
+      end
+
       if task.key?("worker_recommendation")
         recommendation = task["worker_recommendation"]
         unless recommendation.is_a?(Hash)

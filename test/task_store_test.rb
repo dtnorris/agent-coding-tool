@@ -5,6 +5,25 @@ require_relative "test_helper"
 class TaskStoreTest < Minitest::Test
   include TestHelpers
 
+  def test_checkpoint_defaults_to_required_and_exemptions_are_explicit
+    with_workspace do |dir|
+      write_task(dir, id: "T1")
+      path = File.join(dir, "tasks", "T1.yml")
+      store = AgentCodingTool::TaskStore.new(File.join(dir, "tasks"))
+      assert AgentCodingTool::CheckpointPolicy.required?(store.load("T1"))
+      task = YAML.safe_load_file(path)
+      task["checkpoint"] = { "mode" => "exempt", "category" => "planning", "reason" => "No executable deliverable." }
+      File.write(path, YAML.dump(task))
+      refute AgentCodingTool::CheckpointPolicy.required?(store.load("T1"))
+      [nil, { "mode" => "exempt" }, { "mode" => "exempt", "category" => "coding", "reason" => "No" },
+       { "mode" => "required", "reason" => "silent bypass" }].each do |invalid|
+        task["checkpoint"] = invalid
+        File.write(path, YAML.dump(task))
+        assert_raises(AgentCodingTool::InvalidTask) { store.load("T1") }
+      end
+    end
+  end
+
   def test_worker_recommendation_accepts_generic_nonempty_strings
     with_workspace do |dir|
       write_task(dir, id: "T1", worker_recommendation: {

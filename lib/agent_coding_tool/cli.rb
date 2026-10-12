@@ -68,6 +68,7 @@ module AgentCodingTool
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
+      when "checkpoint" then return checkpoint_command(argv)
       when "worktrees" then worktree_command(argv, cleanup: false)
       when "cleanup" then worktree_command(argv, cleanup: true)
       when "received" then received_command(argv)
@@ -86,6 +87,40 @@ module AgentCodingTool
     end
 
     private
+
+    def checkpoint_command(argv)
+      action = argv.shift
+      id = argv.shift
+      unless %w[record verify gate recover].include?(action) && id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+        raise Error, "usage: agent-coding-tool checkpoint {record|verify|gate|recover} TASK ..."
+      end
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--workspace PATH") { |value| options[:workspace] = value }
+        opts.on("--artifact PATH") { |value| options[:artifact] = value }
+        opts.on("--destination PATH") { |value| options[:destination] = value }
+        opts.on("--confirm-disconnected") { options[:confirm_disconnected] = true }
+      end
+      parser.order!(argv)
+      checkpoint = Checkpoint.new(data_root: @data_root)
+      result = case action
+               when "record"
+                 raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination]
+                 checkpoint.record(id, workspace: options.fetch(:workspace), artifact: options[:artifact])
+               when "verify"
+                 raise Error, "checkpoint verify accepts only --workspace" unless argv.empty? && !options[:artifact] && !options[:destination]
+                 checkpoint.verify(id, workspace: options[:workspace])
+               when "gate"
+                 raise Error, "checkpoint gate requires --workspace PATH -- COMMAND" unless options[:workspace] && argv.any? && !options[:artifact] && !options[:destination]
+                 checkpoint.gate(id, workspace: options.fetch(:workspace), command: argv)
+               when "recover"
+                 raise Error, "checkpoint recover requires --destination and --confirm-disconnected" unless
+                   options[:destination] && options[:confirm_disconnected] && argv.empty? && !options[:workspace] && !options[:artifact]
+                 checkpoint.recover(id, destination: options.fetch(:destination), confirm_disconnected: true)
+               end
+      @out.puts JSON.pretty_generate(result)
+      0
+    end
 
     def worktree_command(argv, cleanup:)
       id = argv.shift
@@ -585,6 +620,7 @@ module AgentCodingTool
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
 
       if status == "IN_FLIGHT"
+        @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
         if item["reason"]
           puts_wrapped(display_in_flight_reason(item.fetch("reason")),
                        first_prefix: "    ", continuation_prefix: "    ")
@@ -614,6 +650,7 @@ module AgentCodingTool
     end
 
     def display_explicit_details(item)
+      @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
       if recorded_retryable_outcome?(item)
         puts_full_detail("reason", item["reason"]) if item["reason"]
         puts_full_detail("next", item["next_action"]) if item.key?("next_action")
@@ -911,6 +948,10 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+          checkpoint record TASK --workspace PATH [--artifact PATH]
+          checkpoint verify TASK [--workspace PATH]
+          checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]
+          checkpoint recover TASK --destination PATH --confirm-disconnected
           worktrees TASK      verify and show task-owned worktree ownership
           cleanup TASK --dry-run
                               inspect removal targets and blockers; changes nothing

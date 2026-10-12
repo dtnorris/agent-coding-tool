@@ -34,6 +34,15 @@ module AgentCodingTool
       lines << "Do not commit, push, create a PR, or otherwise mutate GitHub."
       lines << "Do not broaden write scope or override explicit task-specific read restrictions. If the task cannot be completed correctly within the stated boundary, report the dependency or compatibility defect instead."
       lines << ""
+      lines << "## Implementation checkpoint"
+      lines << ""
+      if CheckpointPolicy.required?(task)
+        lines << "After a coherent code change or executable edit script passes focused validation, preserve it before full-suite, coverage, lint, dependency, benchmark or runtime gates. Ask the operator to run `act checkpoint record TASK --workspace PATH` from the host on the complete local implementation (or supply `--artifact PATH` for an exact patch). ACT verifies content, changed files and applicability to the prepared writable baseline in private run evidence. Run `act checkpoint gate TASK --workspace PATH -- COMMAND` for each expensive gate; refresh after edits and verify before final handoff. Focused-test success remains your report, separate from ACT's verified preservation. A checkpoint is recovery evidence, not CANDIDATE, COMPLETE or permission to publish. Browser-only work cannot be host-verified until its complete implementation is available locally; report that limit instead of claiming a checkpoint."
+      else
+        policy = task.fetch("checkpoint")
+        lines << "Checkpoint exempt (#{policy.fetch('category')}): #{policy.fetch('reason')}"
+      end
+      lines << ""
       append_dependencies(lines, dependencies)
       lines << "## Goal"
       lines << ""

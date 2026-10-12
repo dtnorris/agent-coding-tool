@@ -88,6 +88,12 @@ Required task fields are `id`, `title`, and a non-empty `repositories` mapping.
 `depends_on`, `constraints`, and `acceptance` are arrays. `goal` is free text.
 An optional `worker_recommendation` mapping supplies non-empty `model` and
 `thinking` strings as human-authored launch guidance.
+An omitted `checkpoint` field requires a verified implementation checkpoint
+for substantive coding work, including edit scripts. An explicit exception is
+`checkpoint: {mode: exempt, category: planning, reason: "No executable change."}`;
+`inspection` and `no_code` are also supported categories. The parser rejects
+missing or empty reasons and unknown modes. Existing task files parse unchanged;
+previously prepared prompt files remain snapshots and do not gain these instructions.
 
 ## Typical workflow
 
@@ -376,6 +382,45 @@ judgment; launch does not provide an automatic recovery switch. An already
 attempted preparation cannot be silently reused. Manual lifecycle commands
 remain human assertions, not process locks.
 
+## Implementation checkpoints
+
+After focused validation of a coherent implementation, the operator can run
+`act checkpoint record TASK --workspace PATH` on a local Git checkout whose
+HEAD and configured remote match the prepared writable baseline. The optional
+`--artifact PATH` must contain exactly the complete generated binary patch.
+The command stages the complete worktree into a temporary Git index, including
+untracked files, then stores the patch and its baseline, attempt, changed-file
+inventory, byte count and hashes in private `<data-directory>-runs/checkpoints/`
+evidence. It verifies clean applicability and exact reconstructed content
+before atomically pointing to the new immutable record. Refreshing after edits
+retains the previous artifact and record. Exactly one writable repository is
+supported; other cases fail closed pending a fuller launch contract. When a
+matching local launch record exists, recording also verifies that the workspace
+is the task-owned writable worktree in Git's registry.
+
+Run `act checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]` before
+each expensive validation command. It verifies the preserved artifact and the
+current implementation before and after the command; a missing, changed,
+corrupted or non-applicable checkpoint refuses execution. Run `act checkpoint
+verify TASK --workspace PATH` again before the final handoff. A failed check
+records `stale`; ordinary status displays the last explicit check without
+rehashing the worktree. The operator or worker must use the gate: ACT cannot
+intercept commands run directly in a shell or validate a browser workspace
+that has not been brought to a local checkout. Focused-test success remains a
+separate worker report, never inferred from a valid checkpoint.
+
+After independently confirming a disconnected worker has stopped, run
+`act checkpoint recover TASK --destination PATH --confirm-disconnected`.
+Recovery verifies the immutable record and checksum, reconstructs the exact
+prepared baseline from the ordinary local repository in an unoccupied
+destination, reapplies the patch and compares the complete content and
+inventory. It does not change the ACT outcome or resolve uncertain liveness.
+The private run root survives deletion of the disposable agent worktree and
+ordinary process interruption; it is local to the same host and disk. It
+offers no guarantee against host or disk loss, inaccessible browser files or
+unverified external retention. Manual `received`, `finish` and `record` remain
+human assertions; checkpoint validity grants none of those outcomes.
+
 `bin/agent-coding-tool received TASK --summary "..." --artifact "..." --test
 "rake=pass"`
 
@@ -446,6 +491,7 @@ when changing Git staging or push behavior:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
+ruby -Ilib:test test/integration/checkpoint_git_integration.rb
 ```
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous

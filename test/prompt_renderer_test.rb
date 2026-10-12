@@ -3,6 +3,22 @@
 require_relative "test_helper"
 
 class PromptRendererTest < Minitest::Test
+  def test_checkpoint_instruction_is_one_section_and_exemption_is_reviewable
+    task = { "id" => "T", "title" => "Code", "repositories" => { "repo" => { "access" => "write" } } }
+    snapshot = { "repo" => { "path" => "/repo", "remote_url" => "git@github.com:example/repo.git",
+                              "branch" => "main", "pushed_sha" => "a" * 40 } }
+    renderer = AgentCodingTool::PromptRenderer.new
+    prompt = renderer.render(task, snapshot)
+    assert_equal 1, prompt.scan(/^## Implementation checkpoint$/).length
+    assert_includes prompt, "passes focused validation"
+    assert_includes prompt, "ACT verifies content"
+    assert_includes prompt, "not CANDIDATE, COMPLETE"
+    exempt = renderer.render(task.merge("checkpoint" => { "mode" => "exempt", "category" => "inspection",
+                                                         "reason" => "No code." }), snapshot)
+    assert_equal 1, exempt.scan(/^## Implementation checkpoint$/).length
+    assert_includes exempt, "Checkpoint exempt (inspection): No code."
+    refute_includes exempt, "checkpoint gate"
+  end
   def test_logical_checkout_key_uses_recorded_remote_and_branch
     name = "runpod-ollama-fleet-production"
     task = {

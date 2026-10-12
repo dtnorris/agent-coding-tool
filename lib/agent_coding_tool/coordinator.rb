@@ -200,6 +200,7 @@ module AgentCodingTool
       new_state.delete("result") if retry_result
       new_state.delete("started_at")
       new_state.delete("write_collision_override")
+      new_state.delete("checkpoint")
       @state_store.write(id, new_state)
 
       { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
@@ -564,6 +565,9 @@ module AgentCodingTool
       }
       result = state["result"]
       status["next_action"] = result["next_action"] if result&.key?("next_action")
+      if %w[PREPARED IN_FLIGHT CANDIDATE].include?(label) && CheckpointPolicy.required?(task)
+        status["checkpoint"] = state.dig("checkpoint", "status") || "missing"
+      end
       status
     end
   end

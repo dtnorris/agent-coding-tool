@@ -62,7 +62,10 @@ class DeliveryManagerTest < Minitest::Test
   end
 
   def fixture(output: "2 tests, 3 assertions, 0 failures, 0 errors, 0 skips", allowed: ["file.txt"])
-    Dir.mktmpdir do |root|
+    Dir.mktmpdir do |temporary_root|
+      # Launcher canonicalizes data_root before recording handoff paths. On
+      # macOS, Dir.mktmpdir may return /var while realpath uses /private/var.
+      root = File.realpath(temporary_root)
       ordinary = File.join(root, "ordinary")
       remote = File.join(root, "remote.git")
       data = File.join(root, "data")
@@ -144,6 +147,26 @@ class DeliveryManagerTest < Minitest::Test
       assert_equal 0, AgentCodingTool::CLI.run(["worktrees", "TASK"], root: workspace,
         data_root: data, out: output, err: StringIO.new)
       assert_match(/act\/TASK\/attempt-1/, output.string)
+    end
+  end
+
+  def test_symlinked_temporary_root_matches_launcher_path_contract
+    Dir.mktmpdir("act-delivery-alias-") do |temporary_root|
+      real = File.join(File.realpath(temporary_root), "real")
+      alias_path = File.join(File.realpath(temporary_root), "alias")
+      FileUtils.mkdir_p(real)
+      File.symlink(real, alias_path)
+      original_tmpdir = ENV["TMPDIR"]
+      begin
+        ENV["TMPDIR"] = alias_path
+        fixture do |manager, provider, _guard, _coordinator, _workspace, run_dir, _data|
+          assert_equal File.realpath(run_dir), run_dir
+          assert_equal "draft_pr", manager.deliver("TASK", run_dir: run_dir)["stage"]
+          assert_equal 1, provider.pushes.length
+        end
+      ensure
+        ENV["TMPDIR"] = original_tmpdir
+      end
     end
   end
 

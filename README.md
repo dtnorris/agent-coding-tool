@@ -10,8 +10,11 @@ here.
 
 The opt-in `launch TASK --codex` command runs one local foreground worker.
 The tool does not plan architecture, interpret worker prose, or merge code.
-Lifecycle commands remain local. The explicit `publish` command commits
-and pushes selected changes in the configured private data checkout only.
+With an operator-installed private validation contract, a successful launch
+continues through trusted host validation to one task branch and draft PR.
+Human review and integration remain required. The explicit `publish`
+command commits and pushes selected changes in the configured private data
+checkout only.
 
 ## V1 contract
 
@@ -266,20 +269,23 @@ Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch never uses collision overrides or `prepare --retry`, clears an outcome,
-records received/finish, or stages, commits, pushes or opens a PR. Existing
-manual lifecycle commands retain their contracts; `publish` remains ACTD-only.
+Launch never uses collision overrides or `prepare --retry`. Without an installed
+validation contract it retains the NC-02A handoff behavior. With a contract,
+successful worker exit continues to host validation and draft delivery. The
+delivery path can record CANDIDATE only after independently verified publication;
+it never records COMPLETE. Existing manual lifecycle commands retain their
+contracts; `publish` remains ACTD-only.
 Do not use manual prepare/reset/start to change a reservation while its worker
 may still be running.
 
-V1 requires exactly one writable repository on authoritative `main`. SSH/HTTPS
+Launch requires at least one writable repository on authoritative `main`. SSH/HTTPS
 GitHub remotes and absolute local remotes (for offline fixtures) are supported;
 other remote/provider/branch forms fail closed. The ordinary checkout supplies
 repository identity according to `repo_root`; its local HEAD and dirtiness
 remain observations. Launch creates native Git worktrees under
 `/Users/davidnorris/code/ACT-Worktrees/TASK/repository/` by default. Private
-ACTD `config.yml` can set a dedicated `worktree_root`. The sole writer gets
-branch `act/TASK/attempt-N` at the prepared pushed SHA; readers are pinned
+ACTD `config.yml` can set a dedicated `worktree_root`. Each writer gets its own
+branch `act/TASK/attempt-N` in its separate repository at the prepared pushed SHA; readers are pinned
 detached at their prepared SHAs. Missing local commit objects fail closed.
 The ordinary checkout is never reset, switched, stashed or cleaned. Occupied
 paths and conflicting branches require operator inspection. Project or ancestor
@@ -297,11 +303,12 @@ account. Launch verifies installed `exec`/`login` help and requires the recogniz
 ChatGPT login status. It strips API-key and other unneeded environment variables,
 ignores user configuration and execpolicy rules, fixes provider/login to
 OpenAI/ChatGPT, uses `--sandbox workspace-write -c approval_policy=never`,
-disables shell network and additional writable roots (including temporary
-roots), and disables multiple agents. Before reserving ACT state, a no-inference
-Codex sandbox probe checks writable access inside the writer worktree and
-denied writes to private evidence, each reader worktree and the shared Git
-administration directories. Unsupported CLI probe or a failed boundary check
+disables shell network and temporary writable roots, and disables multiple
+agents. It grants additional writable roots only for the task's other authorized
+writer worktrees. Before reserving ACT state, a no-inference Codex sandbox
+probe checks writable access in every writer and denied writes to ordinary
+checkouts, private evidence, each reader and shared Git administration.
+Unsupported CLI probe or a failed boundary check
 blocks worker handoff. The operator's installed Mac CLI must pass this probe.
 No API-key billing, cloud provisioning,
 profile, arbitrary provider, sandbox escalation or approval override is offered.
@@ -313,7 +320,7 @@ handoff; UI model names are never guessed into CLI IDs. `--reasoning` maps
 there is no automatic fallback or retry.
 
 The exact generated prompt bytes go to stdin, followed by a clearly separated
-execution envelope binding its writable repository to the isolated checkout.
+execution envelope binding each writable repository to its isolated checkout.
 The envelope identifies host `git ls-remote` checks, discloses the absent
 ChatGPT GitHub connector and disabled sandbox network, and requires a limitation
 report when required reads, prerequisites or final freshness cannot be proved.
@@ -339,8 +346,17 @@ On macOS, the root-owned `/var` and `/tmp` aliases are canonicalized to their
 symlinks within those paths remain forbidden.
 
 `act worktrees TASK` verifies ownership and shows the worktree inventory.
-`act cleanup TASK --dry-run` lists targets and dirty-worktree blockers without
-changing filesystem or Git state. Actual deletion belongs to NC-02C.
+`act cleanup TASK --dry-run` inventories every target and blocker without
+changing files, Git state, locks or remote refs. `act cleanup TASK` first checks
+the same complete inventory. It requires a completed ACT outcome, terminal
+worker evidence with no active or unknown worktree use, clean task worktrees,
+verified PR integration into the authorized target (including squash merges),
+and an ordinary checkout whose HEAD contains the integration commit. It never
+resets or cleans ordinary checkouts. Foreign paths and uncertain evidence block
+the entire operation. Native non-forced `git worktree remove` then removes only
+the recorded task worktrees, one at a time; an interrupted removal has a durable
+marker and is checked again on resume. Feature branches and private handoffs,
+logs, validation and PR records remain.
 Interrupted creation preserves its operation marker and any created paths
 and branches for manual recovery.
 
@@ -353,8 +369,8 @@ artifact paths, byte counts and SHA-256 identities. `session_id` comes from a
 Codex `thread.started` event when present. `jsonl_path` is ACT's captured event
 transcript; `session_transcript_path` is null because V1 does not discover
 Codex's private rollout path. Missing session metadata is reported as null.
-A future publication gate must independently verify freshness, artifact
-integrity and human lifecycle decisions; NC-02 is not implemented or registered.
+The optional delivery gate independently verifies freshness, artifact integrity
+and the human-authored validation contract before publication.
 
 Worker exit retains ACT's IN_FLIGHT reservation. `exited` describes process
 termination, including nonzero codes, and never means task completion.
@@ -481,6 +497,127 @@ failed push retains the local commit and reports its SHA; retry the same
 `publish` invocation after resolving the blocker. The command reports
 `PUBLISHED` only after reading back the remote ref.
 
+## Trusted draft delivery (NC-02B)
+
+An operator can opt a task into automatic delivery by installing a private
+`<canonical-data-directory>-validation/TASK.yml` before launch. The sibling
+directory must be operator-owned with mode 0700; the file must be operator-owned
+and not group/world writable. It stays outside ACTD publication and the
+worker's writable sandbox. No ACTD task schema fields are added. The contract
+must list authorized source paths, the exact host commands for final acceptance,
+minimum test/assertion counts, a runtime ceiling, an optional coverage floor,
+and the publication guard. Each listed command must emit a Minitest-style
+summary with zero failures, errors and skips; use a suite command, not a
+worker-supplied result or a standalone command without counts. The host also
+runs `git diff --check`. Example shape (replace all values with the actual
+repository acceptance contract):
+
+```yaml
+allowed_paths:
+  - lib/example.rb
+  - test/example_test.rb
+base_branch: main
+commands:
+  - [ruby, -Ilib:test, test/example_test.rb]
+  - [rake, test]
+min_tests: 1
+min_assertions: 1
+max_seconds: 120
+coverage_min_percent: 90
+publication_guard:
+  trigger_assessment: "Reviewed workflow and external CI triggers; bounded lease XYZ"
+  lease_check: [/absolute/path/to/independent-lease-checker]
+```
+
+The example is a format illustration, not a safe default. The host checks
+contract identity before and after validation, the prepared pushed SHA, task
+authority, native worktree registry, changed paths and file modes. It captures
+full stdout/stderr with hashes and timestamps in the private run directory.
+Missing, skipped, failed, low-coverage or altered evidence blocks publication.
+After validation it rechecks every implementation byte, stages only the
+authorized paths and verifies the committed bytes and single parent. Draft PR
+content includes the actual accepted command output, exits and log hashes.
+Content containing credential patterns or private paths blocks publication
+before push; oversized output also blocks instead of silently truncating it.
+The local logs retain full output and are never copied to the public PR.
+
+Automatic live push requires an external, operator-controlled checker that
+classifies feature-push and draft-PR triggers, including Actions and other
+metered services, and verifies a finite cumulative budget and runtime lease
+enforced independently of ACT. It receives the remote, mutation kind
+(`push` or `pr`) and exact commit SHA. It must classify the exact proposed
+commit (including workflow changes) and return JSON with `independently_enforced: true`,
+`triggers_classified: true`, `crash_surviving: true`, the contract's exact
+`assessment`, the exact `commit_sha`, finite nonnegative `remaining_usd` and
+`maximum_additional_loss_usd`, `expected_cost_usd` and
+`maximum_hourly_rate_usd`, positive finite `maximum_runtime_seconds`,
+and future ISO 8601 `expires_at`. The checker must enforce the stated bounds
+outside ACT even if ACT crashes just after publication. A rate cap, a prose
+claim, or a checker inside the worker worktree does not supply this guarantee.
+No checker is bundled or assumed; absent independent enforcement, the
+validated local candidate remains unpublished with evidence retained.
+
+Delivery stages are recorded in private `delivery.json`. If interrupted,
+`bin/agent-coding-tool deliver TASK` rechecks the existing worktree, tested
+bytes, logs, pushed ref and PR identity without rerunning the coding worker.
+It refuses ambiguous runs, competing refs or a changed authoritative main.
+Local commit, feature push and PR lookup are verified on recovery. No force
+push, automatic rebase, merge or direct main push is performed. A verified
+draft PR records CANDIDATE; `finish` remains a human-reviewed assertion of
+integration. `act publish` continues to address ACTD alone.
+
+For several writable repositories, the trusted private contract names each
+repository's NC-02B validation policy and lists required cross-repository
+checks. Each check runs in the named writer worktree; an argv argument can
+refer to an exact coordinated path with `{worktree:repository-name}`, including
+a pinned read-only dependency. For example, the contract shape is:
+
+```yaml
+repositories:
+  alpha:
+    allowed_paths: [lib/example.rb]
+    base_branch: main
+    commands: [[ruby, -Ilib:test, test/example_test.rb]]
+    min_tests: 1
+    min_assertions: 1
+    max_seconds: 120
+    publication_guard:
+      trigger_assessment: "Operator-reviewed independent bounded lease"
+      lease_check: [/absolute/path/to/independent-lease-checker]
+  beta:
+    allowed_paths: [lib/example.rb]
+    base_branch: main
+    commands: [[ruby, -Ilib:test, test/example_test.rb]]
+    min_tests: 1
+    min_assertions: 1
+    max_seconds: 120
+    publication_guard:
+      trigger_assessment: "Operator-reviewed independent bounded lease"
+      lease_check: [/absolute/path/to/independent-lease-checker]
+cross_repository_checks:
+  - cwd: alpha
+    argv: [ruby, -Ilib:test, test/composition_test.rb, "{worktree:beta}"]
+```
+
+The names must exactly match the task's writable mappings. The host validates
+every changed writer and every required cross check before the first
+publication. One modified writer yields one guarded feature branch and draft
+PR; peer PRs link under the same ACT task identity. Partial publication stays
+visible in per-repository records and never marks the task complete. The
+single-writer contract above remains supported. This example illustrates
+shape only: commands, test minima, coverage and lease policy must be set for
+the actual task.
+
+**Mac-local pilot, requiring separate authorization:** Install a task-specific
+private contract after reviewing the repository's test and coverage rules.
+Inspect workflows, webhooks and external CI, then provision and independently
+test the bounded lease checker. In a disposable task-owned worktree, confirm
+`act worktrees TASK` ownership before running one `act launch TASK --codex`.
+Review its private `handoff.json` and `delivery.json`, full validation logs,
+feature commit/tree, remote task branch, and draft PR. Exercise `act deliver
+TASK` once to check idempotence. Do not use this browser implementation run as
+evidence that any Mac pilot or real publication occurred.
+
 ## Development
 
 Run `rake` for the full test suite. Tests use explicit temporary data
@@ -491,6 +628,8 @@ when changing Git staging or push behavior:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
+ruby -Ilib:test test/integration/delivery_manager_git_integration.rb
+ruby -Ilib:test test/integration/multi_delivery_git_integration.rb
 ruby -Ilib:test test/integration/checkpoint_git_integration.rb
 ```
 

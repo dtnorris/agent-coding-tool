@@ -39,7 +39,11 @@ module AgentCodingTool
           "state" => "pending"
         }
       end
-      raise InvalidState, "worktrees: exactly one writer required" unless entries.count { |e| e["access"] == "write" } == 1
+      raise InvalidState, "worktrees: at least one writer required" unless entries.any? { |e| e["access"] == "write" }
+      writers = entries.select { |entry| entry["access"] == "write" }
+      raise InvalidState, "worktrees: writable repositories share an authority" unless
+        writers.map { |entry| entry.fetch("parent") }.uniq.length == writers.length &&
+        writers.map { |entry| entry.fetch("remote_url") }.uniq.length == writers.length
       if entries.any? { |entry| @root == entry["parent"] || @root.start_with?("#{entry['parent']}/") } ||
          @root == "/Users/davidnorris/code/adventure-finder-components" ||
          @root.start_with?("/Users/davidnorris/code/adventure-finder-components/")
@@ -71,37 +75,73 @@ module AgentCodingTool
       raise InvalidState, "worktrees: #{e.message}; inspect #{@record_path}; no automatic repair"
     end
 
-    def inspect!
+    def inspect!(head_overrides: {})
       raise InvalidState, "worktrees: missing/foreign ownership record" if File.symlink?(@record_path) || !File.file?(@record_path)
       inventory = JSON.parse(File.read(@record_path))
       unless inventory.is_a?(Hash) && inventory["schema_version"] == SCHEMA &&
              inventory["root"] == @root && inventory["entries"].is_a?(Array) &&
-             inventory["entries"].count { |e| e["access"] == "write" } == 1
+             inventory["entries"].any? { |e| e["access"] == "write" }
         raise InvalidState, "worktrees: invalid ownership record"
       end
+      names = inventory.fetch("entries").map { |entry| entry.fetch("name") }
+      writers = inventory.fetch("entries").select { |entry| entry["access"] == "write" }
+      raise InvalidState, "worktrees: duplicate repository identity" unless
+        names.uniq == names &&
+        writers.map { |entry| entry.fetch("parent") }.uniq.length == writers.length &&
+        writers.map { |entry| entry.fetch("remote_url") }.uniq.length == writers.length
       inventory.fetch("entries").each do |entry|
-        unless entry.is_a?(Hash) && entry["state"] == "ready" &&
+        unless entry.is_a?(Hash) && %w[ready removing removed].include?(entry["state"]) &&
                entry["task_id"] == inventory["task_id"] && entry["attempt"] == inventory["attempt"] &&
                entry["path"] == File.join(@root, inventory.fetch("task_id"), entry.fetch("name")) &&
                %w[write read_only].include?(entry["access"]) &&
                entry["branch"] == (entry["access"] == "write" ? "act/#{inventory.fetch('task_id')}/attempt-#{inventory.fetch('attempt')}" : nil)
           raise InvalidState, "worktrees: partial or conflicting ownership; inspect #{@record_path}"
         end
-        verify_entry!(entry)
+        if entry["state"] == "removed" || (entry["state"] == "removing" && !File.exist?(entry.fetch("path")) && !File.symlink?(entry.fetch("path")))
+          verify_absent_entry!(entry)
+        else
+          verify_entry!(entry, expected_head: head_overrides.fetch(entry.fetch("name"), entry.fetch("base_sha")))
+        end
       end
       inventory
     rescue JSON::ParserError, KeyError, TypeError
       raise InvalidState, "worktrees: malformed ownership; inspect #{@record_path}"
     end
 
-    def cleanup_preflight
-      inventory = inspect!
+    def cleanup_preflight(head_overrides: {})
+      inventory = inspect!(head_overrides: head_overrides)
       inventory.fetch("entries").map do |entry|
-        dirty = !git!(entry.fetch("path"), "status", "--porcelain", "--untracked-files=all").empty?
+        next { "path" => entry.fetch("path"), "branch" => entry["branch"], "access" => entry.fetch("access"),
+               "dirty" => false, "blockers" => [], "state" => "removed" } if
+          entry["state"] == "removed" || (entry["state"] == "removing" && !File.exist?(entry.fetch("path")))
+        dirty = !git!(entry.fetch("path"), "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
         { "path" => entry.fetch("path"), "branch" => entry["branch"],
-          "access" => entry.fetch("access"), "dirty" => dirty,
+          "access" => entry.fetch("access"), "dirty" => dirty, "state" => entry.fetch("state"),
           "blockers" => dirty ? ["worktree contains changes"] : [] }
       end
+    end
+
+    # Called only after a task-wide, read-only cleanup preflight. The marker
+    # distinguishes an interrupted native removal from an unowned missing path.
+    def remove_entry!(name, head_overrides: {})
+      inventory = inspect!(head_overrides: head_overrides)
+      entry = inventory.fetch("entries").find { |item| item["name"] == name }
+      raise InvalidState, "worktrees: unrecorded cleanup target" unless entry
+      return inventory if entry["state"] == "removed"
+      if entry["state"] == "ready"
+        entry["state"] = "removing"
+        save!(inventory)
+      end
+      if File.directory?(entry.fetch("path"))
+        verify_entry!(entry, expected_head: head_overrides.fetch(name, entry.fetch("base_sha")))
+        raise InvalidState, "worktrees: worktree contains changes" unless
+          git!(entry.fetch("path"), "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
+        git!(entry.fetch("parent"), "worktree", "remove", "--", entry.fetch("path"))
+      end
+      verify_absent_entry!(entry)
+      entry["state"] = "removed"
+      save!(inventory)
+      inventory
     end
 
     private
@@ -155,7 +195,7 @@ module AgentCodingTool
       [parent, common]
     end
 
-    def verify_entry!(entry)
+    def verify_entry!(entry, expected_head:)
       path, parent = entry.fetch("path"), entry.fetch("parent")
       safe_path!(path)
       raise InvalidState, "worktrees: missing path #{path}" unless File.directory?(path)
@@ -167,15 +207,27 @@ module AgentCodingTool
       common, head = git!(path, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD").lines.map(&:strip)
       common = File.expand_path(common)
       raise InvalidState, "worktrees: Git administration changed" unless common == expected_common
-      raise InvalidState, "worktrees: base changed" unless head == entry.fetch("base_sha")
+      raise InvalidState, "worktrees: HEAD changed" unless head == expected_head
       registry = git!(parent, "worktree", "list", "--porcelain", "-z").split("\0")
       rows = registry.slice_before { |row| row.start_with?("worktree ") }
       matches = rows.select { |row| row.first == "worktree #{path}" }.to_a
       raise InvalidState, "worktrees: Git registry mismatch" unless matches.length == 1 &&
-        matches.first.include?("HEAD #{entry.fetch('base_sha')}") &&
+        matches.first.include?("HEAD #{expected_head}") &&
         matches.first.include?(entry["branch"] ? "branch refs/heads/#{entry['branch']}" : "detached")
       # Git's .git pointer is a file, never a directory controlled by the worker.
       raise InvalidState, "worktrees: foreign Git pointer" unless File.file?(File.join(path, ".git")) && !File.symlink?(File.join(path, ".git"))
+      true
+    end
+
+    def verify_absent_entry!(entry)
+      path, parent = entry.fetch("path"), entry.fetch("parent")
+      safe_path!(path)
+      parent_identity!({ "path" => parent, "remote" => entry.fetch("remote"),
+                         "remote_url" => entry.fetch("remote_url"), "pushed_sha" => entry.fetch("base_sha") },
+                       entry.fetch("name"))
+      raise InvalidState, "worktrees: cleanup path reoccupied" if File.exist?(path) || File.symlink?(path)
+      registry = git!(parent, "worktree", "list", "--porcelain", "-z")
+      raise InvalidState, "worktrees: removed path remains registered" if registry.split("\0").include?("worktree #{path}")
       true
     end
 

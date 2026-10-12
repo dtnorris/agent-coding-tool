@@ -182,12 +182,11 @@ class LauncherTest < Minitest::Test
     end
   end
 
-  def test_zero_multiple_writers_malformed_task_and_unsupported_branch
-    [ {}, { 'repo' => { 'access' => 'read_only', 'path' => nil } },
-      { 'repo' => { 'access' => 'write' }, 'other' => { 'access' => 'write' } } ].each do |repos|
+  def test_zero_writers_malformed_task_and_unsupported_branch
+    [ {}, { 'repo' => { 'access' => 'read_only', 'path' => nil } } ].each do |repos|
       fixture do
         write_task(@data, id: 'T', repositories: repos)
-        assert_preflight_failure(/non-empty mapping|exactly one writable/)
+        assert_preflight_failure(/non-empty mapping|requires a writable repository/)
       end
     end
     fixture do
@@ -437,8 +436,35 @@ class LauncherTest < Minitest::Test
       assert_equal dep_remote, dependency.fetch("remote_url")
       assert_equal File.join(@root, "worktrees", "T", "dep"), dependency.fetch("path")
       assert_includes File.binread(report.fetch("stdin_path")), dependency.fetch("path")
-      assert_equal 4, report.fetch("sandbox_probe").fetch("protected_paths")
+      assert_equal 6, report.fetch("sandbox_probe").fetch("protected_paths")
       assert_equal "exited", report.fetch("status")
+    end
+  end
+
+  def test_two_writable_worktrees_keep_separate_prepared_authorities
+    fixture(git: true) do
+      seed = TestHelpers.git_seed
+      other = File.join(@root, "other")
+      remote = File.join(@root, "other.git")
+      FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), other)
+      FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
+      git("remote", "set-url", "origin", remote, chdir: other)
+      task_path = File.join(@data, "tasks", "T.yml")
+      task = YAML.safe_load_file(task_path)
+      task.fetch("repositories")["other"] = { "access" => "write", "path" => other }
+      File.write(task_path, YAML.dump(task))
+      assert_equal 0, launcher.launch("T")
+      handoff = report
+      entries = handoff.fetch("worktrees").fetch("entries")
+      assert_equal %w[other repo], entries.select { |item| item["access"] == "write" }.map { |item| item["name"] }.sort
+      assert_equal [@remote, remote].sort, entries.map { |item| item.fetch("remote_url") }.sort
+      assert_equal [@base, @base], entries.map { |item| item.fetch("base_sha") }
+      secondary = File.join(@root, "worktrees", "T", "other")
+      command = JSON.parse(File.read(File.join(@root, "argv")))
+      assert_includes command, "sandbox_workspace_write.writable_roots=#{JSON.generate([secondary])}"
+      assert_equal @base, git("rev-parse", "HEAD", chdir: secondary)
+      assert_equal "act/T/attempt-1", git("branch", "--show-current", chdir: secondary)
+      assert_equal "origin", git("remote", chdir: other)
     end
   end
 end

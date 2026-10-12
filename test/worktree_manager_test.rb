@@ -151,8 +151,18 @@ class WorktreeManagerTest < Minitest::Test
       run = File.join("#{data}-runs", "T", "attempt")
       FileUtils.mkdir_p(run)
       record = File.join(run, "worktrees.json")
+      FileUtils.mkdir_p([File.join(data, "tasks"), File.join(data, "state")])
+      File.write(File.join(data, "tasks", "T.yml"), YAML.dump(
+        "id" => "T", "title" => "Cleanup fixture", "repositories" => @task.fetch("repositories")))
+      AgentCodingTool::StateStore.new(File.join(data, "state")).write("T",
+        { "id" => "T", "snapshot" => @snapshot })
       owned = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: record)
-      entry = owned.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot).fetch("entries").first
+      inventory = owned.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot)
+      entry = inventory.fetch("entries").first
+      File.write(File.join(run, "handoff.json"), JSON.generate(
+        "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "T",
+        "attempt" => 1, "worktrees_path" => record, "worktrees" => inventory,
+        "preparation" => @snapshot, "status" => "exited"))
       File.write(File.join(entry.fetch("path"), "candidate"), "keep")
       before = [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
       out, err = StringIO.new, StringIO.new
@@ -162,7 +172,7 @@ class WorktreeManagerTest < Minitest::Test
       out.truncate(0)
       out.rewind
       assert_equal 0, cli.run(%w[cleanup T --dry-run])
-      assert_equal ["worktree contains changes"], JSON.parse(out.string).fetch("attempts").first.first.fetch("blockers")
+      assert_includes JSON.parse(out.string).fetch("attempts").first.first.fetch("blockers"), "worktree contains changes"
       assert_equal before, [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
       assert_equal 2, cli.run(%w[cleanup T])
     end

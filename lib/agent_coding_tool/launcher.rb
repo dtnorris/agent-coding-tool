@@ -72,10 +72,10 @@ module AgentCodingTool
       checked_status!(id)
       prompt = File.binread(state.fetch("prompt_path"))
       raise InvalidState, "#{id}: generated prompt changed; explicitly prepare again" unless prompt == @coordinator.launch_prompt(id)
-      name, = task.fetch("repositories").find { |_key, spec| spec.fetch("access") == "write" }
-      base = state.fetch("snapshot").fetch(name)
+      names = task.fetch("repositories").filter_map { |key, spec| key if spec.fetch("access") == "write" }
+      bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
-      reject_unknown_reservations!(base)
+      reject_unknown_reservations!(bases)
       config = Config.load(File.join(@data_root, "config.yml"))
       root = WorktreeManager.canonical_system_path(config.worktree_root)
       [@source_root, @data_root, @run_root].map { |path| WorktreeManager.canonical_system_path(path) }.each do |protected|
@@ -97,7 +97,10 @@ module AgentCodingTool
         "created_at" => Time.now.utc.iso8601, "prepared_at" => state.fetch("prepared_at"),
         "preparation" => state.fetch("snapshot"), "workspace" => nil,
         "worktrees_path" => File.join(run_dir, "worktrees.json"), "worktrees" => nil,
-        "writable_repository" => name, "writable_authority" => base.slice("remote_url", "branch", "pushed_sha"),
+        "writable_repository" => names.first,
+        "writable_authority" => bases.first.slice("remote_url", "branch", "pushed_sha"),
+        "writable_repositories" => names,
+        "writable_authorities" => names.to_h { |name| [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] },
         "status" => "preflight", "session_id" => nil, "session_transcript_path" => nil,
         "jsonl_path" => File.join(run_dir, "stdout.jsonl"),
         "stderr_path" => File.join(run_dir, "stderr.txt"),
@@ -113,26 +116,43 @@ module AgentCodingTool
         File.binwrite(@report.fetch("prompt_path"), prompt)
         inventory = manager.create(task_id: id, attempt: attempt, task: task, snapshot: state.fetch("snapshot"))
         @report["worktrees"] = inventory
-        workspace = inventory.fetch("entries").find { |entry| entry.fetch("access") == "write" }.fetch("path")
+        workspaces = inventory.fetch("entries").select { |entry| entry.fetch("access") == "write" }.to_h { |entry| [entry.fetch("name"), entry.fetch("path")] }
+        workspace = workspaces.fetch(names.first)
         @report["workspace"] = workspace
+        @report["workspaces"] = workspaces
         save_report
-        verify_checkout!(workspace, base)
+        names.each { |name| verify_checkout!(workspaces.fetch(name), state.fetch("snapshot").fetch(name)) }
         heads = checked_status!(id)
         @report["launch_checked_at"] = Time.now.utc.iso8601
         @report["launch_heads"] = heads
         changed_write!(task, state, @report.fetch("launch_heads"))
         manager.inspect!
         sandbox_probe!(inventory, workspace, run_dir)
-        envelope = execution_envelope(name, workspace, @report.fetch("launch_heads"))
+        envelope = execution_envelope(workspaces, @report.fetch("launch_heads"))
         File.binwrite(@report.fetch("stdin_path"), prompt + envelope)
-        command = codex_command(workspace, model, reasoning)
+        command = codex_command(workspace, model, reasoning, extra_roots: workspaces.values.drop(1))
         @report["argv"] = command
         @report["status"] = "reserving"
         save_report
         @coordinator.start(id)
         @report["status"] = "reserved"
         save_report
-        execute(command, lock)
+        result = execute(command, lock)
+        if result == 0 && @report["status"] == "exited"
+          delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
+          if delivery.configured?(id)
+            begin
+              delivered = delivery.deliver(id, run_dir: run_dir)
+              urls = delivered["prs"] ? delivered.fetch("prs").values.map { |pr| pr.fetch("url") } :
+                                          [delivered.fetch("pr").fetch("url")]
+              @out.puts "Draft PR#{delivered["prs"] ? "s" : ""}: #{urls.join(', ')} (CANDIDATE)"
+            rescue StandardError => e
+              @err.puts "DELIVERY BLOCKED: #{e.class}: #{e.message}; implementation and evidence retained"
+              return 2
+            end
+          end
+        end
+        result
       rescue StandardError => e
         @report["status"] = @report["status"] == "preflight" ? "preflight_failed" : "judgment_required"
         @report["error"] = "#{e.class}: #{e.message}"
@@ -146,7 +166,7 @@ module AgentCodingTool
     def validate_task!(id, task)
       raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
       writes = task.fetch("repositories").count { |_name, spec| spec.fetch("access") == "write" }
-      raise InvalidTask, "#{id}: launch requires exactly one writable repository (got #{writes})" unless writes == 1
+      raise InvalidTask, "#{id}: launch requires a writable repository" unless writes.positive?
       %w[depends_on constraints acceptance].each do |key|
         raise InvalidTask, "#{id}: #{key} must contain strings" unless task.fetch(key, []).all? { |value| value.is_a?(String) }
       end
@@ -204,6 +224,9 @@ module AgentCodingTool
       readers = state.fetch("snapshot").reject { |name, _repo| task.fetch("repositories").fetch(name).fetch("access") == "write" }.values
       if readers.any? { |repo| writers.any? { |writer| repo.values_at("remote_url", "branch") == writer.values_at("remote_url", "branch") } }
         raise InvalidState, "launch: ambiguous read/write repository aliases"
+      end
+      if writers.map { |repo| repo.values_at("remote_url", "branch") }.uniq.length != writers.length
+        raise InvalidState, "launch: ambiguous writable repository aliases"
       end
     end
 
@@ -266,7 +289,7 @@ module AgentCodingTool
       end
     end
 
-    def reject_unknown_reservations!(base)
+    def reject_unknown_reservations!(bases)
       # A stale manual reservation is not proof that its worker has stopped.
       store = StateStore.new(File.join(@data_root, "state"))
       @coordinator.tasks.each do |task|
@@ -275,14 +298,16 @@ module AgentCodingTool
 
         snapshot = state.fetch("snapshot")
         if task.fetch("repositories").any? { |name, spec|
-          spec.fetch("access") == "write" && snapshot.fetch(name).values_at("remote_url", "branch") == base.values_at("remote_url", "branch")
+          spec.fetch("access") == "write" && bases.any? { |base|
+            snapshot.fetch(name).values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
         }
           raise InvalidState, "launch: #{task.fetch('id')} has an unresolved in-flight reservation; operator judgment required"
         end
       end
       reports.each do |report|
         next if TERMINAL.include?(report["status"])
-        if report.fetch("preparation").values.any? { |repo| repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
+        if report.fetch("preparation").values.any? { |repo| bases.any? { |base|
+          repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") } }
           raise InvalidState, "launch: #{report['task_id']} has unresolved execution evidence; operator judgment required"
         end
       end
@@ -319,10 +344,10 @@ module AgentCodingTool
       %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
     end
 
-    def codex_command(workspace, model, reasoning)
+    def codex_command(workspace, model, reasoning, extra_roots: [])
       command = [@codex, "exec", "--ignore-user-config", "--ignore-rules", "--sandbox", "workspace-write",
                  "-c", "approval_policy=never", "-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"',
-                 "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=[]",
+                 "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(extra_roots)}",
                  "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                  "-c", "features.multi_agent=false", "--json", "--output-last-message", @report.fetch("final_path")]
       command += ["--model", model] if model
@@ -330,9 +355,9 @@ module AgentCodingTool
       command << "-"
     end
 
-    def execution_envelope(name, workspace, heads)
+    def execution_envelope(workspaces, heads)
       "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n" \
-        "The exact ACT prompt above retains task authority. Work only in #{workspace} for writable repository #{name}; original paths are observations, not writable roots.\n" \
+        "The exact ACT prompt above retains task authority. Writable worktrees: #{JSON.generate(workspaces)}. Original paths are observations, not writable roots.\n" \
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
@@ -348,11 +373,10 @@ module AgentCodingTool
       help, _stderr, status = Open3.capture3(worker_env, @codex, "sandbox", platform, "--help", unsetenv_others: true)
       raise InvalidState, "launch: installed CLI lacks sandbox probe" unless status.success? && help.include?("--full-auto")
       marker = "ACT sandbox probe #{SecureRandom.hex(12)}"
-      targets = [[File.join(workspace, ".act-probe-#{SecureRandom.hex(6)}"), true],
-                 [File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
+      targets = [[File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
       inventory.fetch("entries").each do |entry|
-        next if entry.fetch("access") == "write"
-        targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), false]
+        targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
+        targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
       end
       inventory.fetch("entries").map { |entry| entry.fetch("parent") }.uniq.each do |parent|
         admin = git!("rev-parse", "--path-format=absolute", "--git-common-dir", chdir: parent)
@@ -367,7 +391,7 @@ module AgentCodingTool
         stdout, _stderr, result = Open3.capture3(
           worker_env, @codex, "--ignore-user-config",
           "-c", "sandbox_workspace_write.network_access=false",
-          "-c", "sandbox_workspace_write.writable_roots=[]",
+          "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1))}",
           "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
           "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
           "sandbox", platform, "--full-auto", "--",
@@ -513,7 +537,7 @@ module AgentCodingTool
             @report.fetch("preparation").fetch(name).fetch("pushed_sha") != @report.fetch("exit_heads").fetch(name).fetch("pushed_sha")
           end
           @report["exit_changed_repositories"] = changed
-          @report["writable_freshness"] = changed.include?(@report.fetch("writable_repository")) ? "stale" : "fresh_at_exit"
+          @report["writable_freshness"] = (changed & @report.fetch("writable_repositories")).empty? ? "fresh_at_exit" : "stale"
           @err.puts "STALE INPUT: writable pushed head moved during execution; review exit provenance" if @report["writable_freshness"] == "stale"
         rescue Error => e
           @report["exit_freshness_error"] = e.message

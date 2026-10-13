@@ -242,7 +242,16 @@ module AgentCodingTool
     end
 
     def reports
-      paths = Dir.children(@run_root).reject { |entry| entry == "launch.lock" }.flat_map do |task_id|
+      entries = Dir.children(@run_root).reject { |entry| entry == "launch.lock" }
+      if entries.include?("checkpoints")
+        checkpoint_root = File.join(@run_root, "checkpoints")
+        unless File.directory?(checkpoint_root) && !File.symlink?(checkpoint_root) &&
+               File.stat(checkpoint_root).uid == Process.uid && (File.stat(checkpoint_root).mode & 0o077).zero?
+          raise InvalidState, "launch: foreign checkpoint evidence; operator judgment required"
+        end
+        entries.delete("checkpoints")
+      end
+      paths = entries.flat_map do |task_id|
         task_path = File.join(@run_root, task_id)
         unless File.directory?(task_path) && !File.symlink?(task_path)
           raise InvalidState, "launch: foreign evidence entry; operator judgment required"

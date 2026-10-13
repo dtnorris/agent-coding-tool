@@ -246,6 +246,59 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  def test_private_checkpoint_evidence_coexists_with_worker_reports
+    fixture do
+      checkpoint = File.join("#{@data}-runs", "checkpoints", "NC-02D", "attempt")
+      FileUtils.mkdir_p(checkpoint, mode: 0o700)
+      File.write(File.join(checkpoint, "current.json"), '{"preserved":true}')
+      before = File.binread(File.join(checkpoint, "current.json"))
+      other_run = File.join("#{@data}-runs", "OTHER", "earlier")
+      FileUtils.mkdir_p(other_run)
+      File.write(File.join(other_run, "handoff.json"), JSON.generate(
+        "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "OTHER",
+        "preparation" => {}, "status" => "exited"
+      ))
+
+      assert_equal 0, launcher.launch("T")
+      assert_equal "exited", report.fetch("status")
+      assert_equal before, File.binread(File.join(checkpoint, "current.json"))
+    end
+  end
+
+  def test_replaced_or_nonprivate_checkpoint_namespace_fails_closed
+    [:symlink, :file, :nonprivate].each do |replacement|
+      fixture do
+        root = "#{@data}-runs"
+        FileUtils.mkdir_p(root, mode: 0o700)
+        checkpoint = File.join(root, "checkpoints")
+        case replacement
+        when :symlink then File.symlink(@ordinary, checkpoint)
+        when :file then File.write(checkpoint, "foreign")
+        when :nonprivate
+          Dir.mkdir(checkpoint, 0o700)
+          File.chmod(0o755, checkpoint)
+        end
+        assert_preflight_failure(/foreign checkpoint evidence/)
+      end
+    end
+  end
+
+  def test_unexpected_directory_and_malformed_worker_report_still_fail_closed
+    fixture do
+      root = "#{@data}-runs"
+      FileUtils.mkdir_p(File.join(root, "unexpected", "attempt"))
+      File.chmod(0o700, root)
+      assert_preflight_failure(/partial\/foreign run artifacts/)
+    end
+    fixture do
+      path = File.join("#{@data}-runs", "OTHER", "attempt", "handoff.json")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.chmod(0o700, "#{@data}-runs")
+      File.write(path, '{"schema_version":"foreign"}')
+      assert_preflight_failure(/unknown\/malformed evidence schema/)
+    end
+  end
+
   def test_process_failure_and_invalid_final_preserve_real_exit_and_reservation
     %w[failure missing invalid].each do |mode|
       fixture(process: true) do

@@ -41,9 +41,13 @@ class PreflightRecoveryTest < Minitest::Test
       assert File.file?(result.fetch("record_path"))
       assert_equal result, recovery.abandon("T")
       assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T") }
+      checkpoint = File.join("#{@data}-runs", "checkpoints", "NC-02D", "attempt")
+      FileUtils.mkdir_p(checkpoint, mode: 0o700)
+      File.write(File.join(checkpoint, "current.json"), '{"preserved":true}')
       Time.stub(:now, Time.now + 2) { @coordinator.prepare("T", retry_result: true) }
       write_fake("success")
       assert_equal 0, launcher.launch("T")
+      assert_equal '{"preserved":true}', File.binread(File.join(checkpoint, "current.json"))
       @coordinator.record("T", outcome: "complete")
       cleanup = AgentCodingTool::CleanupManager.new(data_root: @data).preflight("T")
       assert_equal [], cleanup.fetch("attempts").find { |row| row["state"] == "preflight_abandoned" }.fetch("blockers")

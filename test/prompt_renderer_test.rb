@@ -3,6 +3,64 @@
 require_relative "test_helper"
 
 class PromptRendererTest < Minitest::Test
+  include TestHelpers
+
+  def test_performance_scope_uses_access_and_checkpoint_policy_not_titles
+    # Representative metadata from ACTD main 0134f1cf7de3fe60599309f0f8daa04ad0903dc3:
+    # FS-01/FS-02 omit checkpoint; IG-15C2 permits code despite its audit title.
+    renderer = AgentCodingTool::PromptRenderer.new
+    readonly = { "reference" => { "access" => "read_only" } }
+    writable = readonly.merge("owner" => { "access" => "write" })
+    cases = [
+      ["FS-01", "Define AdventureFinder filesystem contract", readonly, nil, false],
+      ["FS-02", "Audit AdventureFinder filesystem assumptions", readonly, nil, false],
+      ["IG-15C2", "Audit WLO public seams for coordinated local execution", writable, nil, true],
+      ["CODE", "Fix source", writable, { "mode" => "required" }, true],
+      ["TEST", "Fix relocation-sensitive boundary tests", writable, nil, true]
+    ]
+    %w[planning inspection no_code].each do |category|
+      cases << [category, "Non-executable work", writable,
+                { "mode" => "exempt", "category" => category, "reason" => "No executable change." }, false]
+    end
+    cases.each do |id, title, repositories, checkpoint, expected|
+      task = { "id" => id, "title" => title, "repositories" => repositories }
+      task["checkpoint"] = checkpoint if checkpoint
+      prompt = renderer.render(task, {})
+      assert_equal expected ? 1 : 0, prompt.scan(/^## Test performance$/).length, id
+      refute_includes prompt, "incremental test cost" unless expected
+    end
+  end
+
+  def test_preparation_and_launch_share_performance_policy_and_preserve_task_rules
+    with_workspace do |dir|
+      write_task(dir, id: "T")
+      path = File.join(dir, "tasks", "T.yml")
+      task = YAML.safe_load_file(path)
+      rules = ["Complete rake under 30 seconds with coverage >= 95%.", "Preserve real-process safety tests."]
+      task["constraints"] = rules
+      File.write(path, YAML.dump(task))
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      prepared = coordinator.prepare("T")
+      prompt = prepared.fetch("prompt")
+      coordinator.start("T")
+      assert_equal prompt, File.read(prepared.fetch("state").fetch("prompt_path"))
+      assert_equal prompt, coordinator.launch_prompt("T")
+      assert_equal 1, prompt.scan(/^## Test performance$/).length
+      assert_operator prompt.index("## Test performance"), :>, prompt.index("## Implementation checkpoint")
+      rules.each { |rule| assert_includes prompt, "- #{rule}\n" }
+      ["passing either does not establish the other", "explicit human authorization before implementation",
+       "Existing task scope alone is not authorization", "old limit and observed baseline",
+       "proposed limit and measured resulting runtime", "cheaper alternatives",
+       "not independent machine enforcement", "pre-existing debt or failing baseline",
+       "noise/contention", "necessary added coverage", "unavailable comparison",
+       "not executed (missing runtime/dependencies/permissions)", "executed without comparable timing evidence",
+       "operator-side validation/timing commands", "not a universal limit or automatic acceptance",
+       "essential real-process integration coverage", "equivalent behavioral guarantees"].each do |text|
+        assert_includes prompt, text
+      end
+    end
+  end
+
   def test_checkpoint_instruction_is_one_section_and_exemption_is_reviewable
     task = { "id" => "T", "title" => "Code", "repositories" => { "repo" => { "access" => "write" } } }
     snapshot = { "repo" => { "path" => "/repo", "remote_url" => "git@github.com:example/repo.git",

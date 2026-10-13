@@ -43,6 +43,7 @@ module AgentCodingTool
         lines << "Checkpoint exempt (#{policy.fetch('category')}): #{policy.fetch('reason')}"
       end
       lines << ""
+      append_test_performance(lines) if !writable.empty? && CheckpointPolicy.required?(task)
       append_dependencies(lines, dependencies)
       lines << "## Goal"
       lines << ""
@@ -61,6 +62,17 @@ module AgentCodingTool
     end
 
     private
+
+    def append_test_performance(lines)
+      lines << "## Test performance"
+      lines << ""
+      lines << "For code or test changes, identify relevant test commands, established runtime limits and available baseline evidence before adding or materially changing tests. Planning-only and inspection-only work has no added test obligation. Task-specific test-command contracts, performance, coverage, runtime, benchmark and safety rules remain authoritative; preserve implementation checkpoints and operator gates."
+      lines << "Respect absolute runtime ceilings and benchmark gates separately from reviewing incremental test cost: passing either does not establish the other. When practical, measure comparable before/after suite timings and report the incremental impact. Match command and selected suite, source baselines, environment/dependencies, worker count, coverage/runtime modes and contention conditions; use trustworthy comparable evidence rather than compulsory expensive reruns. Prefer repeated timings and medians when noisy, near a gate or material to acceptance. Full-suite growth of both at least 1 second and 10%, or at least 3 seconds regardless of percentage, is a provisional advisory review trigger, not a universal limit or automatic acceptance below it. Treat material growth as a reviewable cost; distinguish pre-existing debt or failing baseline, new cost, noise/contention, necessary added coverage and unavailable comparison. A failing baseline neither proves this change caused it nor permits unlimited added cost."
+      lines << "Do not increase, remove, bypass or relax a committed test-runtime ceiling solely to pass validation. Any proposed exception requires explicit human authorization before implementation: supply the old limit and observed baseline, proposed limit and measured resulting runtime, why the cost is necessary, cheaper alternatives, and preserved test and safety guarantees. Existing task scope alone is not authorization. This is worker-prompt discipline and evidence-based human review, not independent machine enforcement."
+      lines << "Prefer efficient fixtures and targeted validation while preserving meaningful regression tests, failure assertions/error classification, essential real-process integration coverage and all coverage/lint/dependency/benchmark/safety gates. Remove redundant fixture assertions, process startup, initialization, setup or validation only with equivalent behavioral guarantees. Raw run/assertion counts are not coverage. Do not hide contention, skip tests, report reduced counts from incomplete execution, alter timing boundaries or raise timeouts/thresholds to conceal failures."
+      lines << "Report executed/passing, executed/failing, pre-existing failing baseline, not executed (missing runtime/dependencies/permissions), and executed without comparable timing evidence distinctly. Disclose missing or noncomparable measurements and provide reproducible operator-side validation/timing commands when needed. Never claim unexecuted suites passed; unavailable Ruby or another runtime alone need not block implementation."
+      lines << ""
+    end
 
     def append_dependencies(lines, dependencies)
       return if dependencies.empty?

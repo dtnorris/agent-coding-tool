@@ -441,6 +441,44 @@ judgment; launch does not provide an automatic recovery switch. An already
 attempted preparation cannot be silently reused. Manual lifecycle commands
 remain human assertions, not process locks.
 
+## Worker test performance
+
+Fresh prompts include one shared test-performance section when the task has a
+writable repository and requires a checkpoint (including omitted checkpoint
+metadata). All-read-only legacy planning/inspection tasks and explicit
+`planning`, `inspection` or `no_code` checkpoint exemptions omit it. Writable
+tasks without an exemption may authorize executable work; the section applies
+only to code or test changes, not planning-only or inspection-only work. ACT
+does not infer task types from titles or free-text goals. Existing YAML and
+prepared prompt snapshots remain unchanged; normal preparation and local
+Codex launch use the same generated prompt.
+
+Workers identify commands, absolute runtime gates and available baselines
+before adding or materially changing tests, then report comparable incremental
+cost when practical. Passing an absolute gate does not establish acceptable
+incremental cost, and a failing baseline does not establish causation or permit
+unlimited growth. Match suite/command, source baseline, environment,
+dependencies, worker count, modes and contention; prefer repeated timings and
+medians when noise or acceptance warrants them, without requiring expensive
+reruns of trustworthy evidence. Full-suite growth of both 1 second and 10%,
+or 3 seconds regardless of percentage, is an advisory review trigger only.
+Task-specific contracts remain authoritative. Preserve meaningful coverage,
+failure behavior, essential process integration and all existing gates while
+removing demonstrably redundant setup or validation.
+
+A worker must not relax, remove or bypass committed test-runtime ceilings
+solely to pass validation. Before implementing an exception, explicit human
+authorization must review the old limit and observed baseline, proposed limit
+and measured resulting runtime, necessity, cheaper alternatives, and preserved
+test/safety guarantees. Task scope alone does not authorize an exception.
+This policy adds prompt discipline and evidence-based human review, not a
+performance enforcement engine. Report pre-existing failures, new cost,
+contention/noise, necessary coverage and missing comparisons separately.
+Unexecuted validation is never a pass; missing runtimes need not stop an
+implementation, but require truthful outcomes and reproducible operator-side
+validation/timing instructions. Existing checkpoint and operator gates still
+apply.
+
 ## Implementation checkpoints
 
 After focused validation of a coherent implementation, the operator can run

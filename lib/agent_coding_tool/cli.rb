@@ -206,12 +206,13 @@ module AgentCodingTool
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
+        opts.on("--allow-write-collision", "authorize this launch against verified isolated ACT workers") { options[:allow_write_collision] = true }
         opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
         opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
       end
       parser.parse!(argv)
       unless options.delete(:codex) && argv.length == 1
-        raise Error, "usage: agent-coding-tool launch TASK --codex [--model MODEL] [--reasoning LEVEL]"
+        raise Error, "usage: agent-coding-tool launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]"
       end
       Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err)
               .launch(argv.first, **options)
@@ -681,6 +682,7 @@ module AgentCodingTool
 
       if status == "IN_FLIGHT"
         @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
+        display_parallel_authorization(item)
         if item["reason"]
           puts_wrapped(display_in_flight_reason(item.fetch("reason")),
                        first_prefix: "    ", continuation_prefix: "    ")
@@ -695,6 +697,7 @@ module AgentCodingTool
         puts_wrapped(detail,
                      first_prefix: "    ", continuation_prefix: "    ")
       end
+      display_parallel_authorization(item) if status == "CANDIDATE"
       if recorded_retryable_outcome?(item)
         display_compact_handoff(item)
       elsif item["reason"]
@@ -711,6 +714,7 @@ module AgentCodingTool
 
     def display_explicit_details(item)
       @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
+      display_parallel_authorization(item)
       if recorded_retryable_outcome?(item)
         puts_full_detail("reason", item["reason"]) if item["reason"]
         puts_full_detail("next", item["next_action"]) if item.key?("next_action")
@@ -722,6 +726,15 @@ module AgentCodingTool
       write_collisions(item).each do |collision|
         puts_full_detail("reason", write_collision_detail(collision))
       end
+    end
+
+    def display_parallel_authorization(item)
+      override = item.dig("state", "write_collision_override")
+      return unless override.is_a?(Hash) && override["conflicts"].is_a?(Array) && !override["conflicts"].empty?
+
+      kind = override["launch"] ? "verified ACT launch" : "manual start assertion"
+      others = override.fetch("conflicts").map { |row| row.fetch("task_id") }.join(", ")
+      @out.puts "    parallel: #{kind} with #{others}; integration remains separate"
     end
 
     def display_dashboard_write_collisions(item)
@@ -934,7 +947,24 @@ module AgentCodingTool
         raise Error, "usage: agent-coding-tool start TASK [--allow-write-collision]"
       end
 
-      coordinator.start(id, allow_write_collision: allow_write_collision)
+      run_root = "#{File.realpath(@data_root)}-runs"
+      cursor = run_root
+      loop do
+        raise InvalidState, "start: symlinked evidence path" if File.symlink?(cursor)
+        break if cursor == File.dirname(cursor)
+        cursor = File.dirname(cursor)
+      end
+      FileUtils.mkdir_p(run_root, mode: 0o700)
+      unless File.stat(run_root).uid == Process.uid && (File.stat(run_root).mode & 0o077).zero?
+        raise InvalidState, "start: foreign evidence root"
+      end
+      lock_path = File.join(run_root, "launch.lock")
+      raise InvalidState, "start: foreign/symlinked reservation lock" if File.symlink?(lock_path)
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        raise InvalidState, "start: another launch holds the reservation lock; retry after it finishes" unless
+          lock.flock(File::LOCK_EX | File::LOCK_NB)
+        coordinator.start(id, allow_write_collision: allow_write_collision)
+      end
       @out.puts "Started #{id}: IN_FLIGHT"
     end
 
@@ -1006,7 +1036,7 @@ module AgentCodingTool
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)
-          launch TASK --codex [--model MODEL] [--reasoning LEVEL]
+          launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH]

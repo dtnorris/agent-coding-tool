@@ -206,7 +206,7 @@ module AgentCodingTool
       { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
     end
 
-    def start(id, allow_write_collision: false)
+    def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
       task = @task_store.load(id)
       state = @state_store.load(id)
       outcome = state.dig("result", "outcome")
@@ -218,6 +218,14 @@ module AgentCodingTool
       raise InvalidState, "#{id}: already in flight" if state["started_at"]
 
       collisions = write_collisions(id, task, state.fetch("snapshot"), states: START_COLLISION_STATES)
+      if expected_collisions && collisions != expected_collisions
+        raise InvalidState, "#{id}: write reservations changed during launch; inspect and retry"
+      end
+      if launch_authorization && (!allow_write_collision || collisions.empty? ||
+                                  launch_authorization["task_id"] != id ||
+                                  launch_authorization["conflicts"] != collisions)
+        raise InvalidState, "#{id}: invalid launch collision authorization"
+      end
       unless collisions.empty? || allow_write_collision
         raise InvalidState, write_collision_error(id, collisions)
       end
@@ -229,6 +237,7 @@ module AgentCodingTool
           "allowed_at" => started_at,
           "conflicts" => collisions
         }
+        state["write_collision_override"]["launch"] = launch_authorization if launch_authorization
       else
         state.delete("write_collision_override")
       end

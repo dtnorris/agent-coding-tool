@@ -8,7 +8,9 @@ Operational task definitions, project details, generated prompts, and runtime
 state live in a separate data directory and are never required to be committed
 here.
 
-The opt-in `launch TASK --codex` command runs one local foreground worker.
+The opt-in `launch TASK --codex` command runs one local foreground worker per
+task. An explicit collision flag can run a second task against the same Git
+authority only when ACT verifies the first task's separate worktree and worker.
 The tool does not plan architecture, interpret worker prose, or merge code.
 With an operator-installed private validation contract, a successful launch
 continues through trusted host validation to one task branch and draft PR.
@@ -255,7 +257,9 @@ collide.
 Use `--allow-write-collision` only to intentionally run conflicting write work.
 When it bypasses an actual collision, the runtime state records the override
 time and conflicting tasks/repositories. The flag is per start invocation;
-there is no global disable switch.
+there is no global disable switch. CLI `start` shares the launch reservation
+lock, so a manual start cannot interleave with launch's final ownership check
+and state reservation; a busy lock gives a retryable error.
 
 Collision checks are advisory scheduling safety for a human-operated workflow,
 not a process lock or autonomous scheduler. Manual lifecycle commands do not
@@ -263,13 +267,23 @@ launch, inspect, or control agents or check liveness. The opt-in launch command
 below manages only its own child process. Existing pushed-head freshness
 semantics remain authoritative.
 
-`bin/agent-coding-tool launch TASK --codex [--model MODEL] [--reasoning LEVEL]`
+`bin/agent-coding-tool launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]`
 
 Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch never uses collision overrides or `prepare --retry`. Without an installed
+Launch uses a collision override only for this invocation when
+`--allow-write-collision` is present and every conflicting writer has verified
+ACT-owned task/attempt evidence, a distinct worktree at the same prepared
+writable baseline, and known process state. The second worker's sandbox probe
+also denies writes to the first worker's worktrees. Ordinary launch still
+rejects a write/write collision; read-only overlap does not require the flag.
+The override records task, attempt, invocation, conflicts, authorities and
+verified sibling ownership in private handoff evidence and lifecycle state.
+It expires with that attempt. Manual `start --allow-write-collision` retains
+its human assertion contract and cannot be used to bypass launch checks.
+Launch never uses `prepare --retry`. Without an installed
 validation contract it retains the NC-02A handoff behavior. With a contract,
 successful worker exit continues to host validation and draft delivery. The
 delivery path can record CANDIDATE only after independently verified publication;
@@ -294,9 +308,15 @@ and submodules require operator judgment and are not
 supported in V1. Read-only snapshots may move and are disclosed in launch/exit
 provenance for reconciliation; writable movement before spawn blocks launch.
 Required external freshness failures block prompt handoff.
-Launch also rejects overlapping manual IN_FLIGHT reservations when they are
-stale: pushed movement cannot prove worker termination. This additional guard
-does not change the manual `start` collision contract.
+Launch rejects overlapping manual IN_FLIGHT work even with the new flag: a
+manual start record does not identify a separately sandboxed workspace or
+prove worker activity. This includes an AFTEST-01 launch while IG-18C is
+manual IN_FLIGHT. Supporting that case would require a private host attestation
+bound to the exact manual task/preparation, writable authority, separate Git
+worktree inventory, enforced sandbox roots and observed worker process state;
+no such import/attestation command exists. Stale manual reservations, foreign
+or partial records and unknown liveness still require operator judgment.
+This additional guard does not change the manual `start` collision contract.
 
 Install Codex and authenticate locally with `codex login` using a ChatGPT
 account. Launch accepts the verified Codex CLI 0.162.1 sandbox interface, checks
@@ -343,6 +363,15 @@ The record binds task/attempt, real parent repository, remote, branch or
 detached status, base SHA, path and access. Fresh-process inspection verifies
 Git's registry and these identities. Symlinked, foreign or partial artifacts fail closed and
 are preserved. A nonblocking local lock serializes launch reservations.
+The lock is released while each worker runs. A running ACT host updates a
+private heartbeat every second; a second launch checks its recent heartbeat,
+live process group (and parent on macOS), or terminal liveness and Git ownership before
+its own reservation. Status labels remain per task; an in-flight or candidate
+task with an override also shows its parallel authority. Cancellation and
+cleanup target only that task's process group and owned worktrees. A terminal
+worker awaiting review may coexist with a second worker while its verified
+worktree remains pinned. A candidate whose Git HEAD advanced beyond its
+prepared base needs separate review before another parallel launch.
 On macOS, the root-owned `/var` and `/tmp` aliases are canonicalized to their
 `/private` targets before checking the remaining path components. Arbitrary
 symlinks within those paths remain forbidden.
@@ -373,6 +402,12 @@ transcript; `session_transcript_path` is null because V1 does not discover
 Codex's private rollout path. Missing session metadata is reported as null.
 The optional delivery gate independently verifies freshness, artifact integrity
 and the human-authored validation contract before publication.
+Automatic delivery is deferred while another task with the same writable
+authority is in flight, candidate, or has unresolved execution evidence.
+Collision permission does not authorize integration, publication or completion.
+If one integration advances pushed main, the other's preparation becomes
+stale. Its patch/checkpoint remains recovery evidence and requires explicit
+reconciliation and fresh validation against the new head.
 
 Worker exit retains ACT's IN_FLIGHT reservation. `exited` describes process
 termination, including nonzero codes, and never means task completion.
@@ -700,6 +735,19 @@ TASK` once to check idempotence. Do not use this browser implementation run as
 evidence that any Mac pilot or real publication occurred.
 
 ## Development
+
+For a bounded Mac-local parallel pilot, run
+`ruby -Ilib:test test/parallel_launch_test.rb` in the ACT checkout. It creates
+two disposable task definitions, a local bare remote and separate task-owned
+worktrees at one pinned commit. A fake Codex worker stays active while the
+second launches with the explicit flag. The test checks the collision record,
+distinct branches/results, denied sibling and ordinary-checkout writes,
+independent process-group cancellation, checkpoint identity and stale status
+after a local main push. It also checks that a manual IG-18C reservation cannot
+authorize an AFTEST-01 launch. The worker has a 30-second sleep ceiling, the
+second launch is limited to 20 seconds, and no LLM inference, network, GitHub
+mutation or paid resource is involved. This pilot does not validate a real Mac
+Codex sandbox; that separate host check remains required before operational use.
 
 Run `rake` for the full test suite. Tests use explicit temporary data
 directories and do not depend on personal task data. The publisher tests in

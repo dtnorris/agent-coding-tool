@@ -360,7 +360,7 @@ class LauncherTest < Minitest::Test
     fixture do
       cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data, out: @out, err: @err)
       [%w[launch T], %w[launch T --other], %w[launch T --codex --sandbox danger-full-access],
-       %w[launch T --codex --allow-write-collision], %w[launch T --codex --provider api]].each do |args|
+       %w[launch T --codex --provider api]].each do |args|
         assert_equal 2, cli.run(args)
       end
       refute @store.load('T')['started_at']
@@ -429,7 +429,7 @@ class LauncherTest < Minitest::Test
 
   def test_start_gate_failure_never_delivers_prompt_or_starts_child
     fixture do
-      @coordinator.define_singleton_method(:start) { |_id| raise AgentCodingTool::InvalidState, 'start gate rejected' }
+      @coordinator.define_singleton_method(:start) { |_id, **_options| raise AgentCodingTool::InvalidState, 'start gate rejected' }
       assert_preflight_failure(/start gate rejected/)
       assert_equal 'judgment_required', report['status']
       assert File.file?(report['stdin_path'])

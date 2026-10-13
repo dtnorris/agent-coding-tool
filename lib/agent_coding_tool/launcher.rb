@@ -21,13 +21,13 @@ module AgentCodingTool
       @run_root = "#{@data_root}-runs"
     end
 
-    def launch(id, model: nil, reasoning: nil)
+    def launch(id, model: nil, reasoning: nil, allow_write_collision: false)
       raise InvalidTask, "launch: unsafe task ID" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       safe_root!
       raise InvalidState, "launch: foreign/symlinked lock" if File.symlink?(File.join(@run_root, "launch.lock"))
       File.open(File.join(@run_root, "launch.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
         raise InvalidState, "launch: another launcher holds the reservation lock" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-        run_locked(id, model, reasoning, lock)
+        run_locked(id, model, reasoning, lock, allow_write_collision)
       end
     rescue Psych::Exception, KeyError, TypeError, ArgumentError => e
       raise InvalidTask, "launch: malformed task/preparation: #{e.message}"
@@ -53,7 +53,7 @@ module AgentCodingTool
         File.stat(@run_root).uid == Process.uid && (File.stat(@run_root).mode & 0o077).zero?
     end
 
-    def run_locked(id, model, reasoning, lock)
+    def run_locked(id, model, reasoning, lock, allow_write_collision)
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       validate_task!(id, task)
       state_store = StateStore.new(File.join(@data_root, "state"))
@@ -70,13 +70,14 @@ module AgentCodingTool
         state = @coordinator.prepare(id).fetch("state")
       end
       validate_preparation!(task, state)
-      checked_status!(id)
+      checked_status!(id, allow_write_collision: allow_write_collision)
       prompt = File.binread(state.fetch("prompt_path"))
       raise InvalidState, "#{id}: generated prompt changed; explicitly prepare again" unless prompt == @coordinator.launch_prompt(id)
       names = task.fetch("repositories").filter_map { |key, spec| key if spec.fetch("access") == "write" }
       bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
-      reject_unknown_reservations!(bases)
+      verified_conflicts = reject_unknown_reservations!(id, bases,
+                                                         allow_write_collision: allow_write_collision)
       config = Config.load(File.join(@data_root, "config.yml"))
       root = WorktreeManager.canonical_system_path(config.worktree_root)
       [@source_root, @data_root, @run_root].map { |path| WorktreeManager.canonical_system_path(path) }.each do |protected|
@@ -123,25 +124,57 @@ module AgentCodingTool
         @report["workspaces"] = workspaces
         save_report
         names.each { |name| verify_checkout!(workspaces.fetch(name), state.fetch("snapshot").fetch(name)) }
-        heads = checked_status!(id)
+        heads = checked_status!(id, allow_write_collision: allow_write_collision)
         @report["launch_checked_at"] = Time.now.utc.iso8601
         @report["launch_heads"] = heads
         changed_write!(task, state, @report.fetch("launch_heads"))
         manager.inspect!
+        current_conflicts = reject_unknown_reservations!(id, bases,
+                                                         allow_write_collision: allow_write_collision)
+        identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees") } }
+        unless identity.call(current_conflicts) == identity.call(verified_conflicts)
+          raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
+        end
+        verified_conflicts = current_conflicts
+        @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") }
         sandbox_probe!(inventory, workspace, run_dir)
+        heads = checked_status!(id, allow_write_collision: allow_write_collision)
+        changed_write!(task, state, heads)
+        current_conflicts = reject_unknown_reservations!(id, bases,
+                                                         allow_write_collision: allow_write_collision)
+        unless identity.call(current_conflicts) == identity.call(verified_conflicts)
+          raise InvalidState, "launch: parallel worker set changed during sandbox probe; inspect and retry"
+        end
+        verified_conflicts = current_conflicts
+        @report["launch_checked_at"] = Time.now.utc.iso8601
+        @report["launch_heads"] = heads
         envelope = execution_envelope(workspaces, @report.fetch("launch_heads"))
         File.binwrite(@report.fetch("stdin_path"), prompt + envelope)
         command = codex_command(workspace, model, reasoning, extra_roots: workspaces.values.drop(1))
         @report["argv"] = command
+        if @collisions.any?
+          @report["collision_authorization"] = {
+            "task_id" => id, "attempt" => attempt, "invocation_id" => @report.fetch("invocation_id"),
+            "prepared_at" => state.fetch("prepared_at"), "conflicts" => @collisions,
+            "authorities" => @report.fetch("writable_authorities"),
+            "verified_conflicts" => verified_conflicts
+          }
+        end
         @report["status"] = "reserving"
         save_report
-        @coordinator.start(id)
+        @coordinator.start(id, allow_write_collision: allow_write_collision,
+                           expected_collisions: @collisions,
+                           launch_authorization: @report["collision_authorization"])
         @report["status"] = "reserved"
         save_report
         result = execute(command, lock)
         if result == 0 && @report["status"] == "exited"
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
-          if delivery.configured?(id)
+          if delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
+            @err.puts "DELIVERY DEFERRED: another launch holds the reservation lock; review separately"
+          elsif delivery.configured?(id) && overlapping_reservations?(id, task, state)
+            @err.puts "DELIVERY DEFERRED: overlapping writable task remains active or pending review; integration requires separate operator review"
+          elsif delivery.configured?(id)
             begin
               delivered = delivery.deliver(id, run_dir: run_dir)
               urls = delivered["prs"] ? delivered.fetch("prs").values.map { |pr| pr.fetch("url") } :
@@ -231,11 +264,12 @@ module AgentCodingTool
       end
     end
 
-    def checked_status!(id)
+    def checked_status!(id, allow_write_collision: false)
       heads = nil
       status = @coordinator.statuses([id], strict_freshness: true) { |observed| heads = observed }.first
       raise InvalidState, "#{id}: launch blocked: #{status['status']} #{status['reason']}" unless status.fetch("status") == "PREPARED"
-      raise InvalidState, "#{id}: unresolved write collision" unless status.fetch("write_collisions", []).empty?
+      @collisions = status.fetch("write_collisions", [])
+      raise InvalidState, "#{id}: unresolved write collision" if @collisions.any? && !allow_write_collision
       status.fetch("state").fetch("snapshot").to_h do |name, repo|
         [name, repo.slice("remote_url", "branch").merge("pushed_sha" => heads.fetch(repo.values_at("remote_url", "branch")))]
       end
@@ -272,7 +306,7 @@ module AgentCodingTool
                report["preparation"].is_a?(Hash) && report["status"].is_a?(String)
           raise InvalidState, "launch: unknown/malformed evidence schema"
         end
-        report
+        report.merge("_report_path" => path)
       end
     rescue JSON::ParserError
       raise InvalidState, "launch: partial evidence; operator judgment required"
@@ -302,27 +336,182 @@ module AgentCodingTool
       end
     end
 
-    def reject_unknown_reservations!(bases)
-      # A stale manual reservation is not proof that its worker has stopped.
+    def reject_unknown_reservations!(id, bases, allow_write_collision:)
+      # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
+      # pass also sees stale manual starts and orphaned host evidence, neither of
+      # which becomes safe merely because its old pushed head moved.
       store = StateStore.new(File.join(@data_root, "state"))
-      @coordinator.tasks.each do |task|
-        state = store.load(task.fetch("id"))
-        next unless state.is_a?(Hash) && state["started_at"]
+      all_reports = reports
+      verified = []
+      @coordinator.tasks.each do |other|
+        other_id = other.fetch("id")
+        next if other_id == id
+        other_state = store.load(other_id)
+        next unless other_state.is_a?(Hash) && other_state["snapshot"].is_a?(Hash)
+        shared = shared_writers(other, other_state.fetch("snapshot"), bases)
+        next if shared.empty?
+        next unless other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete"
 
-        snapshot = state.fetch("snapshot")
-        if task.fetch("repositories").any? { |name, spec|
-          spec.fetch("access") == "write" && bases.any? { |base|
-            snapshot.fetch(name).values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
+        if allow_write_collision && shared.any? { |name|
+          previous = other_state.fetch("snapshot").fetch(name)
+          bases.none? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
+            previous.values_at("remote_url", "branch", "pushed_sha") }
         }
-          raise InvalidState, "launch: #{task.fetch('id')} has an unresolved in-flight reservation; operator judgment required"
+          raise InvalidState, "launch: #{other_id} has an incompatible prepared baseline; reconcile before parallel launch"
+        end
+
+        collision = @collisions.find { |row| row.fetch("task_id") == other_id }
+        unless allow_write_collision && collision && %w[IN_FLIGHT CANDIDATE].include?(collision.fetch("status"))
+          raise InvalidState, "launch: #{other_id} has an unresolved in-flight reservation or candidate write reservation; operator judgment required"
+        end
+        matching = all_reports.select { |row| row["task_id"] == other_id &&
+          row["prepared_at"] == other_state["prepared_at"] && row["preparation"] == other_state["snapshot"] }
+        unless matching.length == 1
+          raise InvalidState, "launch: #{other_id} has no unique ACT-owned worker evidence; manual worker isolation and activity are unverified. Review its worker/worktree before retrying"
+        end
+        verified << verify_conflicting_worker!(other, other_state, matching.first, shared, bases)
+      end
+      all_reports.each do |report|
+        next if TERMINAL.include?(report["status"])
+        next if report["task_id"] == id && @report && report["invocation_id"] == @report["invocation_id"]
+        next if verified.any? { |row| row["invocation_id"] == report["invocation_id"] }
+        if report_writes_overlap?(report, bases)
+          raise InvalidState, "launch: #{report['task_id']} has partial, interrupted or unknown execution evidence; inspect #{report['_report_path']} and confirm liveness before recovery"
         end
       end
-      reports.each do |report|
-        next if TERMINAL.include?(report["status"])
-        if report.fetch("preparation").values.any? { |repo| bases.any? { |base|
-          repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") } }
-          raise InvalidState, "launch: #{report['task_id']} has unresolved execution evidence; operator judgment required"
+      verified.sort_by { |row| row.fetch("task_id") }
+    end
+
+    def shared_writers(task, snapshot, bases)
+      task.fetch("repositories").filter_map do |name, spec|
+        next unless spec.fetch("access") == "write"
+        repo = snapshot.fetch(name)
+        name if bases.any? { |base| repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
+      end
+    end
+
+    def report_writes_overlap?(report, bases)
+      names = report.fetch("writable_repositories", [report["writable_repository"]]).compact
+      names = report.fetch("preparation").keys if names.empty?
+      names.any? do |name|
+        repo = report.fetch("preparation").fetch(name)
+        bases.any? { |base| repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
+      end
+    rescue KeyError, TypeError
+      raise InvalidState, "launch: malformed worker write authority; inspect #{report['_report_path']}"
+    end
+
+    def verify_conflicting_worker!(task, state, report, names, bases)
+      other_id = task.fetch("id")
+      path = report.fetch("_report_path")
+      run_dir = File.dirname(path)
+      record_path = File.join(run_dir, "worktrees.json")
+      unless report["schema_version"] == SCHEMA && report["worktrees_path"] == record_path &&
+             report["attempt"].is_a?(Integer) && report["attempt"].positive? &&
+             report["invocation_id"].is_a?(String) && report["prepared_at"] == state["prepared_at"] &&
+             report["writable_repositories"] == task.fetch("repositories").filter_map { |name, spec| name if spec.fetch("access") == "write" } &&
+             report["writable_authorities"] == report.fetch("writable_repositories", []).to_h { |name|
+               [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] }
+        raise InvalidState, "launch: #{other_id} has foreign or partial task/attempt evidence at #{path}"
+      end
+      names.each do |name|
+        previous = state.fetch("snapshot").fetch(name)
+        unless bases.any? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
+          previous.values_at("remote_url", "branch", "pushed_sha") }
+          raise InvalidState, "launch: #{other_id}/#{name} has an incompatible prepared baseline; reconcile before parallel launch"
         end
+      end
+      root = Config.load(File.join(@data_root, "config.yml")).worktree_root
+      manager = WorktreeManager.new(root: root, record_path: record_path)
+      inventory = manager.inspect!
+      unless report["worktrees"].is_a?(Hash) &&
+             immutable_inventory(report.fetch("worktrees")) == immutable_inventory(inventory) &&
+             inventory["task_id"] == other_id && inventory["attempt"] == report["attempt"] &&
+             inventory.fetch("entries").map { |entry| entry.fetch("name") }.sort == task.fetch("repositories").keys.sort
+        raise InvalidState, "launch: #{other_id} worktree ownership differs from private attempt evidence"
+      end
+      inventory.fetch("entries").each do |entry|
+        previous = state.fetch("snapshot").fetch(entry.fetch("name"))
+        unless entry["state"] == "ready" && entry.fetch("access") == task.fetch("repositories").fetch(entry.fetch("name")).fetch("access") &&
+               previous.values_at("path", "remote_url", "branch", "pushed_sha") ==
+                 entry.values_at("parent", "remote_url", "source_branch", "base_sha")
+          raise InvalidState, "launch: #{other_id} worktree authority changed; inspect #{record_path}"
+        end
+      end
+      writers = inventory.fetch("entries").select { |entry| entry.fetch("access") == "write" }
+      workspaces = writers.to_h { |entry| [entry.fetch("name"), entry.fetch("path")] }
+      unless report["workspaces"] == workspaces && report["workspace"] == writers.first.fetch("path") &&
+             report.fetch("launch_heads").keys.sort == state.fetch("snapshot").keys.sort &&
+             writers.all? { |entry|
+               name = entry.fetch("name")
+               report.fetch("launch_heads").fetch(name).values_at("remote_url", "branch", "pushed_sha") ==
+                 state.fetch("snapshot").fetch(name).values_at("remote_url", "branch", "pushed_sha") }
+        raise InvalidState, "launch: #{other_id} launch roots or pinned heads are unverified"
+      end
+      case report.fetch("status")
+      when "running"
+        verify_running_process!(report)
+      when "exited"
+        unless CleanupLiveness.new.check(report, inventory) == :clear
+          raise InvalidState, "launch: #{other_id} terminal worker liveness is uncertain; inspect before retrying"
+        end
+      else
+        raise InvalidState, "launch: #{other_id} has #{report['status']} execution evidence; operator recovery required"
+      end
+      { "task_id" => other_id, "attempt" => report.fetch("attempt"),
+        "invocation_id" => report.fetch("invocation_id"), "status" => report.fetch("status"),
+        "workspaces" => workspaces,
+        "all_worktrees" => inventory.fetch("entries").map { |entry| entry.fetch("path") },
+        "authorities" => names.to_h { |name|
+          [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] } }
+    rescue KeyError, TypeError, NoMethodError, JSON::ParserError => e
+      raise InvalidState, "launch: #{other_id} partial or malformed ownership: #{e.message}; inspect #{path}"
+    end
+
+    def immutable_inventory(inventory)
+      inventory.reject { |key, _| key == "entries" }.merge(
+        "entries" => inventory.fetch("entries").map { |entry| entry.reject { |key, _| key == "state" } })
+    end
+
+    def verify_running_process!(report)
+      child, host = report.values_at("child_pid", "host_pid")
+      unless child.is_a?(Integer) && child.positive? && host.is_a?(Integer) && host.positive? &&
+             report["child_started_at"] && report["sandbox_probe"].is_a?(Hash) &&
+             report["heartbeat_child_pid"] == child && report["heartbeat_at"].is_a?(String)
+        raise InvalidState, "launch: #{report['task_id']} worker ownership or sandbox probe is missing"
+      end
+      age = Time.now.utc - Time.iso8601(report.fetch("heartbeat_at"))
+      unless age >= 0 && age <= 3
+        raise InvalidState, "launch: #{report['task_id']} host heartbeat is stale; inspect before retrying"
+      end
+      Process.kill(0, host)
+      Process.kill(0, -child)
+      unless Process.getpgid(child) == child
+        raise InvalidState, "launch: #{report['task_id']} worker process group changed; inspect before retrying"
+      end
+      if RbConfig::CONFIG.fetch("host_os").match?(/darwin/)
+        output, _error, status = Open3.capture3("ps", "-o", "ppid=", "-o", "pgid=", "-p", child.to_s)
+        unless status.success? && output.split.map(&:to_i) == [host, child]
+          raise InvalidState, "launch: #{report['task_id']} worker process parent/group changed; inspect before retrying"
+        end
+      end
+    rescue ArgumentError, Errno::ESRCH, Errno::EPERM, SystemCallError
+      raise InvalidState, "launch: #{report['task_id']} worker liveness is unknown; inspect before retrying"
+    end
+
+    def overlapping_reservations?(id, task, state)
+      authorities = task.fetch("repositories").filter_map { |name, spec|
+        state.fetch("snapshot").fetch(name) if spec.fetch("access") == "write" }
+      return true if reports.any? { |report|
+        report["task_id"] != id && !TERMINAL.include?(report["status"]) &&
+          report_writes_overlap?(report, authorities) }
+      store = StateStore.new(File.join(@data_root, "state"))
+      @coordinator.tasks.any? do |other|
+        next false if other.fetch("id") == id
+        other_state = store.load(other.fetch("id"))
+        other_state.is_a?(Hash) && other_state["snapshot"].is_a?(Hash) &&
+          (other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete") &&
+          shared_writers(other, other_state.fetch("snapshot"), authorities).any?
       end
     end
 
@@ -375,6 +564,7 @@ module AgentCodingTool
       "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n" \
         "The exact ACT prompt above retains task authority. Writable worktrees: #{JSON.generate(workspaces)}. Original paths are observations, not writable roots.\n" \
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
+        "Concurrent ACT worktrees are outside this worker's writable sandbox: #{JSON.generate(@parallel_roots || [])}. Collision permission grants no integration authority.\n" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
         "If required external reads, prerequisites or final freshness cannot be established, stop and report that limitation. Do not claim refreshed GitHub refs.\n" \
@@ -395,6 +585,9 @@ module AgentCodingTool
       inventory.fetch("entries").each do |entry|
         targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
         targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
+      end
+      (@parallel_roots || []).each do |path|
+        targets << [File.join(path, ".act-probe-#{SecureRandom.hex(6)}"), false]
       end
       inventory.fetch("entries").map { |entry| entry.fetch("parent") }.uniq.each do |parent|
         admin = git!("rev-parse", "--path-format=absolute", "--git-common-dir", chdir: parent)
@@ -506,7 +699,8 @@ module AgentCodingTool
           return 127
         end
         [input_r, stdout_w, stderr_w].each(&:close)
-        @report.merge!("status" => "running", "child_pid" => pid, "child_started_at" => Time.now.utc.iso8601)
+        @report.merge!("status" => "running", "child_pid" => pid, "child_started_at" => Time.now.utc.iso8601,
+                       "heartbeat_at" => Time.now.utc.iso8601(6), "heartbeat_child_pid" => pid)
         Process.kill(interrupted, -pid) if interrupted
         save_report
         lock.flock(File::LOCK_UN)
@@ -522,6 +716,7 @@ module AgentCodingTool
           Thread.new { capture_stream(stderr_r, @report.fetch("stderr_path"), @err) }
         ]
         deadline = nil
+        next_heartbeat = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
         loop do
           waited = Process.waitpid2(pid, Process::WNOHANG)
           if waited
@@ -532,6 +727,11 @@ module AgentCodingTool
           deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3 if interrupted
           if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
             Process.kill("KILL", -pid) rescue Errno::ESRCH
+          end
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= next_heartbeat
+            @report["heartbeat_at"] = Time.now.utc.iso8601(6)
+            save_report
+            next_heartbeat = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
           end
           sleep 0.02
         end

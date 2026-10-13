@@ -182,6 +182,21 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  def test_unsupported_sandbox_version_and_legacy_help_refuse_worker_launch
+    fixture do
+      write_fake(version: 'codex-cli 0.163.0')
+      assert_preflight_failure(/unsupported Codex sandbox version/)
+      assert_empty @store.load('T')
+    end
+    fixture do
+      write_fake(sandbox_help: 'Usage: codex sandbox macos --full-auto [COMMAND]...')
+      error = assert_raises(AgentCodingTool::InvalidState) { launcher(real_sandbox_probe: true).launch('T') }
+      assert_match(/lacks flat sandbox probe/, error.message)
+      refute @store.load('T')['started_at']
+      assert_equal 'preflight_failed', report.fetch('status')
+    end
+  end
+
   def test_zero_writers_malformed_task_and_unsupported_branch
     [ {}, { 'repo' => { 'access' => 'read_only', 'path' => nil } } ].each do |repos|
       fixture do
@@ -412,6 +427,24 @@ class LauncherTest < Minitest::Test
       assert_nil report["sandbox_probe"]
       refute File.exist?(File.join(@root, "worker-pid"))
       assert_equal "preflight_failed", report.fetch("status")
+    end
+  end
+
+  def test_sandbox_probe_uses_private_config_home_and_supported_root_flags
+    fixture do
+      operator_home = File.join(@root, 'operator-codex')
+      FileUtils.mkdir_p(operator_home)
+      File.write(File.join(operator_home, 'config.toml'), 'sandbox_mode="danger-full-access"')
+      prior_home = ENV['CODEX_HOME']
+      ENV['CODEX_HOME'] = operator_home
+      begin
+        assert_equal 0, launcher(real_sandbox_probe: true).launch('T')
+        refute_equal operator_home, @observed_sandbox_home
+        refute File.exist?(@observed_sandbox_home)
+        assert_equal 'exited', report.fetch('status')
+      ensure
+        ENV['CODEX_HOME'] = prior_home
+      end
     end
   end
 

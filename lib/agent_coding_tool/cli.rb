@@ -72,6 +72,7 @@ module AgentCodingTool
       when "checkpoint" then return checkpoint_command(argv)
       when "worktrees" then worktree_command(argv, cleanup: false)
       when "cleanup" then worktree_command(argv, cleanup: true)
+      when "abandon-preflight" then abandon_preflight_command(argv)
       when "received" then received_command(argv)
       when "finish" then finish_command(argv)
       when "record" then record_command(argv)
@@ -189,6 +190,16 @@ module AgentCodingTool
       0
     rescue JSON::ParserError, KeyError, TypeError
       raise InvalidState, "#{id}: malformed worktree/delivery evidence"
+    end
+
+    def abandon_preflight_command(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool abandon-preflight TASK [--dry-run]" unless
+        id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && [[], ["--dry-run"]].include?(argv)
+      recovery = PreflightRecovery.new(data_root: @data_root)
+      result = argv == ["--dry-run"] ? recovery.preflight(id) : recovery.abandon(id)
+      @out.puts JSON.pretty_generate(result)
+      0
     end
 
     def launch_command(argv)
@@ -1004,6 +1015,8 @@ module AgentCodingTool
           worktrees TASK      verify and show task-owned worktree ownership
           cleanup TASK [--dry-run]
                               inspect removal targets and blockers; changes nothing
+          abandon-preflight TASK [--dry-run]
+                              verify and explicitly abandon one failed pre-worker launch
           received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]

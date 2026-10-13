@@ -5,12 +5,13 @@ require "json"
 require "securerandom"
 require "open3"
 require "rbconfig"
+require "tmpdir"
 
 module AgentCodingTool
   # Execution evidence is deliberately separate from canonical lifecycle state.
   class Launcher
     SCHEMA = "agent-coding-tool-run/v1"
-    TERMINAL = %w[exited invalid_final interrupted child_start_failed preflight_failed].freeze
+    TERMINAL = %w[exited invalid_final interrupted child_start_failed preflight_failed preflight_abandoned].freeze
     REASONING = %w[minimal low medium high xhigh].freeze
 
     def initialize(coordinator:, data_root:, source_root:, out: $stdout, err: $stderr,
@@ -283,6 +284,9 @@ module AgentCodingTool
         unless TERMINAL.include?(report["status"])
           raise InvalidState, "#{id}: previous run liveness unknown; operator judgment required"
         end
+        if report["status"] == "preflight_failed"
+          raise InvalidState, "#{id}: failed preflight requires explicit abandonment before launch"
+        end
         if report["prepared_at"] == state["prepared_at"]
           raise InvalidState, "#{id}: preparation already attempted; explicit operator recovery required"
         end
@@ -325,6 +329,9 @@ module AgentCodingTool
       raise Errno::ENOENT unless candidate && File.file?(candidate) && File.executable?(candidate)
       @codex = File.realpath(candidate)
       @codex_digest = Digest::SHA256.file(@codex).hexdigest
+      version, _version_error, version_status = Open3.capture3(worker_env, @codex, "--version", unsetenv_others: true)
+      raise Error, "launch: unsupported Codex sandbox version (requires 0.162.1)" unless
+        version_status.success? && version.strip.match?(/\Acodex(?:-cli)? 0\.162\.1\z/)
       help, stderr, status = Open3.capture3(worker_env, @codex, "exec", "--help", unsetenv_others: true)
       unless status.success? && %w[--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model].all? { |flag| help.include?(flag) }
         raise Error, "launch: installed Codex lacks required safe exec flags"
@@ -370,8 +377,10 @@ module AgentCodingTool
       platform = RbConfig::CONFIG.fetch("host_os").match?(/darwin/) ? "macos" :
                  RbConfig::CONFIG.fetch("host_os").match?(/linux/) ? "linux" : nil
       raise InvalidState, "launch: unsupported sandbox platform" unless platform
-      help, _stderr, status = Open3.capture3(worker_env, @codex, "sandbox", platform, "--help", unsetenv_others: true)
-      raise InvalidState, "launch: installed CLI lacks sandbox probe" unless status.success? && help.include?("--full-auto")
+      help, _stderr, status = Open3.capture3(worker_env, @codex, "sandbox", "--help", unsetenv_others: true)
+      raise InvalidState, "launch: installed CLI lacks flat sandbox probe" unless
+        status.success? && help.include?("codex sandbox") && help.include?("[COMMAND]") &&
+        !help.include?("--full-auto")
       marker = "ACT sandbox probe #{SecureRandom.hex(12)}"
       targets = [[File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
       inventory.fetch("entries").each do |entry|
@@ -388,17 +397,23 @@ module AgentCodingTool
           File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(marker) }
           created << path
         end
-        stdout, _stderr, result = Open3.capture3(
-          worker_env, @codex, "--ignore-user-config",
-          "-c", "sandbox_workspace_write.network_access=false",
-          "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1))}",
-          "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-          "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
-          "sandbox", platform, "--full-auto", "--",
-          "/bin/sh", "-c", 'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\\n"; else printf "0\\n"; fi; done',
-          "act-probe", *targets.map(&:first),
-          chdir: workspace, unsetenv_others: true
-        )
+        # `sandbox` has no --ignore-user-config; a fresh private CODEX_HOME
+        # prevents operator config from changing the probe's permissions.
+        stdout, result = Dir.mktmpdir("act-sandbox-config-") do |isolated_home|
+          output, _stderr, status = Open3.capture3(
+            worker_env.merge("CODEX_HOME" => isolated_home), @codex,
+            "-c", 'sandbox_mode="workspace-write"',
+            "-c", "sandbox_workspace_write.network_access=false",
+            "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1))}",
+            "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+            "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+            "sandbox", "--",
+            "/bin/sh", "-c", 'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\\n"; else printf "0\\n"; fi; done',
+            "act-probe", *targets.map(&:first),
+            chdir: workspace, unsetenv_others: true
+          )
+          [output, status]
+        end
         results = stdout.lines.map(&:strip)
         targets.each_with_index do |(path, allowed), index|
           actual = File.binread(path)

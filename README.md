@@ -299,16 +299,18 @@ stale: pushed movement cannot prove worker termination. This additional guard
 does not change the manual `start` collision contract.
 
 Install Codex and authenticate locally with `codex login` using a ChatGPT
-account. Launch verifies installed `exec`/`login` help and requires the recognized
+account. Launch accepts the verified Codex CLI 0.162.1 sandbox interface, checks
+installed `exec`/`login` help and requires the recognized
 ChatGPT login status. It strips API-key and other unneeded environment variables,
 ignores user configuration and execpolicy rules, fixes provider/login to
 OpenAI/ChatGPT, uses `--sandbox workspace-write -c approval_policy=never`,
 disables shell network and temporary writable roots, and disables multiple
 agents. It grants additional writable roots only for the task's other authorized
 writer worktrees. Before reserving ACT state, a no-inference Codex sandbox
-probe checks writable access in every writer and denied writes to ordinary
+probe uses flat `codex sandbox -- COMMAND` with an explicit
+`sandbox_mode="workspace-write"` override. It checks writable access in every writer and denied writes to ordinary
 checkouts, private evidence, each reader and shared Git administration.
-Unsupported CLI probe or a failed boundary check
+Other CLI versions, an unsupported probe or a failed boundary check
 blocks worker handoff. The operator's installed Mac CLI must pass this probe.
 No API-key billing, cloud provisioning,
 profile, arbitrary provider, sandbox escalation or approval override is offered.
@@ -382,7 +384,48 @@ and retains the reservation. Ctrl-C/TERM/HUP forward to the worker process
 group, with bounded termination and descendant cleanup; signal exits use
 128 plus the signal number. Failed and interrupted evidence is retained.
 
-Recovery is deliberately manual. `preflight`, `reserving`, `reserved`, `running`
+For a terminal `preflight_failed` attempt, `act abandon-preflight TASK --dry-run`
+verifies the original preparation, ownership record, exact Git identities and
+clean worktrees, absence of worker spawn/reservation evidence, and process
+liveness. `act abandon-preflight TASK` holds the launch lock and uses native
+non-forced Git worktree removals, retaining the run directory and feature
+branches. Interrupted removal can be repeated; the attempt is marked
+`preflight_abandoned` and the task receives a failed outcome. Then
+`act prepare TASK --retry` creates a fresh preparation. Active, uncertain,
+changed, dirty, foreign and worker-started attempts cannot use this path.
+Partial worktree creation remains for operator judgment.
+
+Mac-local acceptance is separate from the offline fake CLI tests. Verify
+`codex --version` reports 0.162.1 and `codex sandbox --help` displays the flat
+`[COMMAND]...` form. The following no-inference probe uses disposable paths.
+It gives the sandbox command a fresh private `CODEX_HOME`, so operator
+configuration cannot supply permissions or override the explicit sandbox
+settings. The real launch performs the same isolation with a temporary home.
+It must print `1` followed by four `0` lines; only `writer/marker` may change
+from `seed` to `breach`. Stop before worker launch if the result differs.
+
+```bash
+mkdir -p "$HOME/ACT-Worktrees"
+nc02d_probe=$(mktemp -d "$HOME/ACT-Worktrees/nc02d-probe.XXXXXX")
+mkdir "$nc02d_probe"/{writer,reader,ordinary,evidence,admin}
+mkdir -m 700 "$nc02d_probe/codex-home"
+for nc02d_name in writer reader ordinary evidence admin; do printf seed > "$nc02d_probe/$nc02d_name/marker"; done
+cd "$nc02d_probe/writer"
+CODEX_HOME="$nc02d_probe/codex-home" codex -c 'sandbox_mode="workspace-write"' \
+  -c 'sandbox_workspace_write.network_access=false' \
+  -c 'sandbox_workspace_write.writable_roots=[]' \
+  -c 'sandbox_workspace_write.exclude_tmpdir_env_var=true' \
+  -c 'sandbox_workspace_write.exclude_slash_tmp=true' \
+  sandbox -- /bin/sh -c 'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\n"; else printf "0\n"; fi; done' \
+  act-probe "$nc02d_probe"/{writer,reader,ordinary,evidence,admin}/marker
+for nc02d_name in writer reader ordinary evidence admin; do printf '%s: ' "$nc02d_name"; cat "$nc02d_probe/$nc02d_name/marker"; done
+cd "$HOME"
+rm "$nc02d_probe"/{writer,reader,ordinary,evidence,admin}/marker
+rm -R "$nc02d_probe/codex-home"
+rmdir "$nc02d_probe"/{writer,reader,ordinary,evidence,admin} "$nc02d_probe"
+```
+
+Other recovery remains manual. `preflight`, `reserving`, `reserved`, `running`
 or `judgment_required` left in a handoff after host failure means liveness is
 unknown, even if a recorded PID is absent (PIDs can be reused). Partial artifacts
 also require judgment. A host crash or SIGKILL cannot guarantee child cleanup.

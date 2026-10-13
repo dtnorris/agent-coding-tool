@@ -76,11 +76,24 @@ module LauncherSupport
     File.write(@@fake_executable, <<~RUBY)
       #!#{RbConfig.ruby}
       require 'json'
+      if ARGV == ['--version']
+        puts 'codex-cli 0.162.1'
+        exit
+      end
       if ARGV.include?('sandbox')
+        prefix = ARGV.take(ARGV.index('sandbox'))
+        abort 'unsupported top-level sandbox flag' unless prefix.length.even? &&
+          prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? }
         if ARGV.include?('--help')
-          puts '--full-auto'
+          puts 'Usage: codex sandbox [OPTIONS] [COMMAND]...'
           exit
         end
+        home = ENV['CODEX_HOME']
+        abort 'sandbox inherited user configuration' unless home && File.directory?(home) &&
+          (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
+          home != File.join(ENV.fetch('HOME', ''), '.codex')
+        abort 'legacy sandbox invocation' unless ARGV.include?('sandbox_mode="workspace-write"') &&
+          ARGV[ARGV.index('sandbox') + 1] == '--' && !ARGV.include?('--full-auto')
         targets = ARGV.drop(ARGV.index('act-probe') + 1)
         settings = JSON.parse(File.read(File.expand_path('../../../fake-settings.json', Dir.pwd)))
         targets.each do |target|
@@ -129,10 +142,12 @@ module LauncherSupport
     @@fake_executable
   end
 
-  def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true)
+  def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true,
+                 version: 'codex-cli 0.162.1', sandbox_help: 'Usage: codex sandbox [OPTIONS] [COMMAND]...')
     @fake_mode = mode
     @fake_auth = auth
     @fake_help = help ? '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model' : '--sandbox'
+    @fake_version, @fake_sandbox_help = version, sandbox_help
     raise 'real preflight requires default fake help/auth' if @real_git && (!help || auth != 'Logged in using ChatGPT')
     File.symlink(fake_executable, @fake) unless File.exist?(@fake)
     File.write(File.join(@root, 'fake-settings.json'), JSON.generate('mode' => mode))
@@ -205,12 +220,22 @@ module LauncherSupport
                                                     allowed_options.include?(options)
       raise "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
       case command
+      when ['--version'] then [@fake_version, '', Status.new(true)]
       when ['exec', '--help'] then [@fake_help, '', Status.new(true)]
       when ['login', '--help'] then ['status Show login status', '', Status.new(true)]
       when ['login', 'status'] then ['', @fake_auth, Status.new(!@fake_auth.empty?)]
-      when ['sandbox', 'linux', '--help'] then ['--full-auto', '', Status.new(true)]
-      when ['sandbox', 'macos', '--help'] then ['--full-auto', '', Status.new(true)]
+      when ['sandbox', '--help'] then [@fake_sandbox_help, '', Status.new(true)]
       when ->(args) { args.include?('sandbox') && args.include?('act-probe') }
+        prefix = command.take(command.index('sandbox'))
+        home = env.fetch('CODEX_HOME')
+        raise 'unsupported top-level sandbox flag or inherited configuration' unless
+          prefix.length.even? && prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? } &&
+          File.directory?(home) && (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
+          home != ENV['CODEX_HOME'] && !home.start_with?("#{@root}/")
+        @observed_sandbox_home = home
+        raise 'legacy or unenforced sandbox invocation' unless
+          command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&
+          !command.include?('--full-auto')
         paths = command.drop(command.index('act-probe') + 1)
         output = paths.map do |path|
           allowed = @fake_mode == 'leaky' || path.start_with?(File.join(@root, 'worktrees', 'T', 'repo') + '/')

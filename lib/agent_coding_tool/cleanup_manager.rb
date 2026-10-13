@@ -41,6 +41,15 @@ module AgentCodingTool
         begin
           report = JSON.parse(File.binread(report_path))
           inventory_raw = JSON.parse(File.binread(record_path))
+          if report["status"] == "preflight_abandoned"
+            unless abandoned_preflight?(id, report, inventory_raw, record_path, task)
+              raise InvalidState, "cleanup: unverified abandoned preflight"
+            end
+            blockers = outcome == "complete" ? [] : ["task outcome is #{outcome || 'unfinished'}"]
+            rows << { "attempt" => report.fetch("attempt"), "path" => run_dir,
+                      "state" => "preflight_abandoned", "blockers" => blockers }
+            next
+          end
           unless report["schema_version"] == Launcher::SCHEMA && report["task_id"] == id &&
                  report["worktrees_path"] == record_path &&
                  immutable_inventory(report["worktrees"]) == immutable_inventory(inventory_raw) &&
@@ -132,6 +141,27 @@ module AgentCodingTool
       inventory.reject { |key, _value| key == "entries" }.merge(
         "entries" => inventory.fetch("entries").map { |entry|
           entry.reject { |key, _value| key == "state" } })
+    end
+
+    def abandoned_preflight?(id, report, inventory, record_path, task)
+      return false unless report["schema_version"] == Launcher::SCHEMA && report["task_id"] == id &&
+        report["preflight_abandoned_at"] && report["error"].is_a?(String) &&
+        report["worktrees_path"] == record_path && report["attempt"] == inventory["attempt"] &&
+        inventory["schema_version"] == WorktreeManager::SCHEMA && inventory["task_id"] == id &&
+        immutable_inventory(report["worktrees"]) == immutable_inventory(inventory) &&
+        report["preparation"].is_a?(Hash) && report["preparation"].keys.sort == task.fetch("repositories").keys.sort &&
+        %w[argv child_pid child_started_at started_at session_id ended_at].all? { |key| report[key].nil? }
+      entries = inventory.fetch("entries")
+      return false unless entries.is_a?(Array) && entries.map { |entry| entry.fetch("name") }.sort == task.fetch("repositories").keys.sort
+      entries.all? do |entry|
+        prepared = report.fetch("preparation").fetch(entry.fetch("name"))
+        entry["state"] == "removed" &&
+          task.fetch("repositories").fetch(entry.fetch("name")).fetch("access") == entry["access"] &&
+          prepared.values_at("path", "remote_url", "branch", "pushed_sha") ==
+            entry.values_at("parent", "remote_url", "source_branch", "base_sha")
+      end
+    rescue KeyError, TypeError
+      false
     end
 
     def delivery_detail(run_dir, name, inventory)

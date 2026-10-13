@@ -38,6 +38,7 @@ class CheckpointTest < Minitest::Test
 
   def fixture
     Dir.mktmpdir("act-checkpoint-test-") do |root|
+      root = File.realpath(root)
       ordinary = File.join(root, "ordinary")
       remote = File.join(root, "remote.git")
       workspace = File.join(root, "workspace")

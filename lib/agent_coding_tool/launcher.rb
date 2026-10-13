@@ -72,7 +72,7 @@ module AgentCodingTool
       validate_preparation!(task, state)
       checked_status!(id, allow_write_collision: allow_write_collision)
       prompt = File.binread(state.fetch("prompt_path"))
-      raise InvalidState, "#{id}: generated prompt changed; explicitly prepare again" unless prompt == @coordinator.launch_prompt(id)
+      raise InvalidState, "#{id}: generated prompt changed; explicitly prepare again" unless prompt == @coordinator.launch_prompt(id).b
       names = task.fetch("repositories").filter_map { |key, spec| key if spec.fetch("access") == "write" }
       bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
@@ -276,7 +276,10 @@ module AgentCodingTool
     end
 
     def reports
-      entries = Dir.children(@run_root).reject { |entry| entry == "launch.lock" }
+      entries = Dir.children(@run_root).reject do |entry|
+        entry == "launch.lock" ||
+          (entry == ".DS_Store" && File.lstat(File.join(@run_root, entry)).file?)
+      end
       if entries.include?("checkpoints")
         checkpoint_root = File.join(@run_root, "checkpoints")
         unless File.directory?(checkpoint_root) && !File.symlink?(checkpoint_root) &&
@@ -287,7 +290,7 @@ module AgentCodingTool
       end
       paths = entries.flat_map do |task_id|
         task_path = File.join(@run_root, task_id)
-        unless File.directory?(task_path) && !File.symlink?(task_path)
+        unless task_id != ".DS_Store" && File.directory?(task_path) && !File.symlink?(task_path)
           raise InvalidState, "launch: foreign evidence entry; operator judgment required"
         end
         Dir.children(task_path).map do |entry|

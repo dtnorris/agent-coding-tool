@@ -265,6 +265,65 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  def test_regular_finder_metadata_coexists_with_valid_worker_evidence
+    fixture do
+      root = "#{@data}-runs"
+      FileUtils.mkdir_p(root, mode: 0o700)
+      finder = File.join(root, ".DS_Store")
+      bytes = "\x00Finder\xffmetadata".b
+      File.binwrite(finder, bytes)
+      other = File.join(root, "OTHER", "earlier", "handoff.json")
+      FileUtils.mkdir_p(File.dirname(other))
+      File.write(other, JSON.generate(
+        "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "OTHER",
+        "preparation" => {}, "status" => "exited"
+      ))
+
+      assert_equal 0, launcher.launch("T")
+      assert_equal "exited", report.fetch("status")
+      assert_equal bytes, File.binread(finder)
+      assert File.file?(other)
+    end
+  end
+
+  def test_finder_metadata_does_not_hide_unknown_worker_liveness
+    fixture do
+      root = "#{@data}-runs"
+      FileUtils.mkdir_p(root, mode: 0o700)
+      finder = File.join(root, ".DS_Store")
+      File.binwrite(finder, "Finder bytes\x00".b)
+      other = File.join(root, "OTHER", "earlier", "handoff.json")
+      FileUtils.mkdir_p(File.dirname(other))
+      File.write(other, JSON.generate(
+        "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "OTHER",
+        "preparation" => { "repo" => { "remote_url" => @remote, "branch" => "main", "pushed_sha" => @base } },
+        "writable_repository" => "repo", "status" => "running"
+      ))
+
+      assert_preflight_failure(/unknown execution evidence/)
+      assert_equal "Finder bytes\x00".b, File.binread(finder)
+    end
+  end
+
+  def test_only_regular_top_level_finder_metadata_is_ignored
+    [:symlink, :directory, :foreign_file, :nested_file].each do |kind|
+      fixture do
+        root = "#{@data}-runs"
+        FileUtils.mkdir_p(root, mode: 0o700)
+        case kind
+        when :symlink then File.symlink(@ordinary, File.join(root, ".DS_Store"))
+        when :directory then Dir.mkdir(File.join(root, ".DS_Store"))
+        when :foreign_file then File.write(File.join(root, ".other"), "foreign")
+        when :nested_file
+          task_root = File.join(root, "OTHER")
+          Dir.mkdir(task_root)
+          File.write(File.join(task_root, ".DS_Store"), "foreign")
+        end
+        assert_preflight_failure(kind == :nested_file ? /partial\/foreign run artifacts/ : /foreign evidence entry/)
+      end
+    end
+  end
+
   def test_replaced_or_nonprivate_checkpoint_namespace_fails_closed
     [:symlink, :file, :nonprivate].each do |replacement|
       fixture do

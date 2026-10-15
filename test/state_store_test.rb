@@ -271,9 +271,12 @@ class StateStoreTest < Minitest::Test
 
   private
 
-  # Yields a store and its disposable root; removes all files even on test failure.
+  # Yields a store and canonical disposable root; removes files even on test failure.
   def with_store
-    Dir.mktmpdir("act-state-test-") { |root| yield AgentCodingTool::StateStore.new(root), root }
+    Dir.mktmpdir("act-state-test-") do |root|
+      root = File.realpath(root)
+      yield AgentCodingTool::StateStore.new(root), root
+    end
   end
 
   # Injects ENOSPC into one real temporary-file operation, with a partial write for :write.

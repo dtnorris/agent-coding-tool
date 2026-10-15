@@ -1,13 +1,48 @@
 # frozen_string_literal: true
 
+require "digest"
+require "open3"
+require "yaml"
+
 module AgentCodingTool
+  # Builds worker prompts with verified canonical guidance and existing task rules.
   class PromptRenderer
+    SKILL_PATH = "skills/karpathy-manning-dtnorris-guidelines/SKILL.md"
+    SKILL_IDENTITY = {
+      "revision" => "f902abd63ed09ac4419106366c19bf577fc3cf08",
+      "sha256" => "83561709382c0196faacd287aeb1b1c798a687e40457bf513d996ddba9cb1ce8"
+    }.freeze
+    SKILL_ROOT = File.expand_path("../../../agent-skills", __dir__)
+
+    # Uses a sibling Git checkout and immutable pin; optional inputs isolate tests.
+    # Returns a renderer; source errors are deferred until render, not status reads.
+    def initialize(skill_root: SKILL_ROOT, skill_identity: SKILL_IDENTITY)
+      @skill_root = skill_root
+      @skill_identity = skill_identity.dup.freeze
+    end
+
+    # Returns the revision/fingerprint recorded in preparation state; no I/O.
+    def skill_identity = @skill_identity
+
+    # Returns the complete prompt for task/snapshot/dependencies, or raises
+    # InvalidState before returning any prompt if pinned guidance cannot load.
     def render(task, snapshot, dependencies: [])
+      skill = coding_skill
       writable = task.fetch("repositories").select { |_name, spec| spec.fetch("access") == "write" }
       read_only = task.fetch("repositories").select { |_name, spec| spec.fetch("access") == "read_only" }
 
       lines = []
       lines << "# #{task.fetch('id')}: #{task.fetch('title')}"
+      lines << ""
+      lines << "## Canonical coding guidelines"
+      lines << ""
+      lines << "Source: dtnorris/agent-skills / #{SKILL_PATH}"
+      lines << "Revision: #{skill_identity.fetch('revision')}"
+      lines << "SHA-256: #{skill_identity.fetch('sha256')}"
+      lines << "Apply the complete canonical skill below. Task-specific requirements, safety constraints, Git restrictions and acceptance criteria take precedence."
+      lines << "<!-- Begin canonical SKILL.md -->"
+      lines << skill
+      lines << "<!-- End canonical SKILL.md -->"
       lines << ""
       lines << "Use the connected GitHub integration for repository access."
       lines << "For GitHub reads, prefer the connected GitHub tools/API. Do not open github.com in the cloud browser when the connected integration can perform the required repository read."
@@ -62,6 +97,42 @@ module AgentCodingTool
     end
 
     private
+
+    # Reads only the pinned commit's blob, never the working file or moving HEAD.
+    # Returns unchanged UTF-8 text; missing objects, bad metadata or digest raise
+    # InvalidState. Lazy fetching and replacement objects are disabled for offline
+    # integrity checks, including in partial clones.
+    def coding_skill
+      revision, fingerprint = skill_identity.values_at("revision", "sha256")
+      unless skill_identity.keys.sort == %w[revision sha256] &&
+             revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}\z/) &&
+             fingerprint.is_a?(String) && fingerprint.match?(/\A[0-9a-f]{64}\z/)
+        raise InvalidState, "coding skill: malformed pinned identity"
+      end
+      unless File.directory?(@skill_root) && File.exist?(File.join(@skill_root, ".git"))
+        raise InvalidState, "coding skill: missing Git checkout: #{@skill_root}"
+      end
+      content, error, status = Open3.capture3(
+        { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" },
+        "git", "--no-replace-objects", "-C", @skill_root,
+        "cat-file", "blob", "#{revision}^{commit}:#{SKILL_PATH}"
+      )
+      raise InvalidState, "coding skill: pinned source unavailable (#{revision}): #{error.strip}" unless status.success?
+      unless Digest::SHA256.hexdigest(content) == fingerprint
+        raise InvalidState, "coding skill: SHA-256 integrity mismatch (#{revision})"
+      end
+      content.force_encoding(Encoding::UTF_8)
+      frontmatter = content.match(/\A---\n(.*?)^---\n/m) if content.valid_encoding?
+      metadata = YAML.safe_load(frontmatter[1], aliases: false) if frontmatter
+      unless metadata.is_a?(Hash) && metadata["name"] == "karpathy-manning-dtnorris-guidelines" &&
+             metadata["description"].is_a?(String) && !metadata["description"].strip.empty? &&
+             metadata["license"] == "MIT" && !content[frontmatter.end(0)..].strip.empty?
+        raise InvalidState, "coding skill: malformed SKILL.md metadata or empty body"
+      end
+      content
+    rescue Psych::Exception, SystemCallError => error
+      raise InvalidState, "coding skill: #{error.class}: #{error.message}"
+    end
 
     def append_test_performance(lines)
       lines << "## Test performance"

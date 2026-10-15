@@ -202,6 +202,7 @@ module LauncherSupport
       if git
         yield
       else
+        @skill_capture = Open3.method(:capture3)
         AgentCodingTool::RepoInspector.stub(:new, @inspector) do
           AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do
             Open3.stub(:capture3, method(:unit_capture)) { yield }
@@ -212,6 +213,9 @@ module LauncherSupport
   end
 
   def unit_capture(*command, **options)
+    if command[0].is_a?(Hash) && command[1, 2] == ['git', '--no-replace-objects']
+      return @skill_capture.call(*command, **options)
+    end
     if command.first.is_a?(Hash)
       env = command.shift
       allowed_options = [{ unsetenv_others: true },

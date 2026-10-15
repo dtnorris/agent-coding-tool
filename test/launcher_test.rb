@@ -86,12 +86,33 @@ class LauncherTest < Minitest::Test
       File.write(task_path, YAML.dump(task))
       prepared = @coordinator.prepare('T').fetch('state')
       prompt = File.binread(prepared.fetch('prompt_path'))
+      assert_equal 1, prompt.scan(CodingSkillSupport::TEXT).length
+      assert_equal AgentCodingTool::PromptRenderer::SKILL_IDENTITY, prepared.fetch('coding_skill')
       @coordinator.define_singleton_method(:prepare) { |*| raise 'unexpected reprepare' }
       assert_equal 0, launcher.launch('T')
       assert_equal prepared['prepared_at'], @store.load('T')['prepared_at']
       assert_equal prompt, File.binread(report.fetch('prompt_path'))
       assert File.binread(report.fetch('stdin_path')).start_with?(prompt + "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---")
       refute JSON.parse(File.read(File.join(@root, 'argv'))).include?('--model')
+    end
+  end
+
+  # A missing skill during cold launch must not reserve work, create worktrees or
+  # hand off a stale prompt. Inputs are isolated fixtures; unexpected errors fail.
+  def test_unavailable_coding_skill_refuses_launch_before_reservation_or_handoff
+    fixture do
+      @coordinator.prepare('T')
+      before = File.binread(@store.state_path('T'))
+      @coordinator = AgentCodingTool::Coordinator.new(
+        task_store: AgentCodingTool::TaskStore.new(File.join(@data, 'tasks')),
+        state_store: @store, repo_inspector: @inspector,
+        prompt_renderer: AgentCodingTool::PromptRenderer.new(skill_root: File.join(@root, 'missing-skill')),
+        prompt_root: File.join(@data, 'state', 'prompts'))
+      assert_preflight_failure(/coding skill: missing Git checkout/)
+      assert_equal before, File.binread(@store.state_path('T'))
+      refute File.exist?(File.join(@root, 'stdin'))
+      assert_empty Dir.glob(File.join(@root, 'worktrees', '*'))
+      assert_empty Dir.glob("#{@data}-runs/T/*/handoff.json")
     end
   end
 

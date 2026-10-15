@@ -25,6 +25,7 @@ module AgentCodingTool
     def launch_prompt(id)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      validate_skill_identity!(id, state, required: true)
       @prompt_renderer.render(task, state.fetch("snapshot"), dependencies: preparation_dependencies(task))
     end
 
@@ -183,6 +184,7 @@ module AgentCodingTool
         raise InvalidState, "#{id}: has recorded outcome #{previous_outcome}; use --retry to prepare a new attempt"
       end
 
+      validate_skill_identity!(id, state)
       snapshot = snapshot_task(task)
       prompt = @prompt_renderer.render(task, snapshot, dependencies: dependencies)
       collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
@@ -195,7 +197,8 @@ module AgentCodingTool
         "id" => id,
         "prepared_at" => Time.now.utc.iso8601,
         "snapshot" => snapshot,
-        "prompt_path" => prompt_path
+        "prompt_path" => prompt_path,
+        "coding_skill" => @prompt_renderer.skill_identity
       )
       new_state.delete("result") if retry_result
       new_state.delete("started_at")
@@ -280,6 +283,16 @@ module AgentCodingTool
     end
 
     private
+
+    # Rejects pin drift before preparation writes or launch rendering. Legacy
+    # state may be explicitly prepared; launching it requires that preparation.
+    # Inputs are task ID/state and whether a pin is required; raises InvalidState.
+    def validate_skill_identity!(id, state, required: false)
+      return unless required || state.key?("coding_skill")
+      return if state["coding_skill"] == @prompt_renderer.skill_identity
+
+      raise InvalidState, "#{id}: coding skill pin missing or changed; preserve prior evidence and explicitly reset/reprepare to adopt this pin"
+    end
 
     def validate_prepared_provenance!(contexts)
       contexts.each do |context|

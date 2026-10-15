@@ -4,6 +4,7 @@ require "fileutils"
 require "minitest/autorun"
 require "tmpdir"
 require "agent_coding_tool"
+require_relative "coding_skill_support"
 
 module TestHelpers
   def self.git_seed

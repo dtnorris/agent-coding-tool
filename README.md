@@ -476,6 +476,34 @@ judgment; launch does not provide an automatic recovery switch. An already
 attempted preparation cannot be silently reused. Manual lifecycle commands
 remain human assertions, not process locks.
 
+## Canonical worker coding guidelines
+
+Every generated worker prompt includes the complete, unchanged canonical
+`skills/karpathy-manning-dtnorris-guidelines/SKILL.md` from
+`dtnorris/agent-skills`, including metadata. Inclusion is universal: checkpoint
+exemptions and read-only work do not introduce a separate task classification.
+Task-specific requirements, safety constraints, Git restrictions and acceptance
+criteria take precedence. Existing task YAML needs no changes.
+
+ACT reads the Git blob at commit `f902abd63ed09ac4419106366c19bf577fc3cf08`
+from the `agent-skills` checkout beside the ACT source checkout. Its SHA-256 is
+`83561709382c0196faacd287aeb1b1c798a687e40457bf513d996ddba9cb1ce8`.
+The prompt records both values. The checkout must contain that commit and blob;
+its current branch and working-file contents do not affect rendering. ACT
+does not fetch, use replacement objects, or fall back to a moving branch.
+Missing source, invalid metadata or integrity failures block preparation before
+prompt/state writes and block launch before worker reservation or handoff.
+Read-only commands that do not render prompts need no skill checkout.
+
+Preparation records the coding-skill pin in private state. Re-preparation and
+launch reject a changed pin, and launch retains the existing regenerated versus
+saved prompt equality check. Updating ACT's pin requires deliberate review of
+the canonical revision and fingerprint; preserve prior prompt/checkpoint/run
+evidence before explicitly resetting and preparing affected tasks. Pre-upgrade
+preparations must be explicitly prepared again before local Codex launch. No
+prepared prompt is silently rewritten by launch. Older prompts remain evidence
+of the instructions originally supplied; ACT does not rewrite their history.
+
 ## Worker test performance
 
 Fresh prompts include one shared test-performance section when the task has a

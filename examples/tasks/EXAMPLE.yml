@@ -5,6 +5,8 @@ worker_recommendation:
   model: Example worker model
   thinking: Example thinking level
 depends_on: []
+# Ordinary implementation control: omit planning_guidance to preserve prompts.
+# For substantial planning/ACTD registration/replanning, use planning_guidance: required.
 repositories:
   adventure-finder:
     access: write

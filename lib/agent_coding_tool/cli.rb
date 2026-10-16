@@ -1175,6 +1175,8 @@ module AgentCodingTool
       @out.puts "Reset #{id} runtime state"
     end
 
+    # Prints command usage and explicit planning designation to the output stream;
+    # returns puts' result. Output I/O errors propagate to the caller.
     def help
       @out.puts <<~HELP
         agent-coding-tool — small local coordinator for human-directed coding agents
@@ -1229,6 +1231,12 @@ module AgentCodingTool
           blocked             task cannot proceed under current dependencies/boundary
           needs_judgment      human decision is required before continuing
           failed              attempt failed without a more specific disposition
+
+        Planning guidance:
+          Task YAML planning_guidance: required opts into full pinned planning
+          guidance before plan/task-definition outputs. Omit for ordinary work.
+          Designation/pin changes require evidence preservation and explicit
+          operator reset/re-preparation; retry alone does not migrate pins.
       HELP
     end
   end

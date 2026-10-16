@@ -12,17 +12,27 @@ module AgentCodingTool
       "revision" => "f902abd63ed09ac4419106366c19bf577fc3cf08",
       "sha256" => "83561709382c0196faacd287aeb1b1c798a687e40457bf513d996ddba9cb1ce8"
     }.freeze
+    PLANNING_SKILL_PATH = "skills/agentic-task-planning/SKILL.md"
+    PLANNING_SKILL_IDENTITY = {
+      "revision" => "358f7f28ac6f9205227c0378cbf6bb99ad63a179",
+      "sha256" => "8a726b39a53bb43deebfc3ae81bd70cb657bada4ad69ac83afe35d88539fc009"
+    }.freeze
     SKILL_ROOT = File.expand_path("../../../agent-skills", __dir__)
 
     # Uses a sibling Git checkout and immutable pin; optional inputs isolate tests.
     # Returns a renderer; source errors are deferred until render, not status reads.
-    def initialize(skill_root: SKILL_ROOT, skill_identity: SKILL_IDENTITY)
+    def initialize(skill_root: SKILL_ROOT, skill_identity: SKILL_IDENTITY,
+                   planning_skill_identity: PLANNING_SKILL_IDENTITY)
       @skill_root = skill_root
       @skill_identity = skill_identity.dup.freeze
+      @planning_skill_identity = planning_skill_identity.dup.freeze
     end
 
     # Returns the revision/fingerprint recorded in preparation state; no I/O.
     def skill_identity = @skill_identity
+
+    # Returns the planning revision/fingerprint for opted-in preparation; no I/O.
+    def planning_skill_identity = @planning_skill_identity
 
     # Returns the complete prompt for task/snapshot/dependencies, or raises
     # InvalidState before returning any prompt if pinned guidance cannot load.
@@ -44,6 +54,7 @@ module AgentCodingTool
       lines << skill
       lines << "<!-- End canonical SKILL.md -->"
       lines << ""
+      append_planning_guidance(lines) if task["planning_guidance"] == "required"
       lines << "Use the connected GitHub integration for repository access."
       lines << "For GitHub reads, prefer the connected GitHub tools/API. Do not open github.com in the cloud browser when the connected integration can perform the required repository read."
       lines << "Do not request GitHub website-access permission merely to inspect repositories, branches, commits, files, or pushed heads."
@@ -103,35 +114,64 @@ module AgentCodingTool
     # InvalidState. Lazy fetching and replacement objects are disabled for offline
     # integrity checks, including in partial clones.
     def coding_skill
-      revision, fingerprint = skill_identity.values_at("revision", "sha256")
-      unless skill_identity.keys.sort == %w[revision sha256] &&
-             revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}\z/) &&
+      canonical_skill(SKILL_PATH, skill_identity, "karpathy-manning-dtnorris-guidelines", "coding skill")
+    end
+
+    # Returns unchanged text for one fixed canonical source/pin, or InvalidState
+    # for unavailable objects, invalid UTF-8/metadata or altered bytes. No cache,
+    # working-tree fallback, replacement objects or network retrieval is allowed.
+    def canonical_skill(path, identity, name, label)
+      unless identity.is_a?(Hash) && identity.length == 2 && (identity.keys - %w[revision sha256]).empty?
+        raise InvalidState, "#{label}: malformed pinned identity"
+      end
+      revision, fingerprint = identity.values_at("revision", "sha256")
+      unless revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}\z/) &&
              fingerprint.is_a?(String) && fingerprint.match?(/\A[0-9a-f]{64}\z/)
-        raise InvalidState, "coding skill: malformed pinned identity"
+        raise InvalidState, "#{label}: malformed pinned identity"
       end
       unless File.directory?(@skill_root) && File.exist?(File.join(@skill_root, ".git"))
-        raise InvalidState, "coding skill: missing Git checkout: #{@skill_root}"
+        raise InvalidState, "#{label}: missing Git checkout: #{@skill_root}"
       end
       content, error, status = Open3.capture3(
         { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" },
         "git", "--no-replace-objects", "-C", @skill_root,
-        "cat-file", "blob", "#{revision}^{commit}:#{SKILL_PATH}"
+        "cat-file", "blob", "#{revision}^{commit}:#{path}"
       )
-      raise InvalidState, "coding skill: pinned source unavailable (#{revision}): #{error.strip}" unless status.success?
+      raise InvalidState, "#{label}: pinned source unavailable (#{revision}): #{error.strip}" unless status.success?
       unless Digest::SHA256.hexdigest(content) == fingerprint
-        raise InvalidState, "coding skill: SHA-256 integrity mismatch (#{revision})"
+        raise InvalidState, "#{label}: SHA-256 integrity mismatch (#{revision})"
       end
       content.force_encoding(Encoding::UTF_8)
-      frontmatter = content.match(/\A---\n(.*?)^---\n/m) if content.valid_encoding?
+      raise InvalidState, "#{label}: invalid UTF-8" unless content.valid_encoding?
+
+      frontmatter = content.match(/\A---\n(.*?)^---\n/m)
       metadata = YAML.safe_load(frontmatter[1], aliases: false) if frontmatter
-      unless metadata.is_a?(Hash) && metadata["name"] == "karpathy-manning-dtnorris-guidelines" &&
+      unless metadata.is_a?(Hash) && metadata["name"] == name &&
              metadata["description"].is_a?(String) && !metadata["description"].strip.empty? &&
              metadata["license"] == "MIT" && !content[frontmatter.end(0)..].strip.empty?
-        raise InvalidState, "coding skill: malformed SKILL.md metadata or empty body"
+        raise InvalidState, "#{label}: malformed SKILL.md metadata or empty body"
       end
       content
     rescue Psych::Exception, SystemCallError => error
-      raise InvalidState, "coding skill: #{error.class}: #{error.message}"
+      raise InvalidState, "#{label}: #{error.class}: #{error.message}"
+    end
+
+    # Appends verified full planning guidance before assignment outputs. Mutates
+    # lines, returning it; InvalidState refuses rendering if the source is invalid.
+    def append_planning_guidance(lines)
+      skill = canonical_skill(PLANNING_SKILL_PATH, planning_skill_identity, "agentic-task-planning", "planning skill")
+      lines << "## Canonical planning guidance (required)"
+      lines << ""
+      lines << "Source: dtnorris/agent-skills / #{PLANNING_SKILL_PATH}"
+      lines << "Revision: #{planning_skill_identity.fetch('revision')}"
+      lines << "SHA-256: #{planning_skill_identity.fetch('sha256')}"
+      lines << "Read and substantively apply the complete unchanged skill below before producing plans, implementation task definitions, dependency graphs, acceptance requirements, ownership/integration plans or substantial plan revisions for this assignment, including ACTD registration. A link or nominal citation is insufficient. Task-specific requirements, safety constraints, Git restrictions and acceptance criteria take precedence."
+      lines << "<!-- Begin canonical planning SKILL.md -->"
+      lines << skill
+      lines << "<!-- End canonical planning SKILL.md -->"
+      lines << "Planning handoff: state the whole-journey outcome, acceptance owner and negative control; the next falsifiable gate and stop decision; bounded work, dependencies, ownership and integration order; and baseline/recovery evidence, unknowns, remaining gates, cost/safety and publication authority. Scale detail to the assignment."
+      lines << "Newly discovered substantial replanning does not authorize changing task YAML, preparation or scope. Preserve the diagnosis and prior evidence and hand off to the operator for explicit task revision and safe re-preparation (with --retry for a recorded non-complete outcome); follow applicable worker-recovery safeguards first. Registration may propose reviewable YAML artifacts only within the task's write authority, never automatically register tasks."
+      lines << ""
     end
 
     def append_test_performance(lines)

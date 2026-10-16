@@ -3,6 +3,7 @@
 require "yaml"
 
 module AgentCodingTool
+  # Loads registered YAML and validates explicit task metadata without inferring roles.
   class TaskStore
     VALID_ACCESS = %w[write read_only].freeze
 
@@ -33,6 +34,8 @@ module AgentCodingTool
 
     private
 
+    # Validates a loaded task mapping, preserving unrelated metadata. Callers
+    # ignore its return; InvalidTask identifies invalid fields or guidance/policy.
     def validate!(task, path)
       id = task["id"]
       title = task["title"]
@@ -53,6 +56,10 @@ module AgentCodingTool
 
       depends_on = task.fetch("depends_on", [])
       raise InvalidTask, "#{path}: depends_on must be an array" unless depends_on.is_a?(Array)
+
+      if task.key?("planning_guidance") && task["planning_guidance"] != "required"
+        raise InvalidTask, "#{path}: planning_guidance must be the scalar string required when present"
+      end
 
       if task.key?("checkpoint")
         policy = task["checkpoint"]

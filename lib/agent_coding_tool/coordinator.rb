@@ -4,6 +4,7 @@ require "fileutils"
 require "time"
 
 module AgentCodingTool
+  # Coordinates explicit task lifecycle, prepared provenance and prompt handoff.
   class Coordinator
     OUTCOMES = %w[candidate_complete complete blocked needs_judgment failed].freeze
     NEXT_ACTION_OUTCOMES = %w[blocked needs_judgment failed].freeze
@@ -21,11 +22,13 @@ module AgentCodingTool
 
     def tasks = @task_store.all
 
-    # Launch-only adapters: existing manual lifecycle commands retain their semantics.
+    # Regenerates a prepared task's prompt after validating required skill pins
+    # and designation; returns bytes or raises InvalidState before any writes.
     def launch_prompt(id)
       task = @task_store.load(id)
       state = @state_store.load(id)
       validate_skill_identity!(id, state, required: true)
+      validate_planning_guidance!(task, state)
       @prompt_renderer.render(task, state.fetch("snapshot"), dependencies: preparation_dependencies(task))
     end
 
@@ -168,7 +171,8 @@ module AgentCodingTool
     end
 
     # Snapshots a task and writes its prompt/state, clearing only attempt-local
-    # overlap/checkpoint pointers. Invalid prerequisites/pins raise before writes.
+    # overlap/checkpoint pointers. Invalid prerequisites, skill material, pins or
+    # changed planning designation raise before any prompt/state writes.
     def prepare(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -187,6 +191,7 @@ module AgentCodingTool
       end
 
       validate_skill_identity!(id, state)
+      validate_planning_guidance!(task, state)
       snapshot = snapshot_task(task)
       prompt = @prompt_renderer.render(task, snapshot, dependencies: dependencies)
       collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
@@ -202,6 +207,10 @@ module AgentCodingTool
         "prompt_path" => prompt_path,
         "coding_skill" => @prompt_renderer.skill_identity
       )
+      if task["planning_guidance"] == "required"
+        new_state["planning_guidance"] = "required"
+        new_state["planning_skill"] = @prompt_renderer.planning_skill_identity
+      end
       new_state.delete("result") if retry_result
       new_state.delete("started_at")
       new_state.delete("write_collision_override")
@@ -215,6 +224,7 @@ module AgentCodingTool
     # Reserves a prepared task after dependency/freshness checks; returns its state.
     # Manual overlaps are advisory, never verified isolation. Invalid input raises
     # InvalidState/RepositoryError before any state write; CLI owns the shared lock.
+    # Opted-in planning verifies full skill material and saved prompt bytes first.
     def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -240,6 +250,14 @@ module AgentCodingTool
         raise InvalidState, "#{id}: invalid preparation timestamp"
       end
       validate_skill_identity!(id, state)
+      validate_planning_guidance!(task, state)
+      if task["planning_guidance"] == "required"
+        validate_skill_identity!(id, state, required: true)
+        prompt = @prompt_renderer.render(task, state.fetch("snapshot"), dependencies: preparation_dependencies(task))
+        unless File.binread(state.fetch("prompt_path")) == prompt.b
+          raise InvalidState, "#{id}: generated prompt changed; preserve prior evidence and explicitly reprepare"
+        end
+      end
       effective = statuses([id], strict_freshness: true).first
       unless effective.fetch("status") == "PREPARED"
         raise InvalidState, "#{id}: start blocked: #{effective['status']} #{effective['reason']}"
@@ -312,6 +330,20 @@ module AgentCodingTool
     end
 
     private
+
+    # Binds explicit planning designation and pin to existing preparation state.
+    # Fresh tasks and unopted legacy state remain compatible; missing/drifted
+    # requirements raise InvalidState before adoption, reservation or handoff.
+    def validate_planning_guidance!(task, state)
+      required = task["planning_guidance"] == "required"
+      recorded = state.key?("planning_guidance") || state.key?("planning_skill")
+      prepared = %w[snapshot prepared_at prompt_path coding_skill].any? { |key| state.key?(key) }
+      return unless recorded || (required && prepared)
+      return if required && state["planning_guidance"] == "required" &&
+                state["planning_skill"] == @prompt_renderer.planning_skill_identity
+
+      raise InvalidState, "#{task.fetch('id')}: planning guidance designation or skill pin missing or changed; preserve prior evidence and explicitly reset/reprepare (use --retry after a recorded non-complete outcome)"
+    end
 
     # Rejects pin drift before preparation writes or launch rendering. Legacy
     # state may be explicitly prepared; launching it requires that preparation.

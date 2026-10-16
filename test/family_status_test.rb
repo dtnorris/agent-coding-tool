@@ -278,6 +278,122 @@ class FamilyStatusTest < Minitest::Test
     assert_match(/missing or malformed/, err.string)
   end
 
+  # The cleanup leads CL despite genuine downstream benefits elsewhere in CL.
+  # Public views share that ranking, preserve ACT's global NEXT and do no writes.
+  def test_batch39_cleanup_priority_across_public_views
+    tasks = family_tasks("ACT" => 1, "CL" => 7, "BUG" => 1, "ECT" => 1)
+    tasks << task("CL-WLO-01")
+    tasks << task("DEP-01", dependencies: ["CL-01"])
+    tasks << task("DEP-02", dependencies: ["CL-01"])
+    tasks << task("DEP-03", dependencies: ["CL-02"])
+    states = {}
+    before = Marshal.dump([tasks, states])
+    coordinator, inspector = build(tasks, states:)
+    document = JSON.parse(output(coordinator, %w[next --json]))
+    ready = document.dig("facts", "tasks").select { |row| row["status"] == "READY" }
+    cl_ids = ["CL-WLO-01", *(1..7).map { |number| "CL-%02d" % number }]
+    assert_equal cl_ids, ready.select { |row| row["id"].start_with?("CL-") }.map { |row| row["id"] }
+    assert_equal "ACT-01", ready.first.fetch("id")
+    assert_equal "ACT-01", document.dig("recommendations", "starts", 0, "id")
+    assert_equal 0, document.dig("recommendations", "starts").find { |row| row["id"] == "CL-WLO-01" }.dig("downstream", "immediate_unlock_count")
+    assert_equal 2, document.dig("recommendations", "starts").find { |row| row["id"] == "CL-01" }.dig("downstream", "immediate_unlock_count")
+    assert_equal cl_ids, ready_ids(output(coordinator, %w[status --fam CL]))
+    assert_equal ready.map { |row| row["id"] }, ready_ids(output(coordinator, %w[status --all]))
+    dashboard = output(coordinator, %w[status])
+    assert_includes ready_ids(dashboard), "CL-WLO-01"
+    assert_match(/^ACT-01: READY \(NEXT\)/, dashboard)
+    refute_includes output(coordinator, %w[status --fam CL]), "(NEXT)"
+    starts = document.dig("recommendations", "starts").map { |row| row["id"] }
+    plain = output(coordinator, %w[next])
+    positions = starts.map { |id| plain.index("  #{id} (READY)") }
+    assert positions.all?, plain
+    assert_equal positions.sort, positions
+    assert_equal before, Marshal.dump([tasks, states])
+    assert_equal 0, inspector.batches
+  end
+
+  # Only existing CL slots move: unrelated families retain even their absolute
+  # positions, other CL order stays stable, metrics and input rows are unchanged.
+  def test_batch39_exception_preserves_unrelated_positions_and_metrics
+    cli = AgentCodingTool::CLI.allocate
+    rows = %w[CL-WLO-01 CL-A CL-B CL-C BUG-01 ECT-01 ACT-01].map { |id| status_row(id) }
+    metrics = { "CL-A" => [0, 0, 0, 4], "BUG-01" => [0, 0, 0, 3],
+                "CL-B" => [0, 0, 0, 2], "ECT-01" => [0, 0, 0, 1] }
+    before = Marshal.dump([rows, metrics])
+    result = cli.send(:sort_statuses, rows, metrics).map { |row| row["id"] }
+    assert_equal %w[ACT-01 CL-WLO-01 BUG-01 CL-A ECT-01 CL-B CL-C], result
+    assert_equal before, Marshal.dump([rows, metrics])
+    assert_equal result, cli.send(:sort_statuses, rows.reverse, metrics).map { |row| row["id"] }
+  end
+
+  # No target or any non-READY lifecycle (including fresh PREPARED) is inert;
+  # similar identifiers and other CL tasks retain the ordinary comparator.
+  def test_batch39_missing_non_ready_and_similar_ids_receive_no_exception
+    cli = AgentCodingTool::CLI.allocate
+    ids = %w[CL-WLO-01-X CL-WLO-010 CL-02 CL-01 BUG-01 ACT-01]
+    rows = ids.map { |id| status_row(id) }
+    expected = %w[ACT-01 BUG-01 CL-01 CL-02 CL-WLO-01-X CL-WLO-010]
+    assert_equal expected, cli.send(:sort_statuses, rows, {}).map { |row| row["id"] }
+    (AgentCodingTool::CLI::STATUS_ORDER.keys - ["READY"]).each do |label|
+      target = status_row("CL-WLO-01", label)
+      baseline = cli.send(:sort_statuses, [*rows, status_row("CL-ZZZ", label)], {})
+                    .map { |row| row["id"] == "CL-ZZZ" ? "CL-WLO-01" : row["id"] }
+      assert_equal baseline, cli.send(:sort_statuses, [*rows, target], {}).map { |row| row["id"] }, label
+    end
+  end
+
+  # The exact preferred ID cannot bypass a live reservation, malformed/stale
+  # provenance or a dependency. Capacity waits remain factual READY rows.
+  def test_batch39_priority_does_not_bypass_reservations_staleness_or_dependencies
+    tasks = [task("ACT-01"), task("CL-01"), task("CL-WLO-01", repository: "busy"), task("RUN-01", repository: "busy")]
+    states = { "RUN-01" => prepared_state("busy").merge("started_at" => "now") }
+    coordinator, inspector = build(tasks, states:)
+    before = Marshal.dump([tasks, states])
+    document = JSON.parse(output(coordinator, %w[next --json]))
+    assert_equal %w[ACT-01 CL-01], document.dig("recommendations", "starts").map { |row| row["id"] }
+    assert_equal "CL-WLO-01", document.dig("recommendations", "waiting_capacity", 0, "id")
+    assert_equal "RUN-01", document.dig("recommendations", "waiting_capacity", 0, "conflicts", 0, "id")
+    assert_equal %w[CL-WLO-01 CL-01], ready_ids(output(coordinator, %w[status --fam CL]))
+    assert_match(/^ACT-01: READY \(NEXT\)/, output(coordinator, %w[status]))
+    assert_equal before, Marshal.dump([tasks, states])
+    assert_equal 3, inspector.batches
+
+    coordinator, inspector = build(tasks.first(3), states: { "CL-WLO-01" => prepared_state("busy") })
+    inspector.heads[["git@github.com:fixture/busy.git", "main"]] = "b" * 40
+    document = JSON.parse(output(coordinator, %w[next --json]))
+    target = document.dig("facts", "tasks").find { |row| row["id"] == "CL-WLO-01" }
+    assert_equal "STALE", target.fetch("status")
+    refute_includes document.dig("recommendations", "starts").map { |row| row["id"] }, "CL-WLO-01"
+    inspector.heads[["git@github.com:fixture/busy.git", "main"]] = "invalid"
+    out, err = StringIO.new, StringIO.new
+    assert_equal 2, client(coordinator, out:, err:).run(%w[next --json])
+    assert_empty out.string
+    assert_match(/missing or malformed/, err.string)
+
+    tasks.last["depends_on"] = ["CL-01"]
+    tasks[2]["depends_on"] = ["CL-01"]
+    coordinator, = build(tasks)
+    assert_equal ["CL-01"], ready_ids(output(coordinator, %w[status --fam CL]))
+    assert_includes output(coordinator, %w[status --fam CL]), "CL-WLO-01: BLOCKED"
+  end
+
+  # Reordering an identical READY registry adds neither freshness batches nor
+  # authority lookups; state stores expose no write API on either path.
+  def test_batch39_exception_adds_no_status_probes
+    tasks = [task("CL-WLO-01"), task("CL-01"), task("BUG-01")]
+    tasks << task("DEP-01", dependencies: ["CL-01"])
+    preferred, preferred_inspector = build(tasks)
+    ordinary_tasks = Marshal.load(Marshal.dump(tasks))
+    ordinary_tasks.first["id"] = "CL-ZZZ-01"
+    ordinary, ordinary_inspector = build(ordinary_tasks)
+    [%w[status], %w[status --fam CL], %w[next], %w[next --json]].each do |command|
+      output(preferred, command)
+      output(ordinary, command)
+      assert_equal ordinary_inspector.batches, preferred_inspector.batches
+      assert_equal ordinary_inspector.authority_calls, preferred_inspector.authority_calls
+    end
+  end
+
   private
 
   # Returns synthetic validated-shape task records with recognizable titles.

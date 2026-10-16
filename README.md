@@ -232,6 +232,16 @@ while `M` is the exact maximum subset that could start together without
 conflicting with each other or other fresh IN_FLIGHT/CANDIDATE writers under
 normal repository-authority rules. For a CANDIDATE, this models the state after
 the candidate is finished, so its own current write reservation is excluded.
+
+One operator-approved exception promotes exactly `CL-WLO-01`, while READY,
+to the first existing READY CL position across `status`, `stat --fam CL`,
+`next` and `next --json`. Other families keep their positions; other CL tasks
+keep their relative order and all downstream metrics remain factual. Missing
+or non-READY `CL-WLO-01` has no effect. ACT-family priority and normal selection,
+freshness and reservation constraints still apply. This is advisory ordering,
+not a global NEXT guarantee or permission to execute cleanup: ACT does not
+machine-verify Batch 39 completion or operator acceptance. The task's mandatory
+operational gate must be satisfied before any WLO edits.
 This is deterministic advisory prioritization only; it does not launch work or
 reserve repositories. Default and `--active` dashboards show only the three
 easiest dependency blockers, ranked by fewest incomplete dependencies; explicit

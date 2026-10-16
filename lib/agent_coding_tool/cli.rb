@@ -614,9 +614,10 @@ module AgentCodingTool
 
     # Returns a new bucket-ordered array. Only READY receives ACT preference,
     # descending unlock/dependency metrics, natural numeric ID ties and finally
-    # full-ID ties. Other lifecycle ordering and input rows are preserved.
+    # full-ID ties, then the one-time CL-WLO-01 exception within READY CL slots.
+    # Other lifecycle ordering and input rows are preserved.
     def sort_statuses(statuses, completion_metrics)
-      statuses.each_with_index
+      ranked = statuses.each_with_index
               .sort_by do |item, index|
                 status = item.fetch("status")
                 depth, count, unlock_count, parallel_width =
@@ -633,6 +634,22 @@ module AgentCodingTool
                 [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, index]
               end
               .map(&:first)
+      prioritize_batch39_cleanup(ranked)
+    end
+
+    # Returns a new ranking promoting only READY CL-WLO-01 within existing READY
+    # CL positions. Other families keep their positions; other CL rows keep their
+    # relative order. Missing/non-READY targets are inert. No I/O or state changes.
+    def prioritize_batch39_cleanup(ranked)
+      cleanup = ranked.find { |item| item.fetch("id") == "CL-WLO-01" && item.fetch("status") == "READY" }
+      return ranked unless cleanup
+
+      cl_ready = ranked.select { |item| item.fetch("status") == "READY" && task_family(item.fetch("id")) == "CL" }
+      cl_ready.delete(cleanup)
+      cl_ready.unshift(cleanup)
+      ranked.map do |item|
+        item.fetch("status") == "READY" && task_family(item.fetch("id")) == "CL" ? cl_ready.shift : item
+      end
     end
 
     # Prints one subordinate READY family summary from [total, hidden] counts.
@@ -1270,6 +1287,7 @@ module AgentCodingTool
         READY dashboard:
           ACT family first, then parallel unlock width, unlock count, depth/count,
           then natural task-ID ties. Advisory only; reservations still apply.
+          READY CL-WLO-01 leads CL within existing CL positions; acceptance required.
           Families use the first hyphen prefix; empty/no prefix uses the whole ID.
           At 7+ READY: 4+ families get one each; 1-3 families get at most six
           rows, breadth first, at most three per family. A hidden READY NEXT

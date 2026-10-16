@@ -10,24 +10,56 @@ module AgentCodingTool
     SCHEMA = "agent-coding-tool-worktrees/v1"
     SYSTEM_ALIASES = { "/var" => "/private/var", "/tmp" => "/private/tmp" }.freeze
 
-    def initialize(root:, record_path:)
-      @root = canonical_system_path(root)
-      @record_path = canonical_system_path(record_path)
+    # Returns unexpected immediate/attempt-directory children for verified owned
+    # paths. Supports legacy fixed paths and recorded attempt containers only;
+    # symlinked/foreign task directories raise. Does not recurse into worktrees.
+    def self.foreign_task_paths(root:, task_id:, paths:)
+      task_path = File.join(canonical_system_path(root), task_id)
+      return [] unless File.exist?(task_path) || File.symlink?(task_path)
+      raise InvalidState, "worktrees: foreign task path" unless File.directory?(task_path) && !File.symlink?(task_path)
+      containers = paths.map { |path| File.dirname(path) }.reject { |path| path == task_path }.uniq
+      actual = Dir.children(task_path).map { |name| File.join(task_path, name) }
+      containers.each do |container|
+        next unless actual.include?(container)
+        raise InvalidState, "worktrees: foreign attempt container" unless File.directory?(container) && !File.symlink?(container)
+        actual.concat(Dir.children(container).map { |name| File.join(container, name) })
+      end
+      actual - paths - containers
     end
 
+    # Selects legacy or attempt paths and an optional host inventory witness.
+    # The witness must persist before any native addition; failures preserve the
+    # inventory and prevent mutation. No filesystem work occurs on initialization.
+    def initialize(root:, record_path:, attempt_paths: false, invocation_id: nil, inventory_written: nil)
+      @root = canonical_system_path(root)
+      @record_path = canonical_system_path(record_path)
+      @attempt_paths = attempt_paths
+      @invocation_id = invocation_id
+      @inventory_written = inventory_written
+    end
+
+    # Creates exact prepared writer/read-only worktrees and returns the verified
+    # inventory. Refuses collisions/foreign authority; errors retain every marker,
+    # resource and branch without repair, including interrupted native additions.
     def create(task_id:, attempt:, task:, snapshot:)
       safe_components!(task_id, attempt, task, snapshot)
       safe_path!(@root)
       raise InvalidState, "worktrees: foreign record already exists" if File.exist?(@record_path) || File.symlink?(@record_path)
+      if @attempt_paths
+        container = File.join(@root, task_id, "attempt-#{attempt}")
+        safe_path!(container)
+        raise InvalidState, "worktrees: occupied attempt container #{container}; inspect manually" if
+          File.exist?(container) || File.symlink?(container)
+      end
       task.fetch("repositories").each_key do |name|
-        path = File.join(@root, task_id, name)
+        path = worktree_path(task_id, attempt, name, @attempt_paths)
         safe_path!(path)
         raise InvalidState, "worktrees: occupied path #{path}; inspect manually" if File.exist?(path) || File.symlink?(path)
       end
       FileUtils.mkdir_p(@root)
       entries = task.fetch("repositories").map do |name, spec|
         source = snapshot.fetch(name)
-        path = File.join(@root, task_id, name)
+        path = worktree_path(task_id, attempt, name, @attempt_paths)
         parent, = parent_identity!(source, name)
         {
           "name" => name, "task_id" => task_id, "attempt" => attempt,
@@ -55,7 +87,10 @@ module AgentCodingTool
         end
       end
       inventory = { "schema_version" => SCHEMA, "task_id" => task_id, "attempt" => attempt, "root" => @root, "entries" => entries }
+      inventory["layout"] = "attempt" if @attempt_paths
+      inventory["invocation_id"] = @invocation_id if @invocation_id
       save!(inventory)
+      @inventory_written&.call
       entries.each do |entry|
         safe_path!(File.dirname(entry.fetch("path")))
         FileUtils.mkdir_p(File.dirname(entry.fetch("path")))
@@ -75,14 +110,19 @@ module AgentCodingTool
       raise InvalidState, "worktrees: #{e.message}; inspect #{@record_path}; no automatic repair"
     end
 
-    def inspect!(head_overrides: {})
+    # Returns verified native ownership without writes. Explicit pre-worker
+    # inspection may verify pending/creating markers; ordinary consumers still
+    # refuse partial creation. Wrong identity, absent or ambiguous resources raise.
+    def inspect!(head_overrides: {}, allow_partial: false)
       raise InvalidState, "worktrees: missing/foreign ownership record" if File.symlink?(@record_path) || !File.file?(@record_path)
       inventory = JSON.parse(File.read(@record_path))
       unless inventory.is_a?(Hash) && inventory["schema_version"] == SCHEMA &&
-             inventory["root"] == @root && inventory["entries"].is_a?(Array) &&
+             inventory["root"] == @root && [nil, "attempt"].include?(inventory["layout"]) && inventory["entries"].is_a?(Array) &&
              inventory["entries"].any? { |e| e["access"] == "write" }
         raise InvalidState, "worktrees: invalid ownership record"
       end
+      repositories = inventory.fetch("entries").to_h { |entry| [entry.fetch("name"), {}] }
+      safe_components!(inventory.fetch("task_id"), inventory.fetch("attempt"), { "repositories" => repositories }, repositories)
       names = inventory.fetch("entries").map { |entry| entry.fetch("name") }
       writers = inventory.fetch("entries").select { |entry| entry["access"] == "write" }
       raise InvalidState, "worktrees: duplicate repository identity" unless
@@ -90,21 +130,30 @@ module AgentCodingTool
         writers.map { |entry| entry.fetch("parent") }.uniq.length == writers.length &&
         writers.map { |entry| entry.fetch("remote_url") }.uniq.length == writers.length
       inventory.fetch("entries").each do |entry|
-        unless entry.is_a?(Hash) && %w[ready removing removed].include?(entry["state"]) &&
+        unless entry.is_a?(Hash) && (%w[ready removing removed] + (allow_partial ? %w[pending creating] : [])).include?(entry["state"]) &&
                entry["task_id"] == inventory["task_id"] && entry["attempt"] == inventory["attempt"] &&
-               entry["path"] == File.join(@root, inventory.fetch("task_id"), entry.fetch("name")) &&
+               entry["path"] == worktree_path(inventory.fetch("task_id"), inventory.fetch("attempt"), entry.fetch("name"), inventory["layout"] == "attempt") &&
                %w[write read_only].include?(entry["access"]) &&
                entry["branch"] == (entry["access"] == "write" ? "act/#{inventory.fetch('task_id')}/attempt-#{inventory.fetch('attempt')}" : nil)
           raise InvalidState, "worktrees: partial or conflicting ownership; inspect #{@record_path}"
         end
-        if entry["state"] == "removed" || (entry["state"] == "removing" && !File.exist?(entry.fetch("path")) && !File.symlink?(entry.fetch("path")))
+        if %w[pending creating].include?(entry["state"])
+          if entry["state"] == "creating" && File.directory?(entry.fetch("path"))
+            verify_entry!(entry, expected_head: entry.fetch("base_sha"))
+          else
+            verify_absent_entry!(entry)
+            if entry["branch"] && git(entry.fetch("parent"), "show-ref", "--verify", "--quiet", "refs/heads/#{entry['branch']}").last
+              raise InvalidState, "worktrees: unaccounted creation branch"
+            end
+          end
+        elsif entry["state"] == "removed" || (entry["state"] == "removing" && !File.exist?(entry.fetch("path")) && !File.symlink?(entry.fetch("path")))
           verify_absent_entry!(entry)
         else
           verify_entry!(entry, expected_head: head_overrides.fetch(entry.fetch("name"), entry.fetch("base_sha")))
         end
       end
       inventory
-    rescue JSON::ParserError, KeyError, TypeError
+    rescue JSON::ParserError, KeyError, TypeError, NoMethodError
       raise InvalidState, "worktrees: malformed ownership; inspect #{@record_path}"
     end
 
@@ -145,6 +194,14 @@ module AgentCodingTool
     end
 
     private
+
+    # Returns the exact inventory path. Legacy v1 records omit layout and retain
+    # fixed paths; new launch inventories explicitly select attempt directories.
+    def worktree_path(task_id, attempt, name, attempt_paths)
+      parts = [@root, task_id]
+      parts << "attempt-#{attempt}" if attempt_paths
+      File.join(*parts, name)
+    end
 
     def safe_components!(task_id, attempt, task, snapshot)
       raise InvalidTask, "worktrees: invalid task ID" unless task_id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
@@ -195,6 +252,8 @@ module AgentCodingTool
       [parent, common]
     end
 
+    # Checks an entry's native path, common/admin backpointer, registry, branch,
+    # remote and exact expected HEAD. Returns true or raises without mutation.
     def verify_entry!(entry, expected_head:)
       path, parent = entry.fetch("path"), entry.fetch("parent")
       safe_path!(path)
@@ -204,9 +263,14 @@ module AgentCodingTool
         entry.fetch("name")
       )
       raise InvalidState, "worktrees: parent changed" unless actual_parent == parent
-      common, head = git!(path, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD").lines.map(&:strip)
+      common, head, admin = git!(path, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD", "--absolute-git-dir").lines.map(&:strip)
       common = File.expand_path(common)
       raise InvalidState, "worktrees: Git administration changed" unless common == expected_common
+      safe_path!(admin)
+      pointer = File.join(admin, "gitdir")
+      raise InvalidState, "worktrees: native Git backpointer changed" unless
+        admin.start_with?("#{expected_common}/worktrees/") && File.file?(pointer) && !File.symlink?(pointer) &&
+        File.binread(pointer).strip == File.join(path, ".git")
       raise InvalidState, "worktrees: HEAD changed" unless head == expected_head
       registry = git!(parent, "worktree", "list", "--porcelain", "-z").split("\0")
       rows = registry.slice_before { |row| row.start_with?("worktree ") }

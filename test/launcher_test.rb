@@ -429,9 +429,12 @@ class LauncherTest < Minitest::Test
       evidence['status'] = 'running'
       evidence['child_pid'] = 99999999
       File.write(path, JSON.generate(evidence))
-      @coordinator.prepare('T')
+      state_before = @store.load('T')
+      assert_raises(AgentCodingTool::InvalidState) { @coordinator.prepare('T') }
+      assert_equal state_before, @store.load('T')
       before = File.binread(path)
-      assert_preflight_failure(/liveness unknown/)
+      assert_raises(AgentCodingTool::InvalidState) { launcher.launch('T') }
+      assert_equal state_before, @store.load('T')
       assert_equal before, File.binread(path)
     end
   end
@@ -542,7 +545,7 @@ class LauncherTest < Minitest::Test
       stdout, stderr, status = Open3.capture3(
         { 'PATH' => "#{@root}:#{ENV.fetch('PATH')}", 'AGENT_CODING_TOOL_DATA_DIR' => @data },
         RbConfig.ruby, File.join(Dir.pwd, 'bin', 'agent-coding-tool'), 'launch', 'T', '--codex')
-      assert_equal 7, status.exitstatus
+      assert_equal 7, status.exitstatus, stderr
       assert_includes stdout, 'progress'
       assert_includes stderr, 'Run evidence:'
       assert_equal 'exited', report['status']
@@ -625,7 +628,7 @@ class LauncherTest < Minitest::Test
       assert_equal %w[other repo], entries.select { |item| item["access"] == "write" }.map { |item| item["name"] }.sort
       assert_equal [@remote, remote].sort, entries.map { |item| item.fetch("remote_url") }.sort
       assert_equal [@base, @base], entries.map { |item| item.fetch("base_sha") }
-      secondary = File.join(@root, "worktrees", "T", "other")
+      secondary = File.join(@root, "worktrees", "T", "attempt-1", "other")
       command = JSON.parse(File.read(File.join(@root, "argv")))
       assert_includes command, "sandbox_workspace_write.writable_roots=#{JSON.generate([secondary])}"
       assert_equal @base, git("rev-parse", "HEAD", chdir: secondary)

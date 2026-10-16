@@ -73,9 +73,10 @@ module AgentCodingTool
       when "launch" then return launch_command(argv)
       when "deliver" then return deliver_command(argv)
       when "checkpoint" then return checkpoint_command(argv)
-      when "worktrees" then worktree_command(argv, cleanup: false)
+      when "worktrees" then return worktree_command(argv, cleanup: false)
       when "cleanup" then worktree_command(argv, cleanup: true)
       when "abandon-preflight" then abandon_preflight_command(argv)
+      when "close-attempt" then close_attempt_command(argv)
       when "received" then received_command(argv)
       when "finish" then finish_command(argv)
       when "record" then record_command(argv)
@@ -107,6 +108,9 @@ module AgentCodingTool
       0
     end
 
+    # Dispatches explicit checkpoint actions, including read-only historical
+    # verification and independent reconstruction. Invalid options/evidence raise
+    # Error; successful actions print JSON and return zero.
     def checkpoint_command(argv)
       action = argv.shift
       id = argv.shift
@@ -119,28 +123,32 @@ module AgentCodingTool
         opts.on("--artifact PATH") { |value| options[:artifact] = value }
         opts.on("--destination PATH") { |value| options[:destination] = value }
         opts.on("--confirm-disconnected") { options[:confirm_disconnected] = true }
+        opts.on("--attempt NUMBER", Integer) { |value| options[:attempt] = value }
       end
       parser.order!(argv)
       checkpoint = Checkpoint.new(data_root: @data_root)
       result = case action
                when "record"
-                 raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination]
+                 raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination] && !options[:attempt]
                  checkpoint.record(id, workspace: options.fetch(:workspace), artifact: options[:artifact])
                when "verify"
                  raise Error, "checkpoint verify accepts only --workspace" unless argv.empty? && !options[:artifact] && !options[:destination]
-                 checkpoint.verify(id, workspace: options[:workspace])
+                 checkpoint.verify(id, workspace: options[:workspace], attempt: options[:attempt])
                when "gate"
-                 raise Error, "checkpoint gate requires --workspace PATH -- COMMAND" unless options[:workspace] && argv.any? && !options[:artifact] && !options[:destination]
+                 raise Error, "checkpoint gate requires --workspace PATH -- COMMAND" unless options[:workspace] && argv.any? && !options[:artifact] && !options[:destination] && !options[:attempt]
                  checkpoint.gate(id, workspace: options.fetch(:workspace), command: argv)
                when "recover"
                  raise Error, "checkpoint recover requires --destination and --confirm-disconnected" unless
                    options[:destination] && options[:confirm_disconnected] && argv.empty? && !options[:workspace] && !options[:artifact]
-                 checkpoint.recover(id, destination: options.fetch(:destination), confirm_disconnected: true)
+                 checkpoint.recover(id, destination: options.fetch(:destination), confirm_disconnected: true, attempt: options[:attempt])
                end
       @out.puts JSON.pretty_generate(result)
       0
     end
 
+    # Prints independent historical inventories or delegates existing cleanup.
+    # Inspection writes nothing and returns nonzero for damaged records while
+    # retaining valid rows; unsafe arguments/cleanup preconditions raise Error.
     def worktree_command(argv, cleanup:)
       id = argv.shift
       if !id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) ||
@@ -157,11 +165,13 @@ module AgentCodingTool
       end
       root = File.join("#{@data_root}-runs", id)
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
+      history = AttemptRecovery.new(data_root: @data_root).inspect(id)
       records = Dir.children(root).sort.map do |attempt|
         directory = File.join(root, attempt)
+        historical = history.find { |row| row["run_dir"] == directory }
         raise InvalidState, "#{id}: partial/foreign run evidence" if File.symlink?(directory) || !File.directory?(directory)
         path = File.join(directory, "worktrees.json")
-        raise InvalidState, "#{id}: partial/foreign worktree record" unless File.file?(path) && !File.symlink?(path)
+        next historical unless File.file?(path) && !File.symlink?(path)
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root, record_path: path)
         delivery_path = File.join(directory, "delivery.json")
         overrides = {}
@@ -187,10 +197,16 @@ module AgentCodingTool
               detail["commit_sha"].to_s.match?(/\A[0-9a-f]{40}\z/)
           end
         end
-        manager.inspect!(head_overrides: overrides)
+        inventory = manager.inspect!(head_overrides: overrides, allow_partial: historical && historical["status"] == "preflight_failed")
+        metadata = historical&.slice("invocation_id", "status", "prepared_at", "preparation", "classification", "closed", "checkpoint", "next_action", "artifacts", "blockers", "closeout_blockers", "liveness") || {}
+        # Delivered candidates use the established verified HEAD overrides above.
+        metadata.delete("blockers") unless overrides.empty?
+        inventory.merge(metadata)
+      rescue Error, JSON::ParserError, KeyError, TypeError => error
+        { "run_dir" => directory, "classification" => "unverified", "blockers" => [error.message] }
       end
       @out.puts JSON.pretty_generate("task_id" => id, "attempts" => records)
-      0
+      records.any? { |row| row.nil? || !row.fetch("blockers", []).empty? } ? 2 : 0
     rescue JSON::ParserError, KeyError, TypeError
       raise InvalidState, "#{id}: malformed worktree/delivery evidence"
     end
@@ -202,6 +218,17 @@ module AgentCodingTool
       recovery = PreflightRecovery.new(data_root: @data_root)
       result = argv == ["--dry-run"] ? recovery.preflight(id) : recovery.abandon(id)
       @out.puts JSON.pretty_generate(result)
+      0
+    end
+
+    # Explicitly preserves unsuccessful managed attempts after a human outcome.
+    # Dry run is read-only; action writes only separate private closeout records.
+    def close_attempt_command(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool close-attempt TASK [--dry-run]" unless
+        id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && [[], ["--dry-run"]].include?(argv)
+      recovery = AttemptRecovery.new(data_root: @data_root)
+      @out.puts JSON.pretty_generate(argv == ["--dry-run"] ? recovery.preflight(id) : recovery.close(id))
       0
     end
 
@@ -1042,6 +1069,9 @@ module AgentCodingTool
       @out.respond_to?(:tty?) && @out.tty? && !ENV.key?("NO_COLOR")
     end
 
+    # Explicitly prepares current task inputs under the managed reservation lock.
+    # Prints the retained prompt and snapshot; unresolved history, stale inputs
+    # or a busy lock raise before preparation changes.
     def prepare_command(argv)
       retry_result = false
       parser = OptionParser.new do |opts|
@@ -1051,7 +1081,7 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool prepare TASK [--retry]" unless id && argv.empty?
 
-      prepared = coordinator.prepare(id, retry_result: retry_result)
+      prepared = with_attempt_lock(id) { coordinator.prepare(id, retry_result: retry_result) }
       state = prepared.fetch("state")
       @out.puts "Prepared #{id} against authoritative pushed heads:"
       state.fetch("snapshot").each do |name, repo|
@@ -1146,6 +1176,9 @@ module AgentCodingTool
       )
     end
 
+    # Records a human outcome under the managed reservation lock and prints its
+    # lifecycle label. Malformed input or a competing reservation raises Error;
+    # recording does not itself close out or retry a managed attempt.
     def record_result(argv, outcome: nil, usage:, success: nil)
       options = { tests: [] }
       parser = OptionParser.new do |opts|
@@ -1163,7 +1196,7 @@ module AgentCodingTool
         raise Error, "usage: #{usage}"
       end
 
-      coordinator.record(id, outcome: outcome, **options)
+      with_attempt_lock(id) { coordinator.record(id, outcome: outcome, **options) }
       @out.puts(success ? success.call(id, outcome) : "Recorded #{id}: #{outcome}")
     end
 
@@ -1173,6 +1206,24 @@ module AgentCodingTool
 
       coordinator.reset(id)
       @out.puts "Reset #{id} runtime state"
+    end
+
+    # Serializes managed-attempt preparation/outcomes with launch and closeout.
+    # Tasks without run evidence retain their manual lifecycle contract. A busy
+    # or foreign shared reservation lock refuses before prompt/state writes.
+    def with_attempt_lock(id)
+      raise InvalidTask, "unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      run_root = "#{File.realpath(@data_root)}-runs"
+      return yield unless File.exist?(File.join(run_root, id)) || File.symlink?(File.join(run_root, id))
+      AttemptRecovery.new(data_root: @data_root).inspect(id)
+      lock_path = File.join(run_root, "launch.lock")
+      raise InvalidState, "lifecycle: missing or foreign reservation lock" unless
+        File.file?(lock_path) && !File.symlink?(lock_path) && File.stat(lock_path).uid == Process.uid &&
+        (File.stat(lock_path).mode & 0o077).zero?
+      File.open(lock_path, File::RDWR) do |lock|
+        raise InvalidState, "lifecycle: launch/recovery reservation busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        yield
+      end
     end
 
     # Prints command usage and explicit planning designation to the output stream;
@@ -1196,14 +1247,16 @@ module AgentCodingTool
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
           checkpoint record TASK --workspace PATH [--artifact PATH]
-          checkpoint verify TASK [--workspace PATH]
+          checkpoint verify TASK [--workspace PATH | --attempt NUMBER]
           checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]
-          checkpoint recover TASK --destination PATH --confirm-disconnected
+          checkpoint recover TASK --destination PATH --confirm-disconnected [--attempt NUMBER]
           worktrees TASK      verify and show task-owned worktree ownership
           cleanup TASK [--dry-run]
                               inspect removal targets and blockers; changes nothing
           abandon-preflight TASK [--dry-run]
                               verify and explicitly abandon one failed pre-worker launch
+          close-attempt TASK [--dry-run]
+                              preserve unsuccessful attempts for explicit fresh retry
           received TASK [--summary TEXT] [--artifact PATH] [--test RESULT]
                               worker result is ready for human review/application
           finish TASK [--summary TEXT] [--artifact PATH] [--test RESULT]

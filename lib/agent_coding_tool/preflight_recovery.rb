@@ -15,6 +15,9 @@ module AgentCodingTool
       @after_removal = after_removal
     end
 
+    # Returns a verified pre-worker abandonment plan without mutation. Both path
+    # layouts retain the same original-preparation, clean ownership and liveness
+    # requirements; executed, foreign or uncertain attempts raise InvalidState.
     def preflight(id)
       raise InvalidTask, "abandon-preflight: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       run_root = "#{@data_root}-runs"
@@ -94,14 +97,13 @@ module AgentCodingTool
           raise InvalidState, "abandon-preflight: prepared repository identity changed"
         end
       end
-      paths = entries.filter_map { |entry| entry.fetch("path") unless entry["state"] == "removed" }
-      task_path = File.join(WorktreeManager.canonical_system_path(Config.load(File.join(@data_root, "config.yml")).worktree_root), id)
-      if File.directory?(task_path) && !File.symlink?(task_path)
-        raise InvalidState, "abandon-preflight: foreign task path" unless
-          (Dir.children(task_path).map { |name| File.join(task_path, name) } - paths).empty?
-      elsif File.exist?(task_path) || File.symlink?(task_path)
-        raise InvalidState, "abandon-preflight: foreign task path"
+      paths = entries.map { |entry| entry.fetch("path") }
+      attempts[0...-1].each do |name, _number|
+        paths.concat(JSON.parse(File.binread(File.join(task_root, name, "worktrees.json"))).fetch("entries").map { |entry| entry.fetch("path") })
       end
+      raise InvalidState, "abandon-preflight: foreign task path" unless
+        WorktreeManager.foreign_task_paths(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
+                                          task_id: id, paths: paths).empty?
       checks = manager.cleanup_preflight
       raise InvalidState, "abandon-preflight: dirty worktree" if checks.any? { |row| row["dirty"] || !row.fetch("blockers").empty? }
       raise InvalidState, "abandon-preflight: active or uncertain process" unless @liveness.call(report, inventory)

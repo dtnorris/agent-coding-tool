@@ -83,11 +83,18 @@ module AgentCodingTool
       end
     end
 
-    def verify(id, workspace: nil)
-      task, state, name, base = context!(id)
-      return { "status" => "exempt" } unless CheckpointPolicy.required?(task)
+    # Verifies current or explicitly selected closed-attempt evidence against its
+    # original base. Historical verification is read-only and accepts no workspace.
+    def verify(id, workspace: nil, attempt: nil)
+      raise InvalidState, "checkpoint: historical verification accepts no workspace" if attempt && workspace
+      historical = AttemptRecovery.new(data_root: @data_root).closed_state(id, attempt) if attempt
+      task, state, name, base = context!(id, historical: historical)
+      return { "status" => "exempt" } unless CheckpointPolicy.required?(task) || historical || state["checkpoint"]
       directory = directory!(id, state, create: false)
       record = current_record(directory, id, state, name, base)
+      if historical && record["launch_invocation"] != historical.fetch("launch_invocation")
+        raise InvalidState, "checkpoint: historical invocation mismatch"
+      end
       path = File.join(directory, record.fetch("artifact"))
       bytes = checked_file!(path)
       raise InvalidState, "checkpoint: checksum/length mismatch" unless
@@ -125,10 +132,13 @@ module AgentCodingTool
       exit_code
     end
 
-    def recover(id, destination:, confirm_disconnected: false)
+    # Reconstructs current or closed-attempt bytes in a new independent clone;
+    # explicit disconnected-worker judgment grants no acceptance/publication.
+    def recover(id, destination:, confirm_disconnected: false, attempt: nil)
       raise InvalidState, "checkpoint: explicit disconnected-worker judgment required" unless confirm_disconnected
-      _task, state, _name, base = context!(id)
-      evidence = verify(id)
+      historical = AttemptRecovery.new(data_root: @data_root).closed_state(id, attempt) if attempt
+      _task, state, _name, base = context!(id, historical: historical)
+      evidence = verify(id, attempt: attempt)
       raise InvalidState, "checkpoint: exempt task has no recovery artifact" if evidence["status"] == "exempt"
       raise InvalidState, "checkpoint: destination occupied" if File.exist?(destination) || File.symlink?(destination)
       path = File.expand_path(destination)
@@ -153,10 +163,13 @@ module AgentCodingTool
 
     private
 
-    def context!(id, require_in_flight: false)
+    # Resolves current or explicitly bound original task/state/writer/base context.
+    # Unsupported writer counts, missing preparation or execution identity raise
+    # InvalidState; this helper does not change lifecycle or evidence.
+    def context!(id, require_in_flight: false, historical: nil)
       raise InvalidTask, "checkpoint: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       task = @tasks.load(id)
-      state = @states.load(id)
+      state = historical || @states.load(id)
       raise InvalidState, "#{id}: checkpoint requires an in-flight attempt" unless
         state.is_a?(Hash) && (!require_in_flight ||
           (state["started_at"].is_a?(String) && !state["result"])) &&

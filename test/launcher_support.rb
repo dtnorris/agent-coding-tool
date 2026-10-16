@@ -95,7 +95,9 @@ module LauncherSupport
         abort 'legacy sandbox invocation' unless ARGV.include?('sandbox_mode="workspace-write"') &&
           ARGV[ARGV.index('sandbox') + 1] == '--' && !ARGV.include?('--full-auto')
         targets = ARGV.drop(ARGV.index('act-probe') + 1)
-        settings = JSON.parse(File.read(File.expand_path('../../../fake-settings.json', Dir.pwd)))
+        settings_root = Dir.pwd
+        settings_root = File.dirname(settings_root) until File.file?(File.join(settings_root, 'fake-settings.json')) || settings_root == File.dirname(settings_root)
+        settings = JSON.parse(File.read(File.join(settings_root, 'fake-settings.json')))
         targets.each do |target|
           if settings.fetch('mode') == 'leaky' || (target.start_with?(Dir.pwd + '/') && !target.include?('/.git/'))
             File.write(target, 'breach')
@@ -213,6 +215,9 @@ module LauncherSupport
   end
 
   def unit_capture(*command, **options)
+    if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
+      return ['00000000-0000-0000-0000-000000000000', '', Status.new(true)]
+    end
     if command[0].is_a?(Hash) && command[1, 2] == ['git', '--no-replace-objects']
       return @skill_capture.call(*command, **options)
     end

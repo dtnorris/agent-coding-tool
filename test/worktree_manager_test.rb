@@ -149,7 +149,7 @@ class WorktreeManagerTest < Minitest::Test
       FileUtils.mkdir_p(data)
       File.write(File.join(data, "config.yml"), YAML.dump("repo_root" => @root, "worktree_root" => @visible))
       run = File.join("#{data}-runs", "T", "attempt")
-      FileUtils.mkdir_p(run)
+      FileUtils.mkdir_p(run, mode: 0o700)
       record = File.join(run, "worktrees.json")
       FileUtils.mkdir_p([File.join(data, "tasks"), File.join(data, "state")])
       File.write(File.join(data, "tasks", "T.yml"), YAML.dump(
@@ -175,6 +175,39 @@ class WorktreeManagerTest < Minitest::Test
       assert_includes JSON.parse(out.string).fetch("attempts").first.first.fetch("blockers"), "worktree contains changes"
       assert_equal before, [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
       assert_equal 2, cli.run(%w[cleanup T])
+    end
+  end
+
+  # A legacy repository name can coincide with a new attempt container. Refuse
+  # before Git/evidence writes rather than nesting retry authority inside it.
+  def test_attempt_container_cannot_reuse_an_existing_resource
+    fixture(git: false) do
+      container = File.join(@visible, "T", "attempt-2")
+      FileUtils.mkdir_p(container)
+      File.write(File.join(container, "keep"), "legacy resource")
+      isolated = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: @record, attempt_paths: true)
+      error = assert_raises(AgentCodingTool::InvalidState) do
+        isolated.create(task_id: "T", attempt: 2, task: @task, snapshot: @snapshot)
+      end
+      assert_includes error.message, "occupied attempt container"
+      assert_equal "legacy resource", File.binread(File.join(container, "keep"))
+      refute File.exist?(@record)
+    end
+  end
+
+  # A copied/changed Git pointer cannot borrow another native registration's
+  # common administration, HEAD or detached-reader identity as ownership proof.
+  def test_native_backpointer_mismatch_preserves_the_resource
+    fixture do
+      entry = manager.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot).fetch("entries").first
+      admin = git("rev-parse", "--absolute-git-dir", chdir: entry.fetch("path"))
+      pointer = File.join(admin, "gitdir")
+      File.write(pointer, File.join(@root, "foreign", ".git") + "\n")
+      original = File.binread(@record)
+      assert_raises(AgentCodingTool::InvalidState) { manager.inspect! }
+      assert_equal original, File.binread(@record)
+      assert File.directory?(entry.fetch("path"))
+      assert_equal File.join(@root, "foreign", ".git") + "\n", File.binread(pointer)
     end
   end
 end

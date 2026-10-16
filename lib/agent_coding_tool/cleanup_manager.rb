@@ -16,6 +16,9 @@ module AgentCodingTool
       @after_removal = after_removal
     end
 
+    # Returns all removal targets and blockers for one task without mutation.
+    # Both recorded layouts require native ownership, terminal use and existing
+    # completion/integration gates; invalid task/evidence roots raise InvalidState.
     def preflight(id)
       raise InvalidTask, "cleanup: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       root = File.join("#{@data_root}-runs", id)
@@ -45,6 +48,9 @@ module AgentCodingTool
             unless abandoned_preflight?(id, report, inventory_raw, record_path, task)
               raise InvalidState, "cleanup: unverified abandoned preflight"
             end
+            WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
+                                record_path: record_path).inspect!
+            owned_paths.concat(inventory_raw.fetch("entries").map { |entry| entry.fetch("path") })
             blockers = outcome == "complete" ? [] : ["task outcome is #{outcome || 'unfinished'}"]
             rows << { "attempt" => report.fetch("attempt"), "path" => run_dir,
                       "state" => "preflight_abandoned", "blockers" => blockers }
@@ -71,7 +77,7 @@ module AgentCodingTool
           liveness = @liveness.check(report, inventory)
           inventory.fetch("entries").each do |entry|
             name, path = entry.values_at("name", "path")
-            owned_paths << path if entry["state"] != "removed" && File.directory?(path)
+            owned_paths << path
             blockers = []
             blockers << "task outcome is #{outcome || 'unfinished'}" unless outcome == "complete"
             blockers << "worker liveness #{liveness}" unless liveness == :clear
@@ -99,13 +105,11 @@ module AgentCodingTool
       # A task directory may contain only the exact active paths in the
       # ownership records. Unknown files cannot be treated as disposable.
       visible = Config.load(File.join(@data_root, "config.yml")).worktree_root
-      task_path = File.join(WorktreeManager.canonical_system_path(visible), id)
-      if File.directory?(task_path) && !File.symlink?(task_path)
-        actual = Dir.children(task_path).map { |name| File.join(task_path, name) }.sort
-        foreign = actual - owned_paths.sort
-        rows << { "path" => task_path, "blockers" => ["foreign task path entries: #{foreign.join(', ')}"] } unless foreign.empty?
-      elsif File.exist?(task_path) || File.symlink?(task_path)
-        rows << { "path" => task_path, "blockers" => ["foreign task path"] }
+      begin
+        foreign = WorktreeManager.foreign_task_paths(root: visible, task_id: id, paths: owned_paths)
+        rows << { "path" => File.join(visible, id), "blockers" => ["foreign task path entries: #{foreign.join(', ')}"] } unless foreign.empty?
+      rescue InvalidState => error
+        rows << { "path" => File.join(visible, id), "blockers" => [error.message] }
       end
       { "task_id" => id, "dry_run" => true, "attempts" => rows, "blocked" => rows.any? { |row| !row.fetch("blockers").empty? } }
     end

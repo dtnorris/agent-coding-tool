@@ -345,7 +345,7 @@ GitHub remotes and absolute local remotes (for offline fixtures) are supported;
 other remote/provider/branch forms fail closed. The ordinary checkout supplies
 repository identity according to `repo_root`; its local HEAD and dirtiness
 remain observations. Launch creates native Git worktrees under
-`/Users/davidnorris/code/ACT-Worktrees/TASK/repository/` by default. Private
+`/Users/davidnorris/code/ACT-Worktrees/TASK/attempt-N/repository/` by default. Private
 ACTD `config.yml` can set a dedicated `worktree_root`. Each writer gets its own
 branch `act/TASK/attempt-N` in its separate repository at the prepared pushed SHA; readers are pinned
 detached at their prepared SHAs. Missing local commit objects fail closed.
@@ -425,6 +425,11 @@ On macOS, the root-owned `/var` and `/tmp` aliases are canonicalized to their
 symlinks within those paths remain forbidden.
 
 `act worktrees TASK` verifies ownership and shows the worktree inventory.
+Each attempt is checked against its original preparation, independently of the
+current lifecycle pointers. Output includes execution status, original bases,
+resource classification, artifacts, closeout/checkpoint references and blockers.
+Verified failures before creation have no invented inventory. A damaged attempt
+is reported alongside valid history and makes inspection exit nonzero.
 `act cleanup TASK --dry-run` inventories every target and blocker without
 changing files, Git state, locks or remote refs. `act cleanup TASK` first checks
 the same complete inventory. It requires a completed ACT outcome, terminal
@@ -436,6 +441,83 @@ the entire operation. Native non-forced `git worktree remove` then removes only
 the recorded task worktrees, one at a time; an interrupted removal has a durable
 marker and is checked again on resume. Feature branches and private handoffs,
 logs, validation and PR records remain.
+
+An unsuccessful managed attempt can instead be preserved **in place** for an
+explicit retry. For a worker that produced no candidate, the operator sequence is:
+
+```sh
+act launch TASK --codex --reasoning high
+act worktrees TASK
+act record TASK blocked --summary "No candidate; original resources retained." --next "Inspect and explicitly close out before retry."
+act close-attempt TASK --dry-run
+act close-attempt TASK
+act prepare TASK --retry
+act launch TASK --codex --reasoning high
+```
+
+`failed` and `needs_judgment` are also supported non-complete outcomes. Worker
+exit zero, a valid final response and a checkpoint are execution/preservation
+evidence; none accepts code, creates a candidate or completes the task. Closeout
+never launches a worker, prepares a task, changes lifecycle state, removes a
+worktree or deletes a branch. It writes a separate immutable `closeout.json`
+binding original run bytes, invocation, preparation, outcome and checkpoint
+context. Reports, logs, prompts, partial creation markers and old worktrees stay
+intact. Repeating closeout rechecks its evidence; a crash after publication can
+be retried without rewriting the record. Interrupted evidence publication before
+rename remains a blocker for judgment, with the temporary bytes preserved.
+
+Fresh preparation requires verified closeout of all prior managed attempts (or
+verified legacy pre-worker abandonment). It clears current pointers while their
+original context remains in private attempt evidence. Preparation, recording,
+closeout and managed launch share the reservation lock. Launch independently
+rechecks dependencies, skill pins, prompt bytes, source freshness, repository
+authority, reservations, Git ownership and sandbox boundaries; it denies the
+new worker access to earlier attempts as well as protected shared Git metadata.
+Each retry uses new paths and `act/TASK/attempt-N` branches. It cannot reuse an
+already attempted preparation. This preserves ACT-15's independently verified
+parallel launch and delivery requirements; manual overlap grants no managed
+worker privileges.
+
+Closeout refuses tracked, staged, untracked or ignored changes, changed native
+HEAD/branch/registry/authority, foreign paths, missing or tampered evidence,
+candidate/complete outcomes and existing delivery/validation records. A patch
+does not grant permission to discard workspace changes. Verified partial
+creation may be preserved for retry, including a native addition whose last
+durable marker is `creating`; missing ownership after native mutation refuses.
+No unsuccessful-attempt destructive cleanup is added. Normal cleanup and
+`abandon-preflight` retain their existing eligibility and liveness gates.
+
+Retry liveness is deliberately bounded: it requires matching host/boot identity,
+absence of the recorded host PID, worker PID and worker group, consistent terminal
+heartbeat evidence, and available `lsof` observations reporting no worktree use.
+Live/reused PIDs, active groups, contradictory records, missing tools or permission
+errors block. These observations do **not** prove escaped or reparented descendants
+terminated. Non-destructive retry also depends on host sandbox enforcement that
+confines surviving processes to their original workspace and protects future
+attempts, ordinary checkouts, private evidence and shared Git administration.
+Fixture tests simulate that external boundary; actual macOS sandbox and liveness
+acceptance belongs to the operator. Closeout grants no destructive authority.
+
+Legacy v1 fixed paths remain authoritative and inspectable. Mixed history with
+an intact earlier inventory and a later missing inventory is classified as a
+pre-creation failure only after independent path, branch and native registry
+checks establish that no later resources were created. Older executed reports
+without verifiable host/boot identity remain ineligible for automatic closeout;
+inspection explains the blocker. A current state snapshot or human assertion
+cannot supply missing original checkpoint or process identity.
+
+For a closed attempt with a valid single-repository checkpoint, select its
+original preparation explicitly after a retry clears the current pointer:
+
+```sh
+act checkpoint verify TASK --attempt 1
+act checkpoint recover TASK --attempt 1 --destination /new/disposable/reconstruction --confirm-disconnected
+```
+
+Historical verification is read-only and accepts no workspace. Reconstruction
+uses the existing independent clone/patch contract; multi-repository checkpoint
+recovery is still unsupported. Publication, candidate acceptance, integration
+and `finish` require their existing separate authority.
 Interrupted creation preserves its operation marker and any created paths
 and branches for manual recovery.
 
@@ -936,14 +1018,20 @@ Run `rake` for the full test suite. Tests use explicit temporary data
 directories and do not depend on personal task data. The publisher tests in
 the normal suite use a deterministic Git runner fake, so they do not launch
 Git subprocesses. Run the slower disposable-repository smoke tests explicitly
-when changing Git staging or push behavior:
+when changing Git staging, delivery, checkpoint or retry behavior:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
 ruby -Ilib:test test/integration/delivery_manager_git_integration.rb
 ruby -Ilib:test test/integration/multi_delivery_git_integration.rb
 ruby -Ilib:test test/integration/checkpoint_git_integration.rb
+ruby -Ilib:test test/integration/attempt_retry_git_integration.rb
 ```
+
+The retry integration exercises cold public CLI handoffs, native Git ownership,
+preservation, negative recovery and historical fixed-path classification. Its
+fake worker/sandbox/host-tool boundaries do not establish macOS host acceptance.
+The deterministic retry-liveness matrix runs in the normal suite.
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous
 planner, or agent-to-agent messaging. Add those only when

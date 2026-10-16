@@ -144,12 +144,17 @@ module AgentCodingTool
       run_dir = File.join(task_root, "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{SecureRandom.hex(6)}")
       Dir.mkdir(run_dir, 0o700)
       @report_path = File.join(run_dir, "handoff.json")
-      manager = WorktreeManager.new(root: config.worktree_root, record_path: File.join(run_dir, "worktrees.json"))
+      invocation_id = SecureRandom.uuid
+      manager = WorktreeManager.new(root: config.worktree_root, record_path: File.join(run_dir, "worktrees.json"),
+                                    attempt_paths: true, invocation_id: invocation_id,
+                                    inventory_written: -> { @report["worktree_creation"] = "inventory_persisted"; save_report })
       @report = {
         "schema_version" => SCHEMA, "task_id" => id, "attempt" => attempt,
-        "invocation_id" => SecureRandom.uuid, "host_pid" => Process.pid,
+        "invocation_id" => invocation_id, "host_pid" => Process.pid,
         "created_at" => Time.now.utc.iso8601, "prepared_at" => state.fetch("prepared_at"),
-        "preparation" => state.fetch("snapshot"), "workspace" => nil,
+        "preparation" => state.fetch("snapshot"), "preparation_state" => state,
+        "host_identity" => RetryLiveness.host_identity, "worktree_layout" => "attempt",
+        "worktree_creation" => "not_started", "workspace" => nil,
         "worktrees_path" => File.join(run_dir, "worktrees.json"), "worktrees" => nil,
         "writable_repository" => names.first,
         "writable_authority" => bases.first.slice("remote_url", "branch", "pushed_sha"),
@@ -160,6 +165,7 @@ module AgentCodingTool
         "stderr_path" => File.join(run_dir, "stderr.txt"),
         "final_path" => File.join(run_dir, "final.txt"),
         "prompt_path" => File.join(run_dir, "prompt.txt"), "stdin_path" => File.join(run_dir, "stdin.txt"),
+        "prompt_sha256" => Digest::SHA256.hexdigest(prompt), "prompt_bytes" => prompt.bytesize,
         "codex" => @codex, "model" => model, "reasoning" => reasoning,
         "codex_executable_sha256" => @codex_digest, "exec_help_sha256" => @help_digest,
         "worker_recommendation" => task["worker_recommendation"],
@@ -167,6 +173,8 @@ module AgentCodingTool
       }
       save_report
       begin
+        raise InvalidState, "launch: task/preparation changed before creation" unless
+          state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task
         File.binwrite(@report.fetch("prompt_path"), prompt)
         inventory = manager.create(task_id: id, attempt: attempt, task: task, snapshot: state.fetch("snapshot"))
         @report["worktrees"] = inventory
@@ -188,7 +196,8 @@ module AgentCodingTool
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
         end
         verified_conflicts = current_conflicts
-        @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") }
+        @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") } +
+          AttemptRecovery.new(data_root: @data_root).protected_paths(id, before_attempt: attempt)
         sandbox_probe!(inventory, workspace, run_dir)
         heads = checked_status!(id, allow_write_collision: allow_write_collision)
         changed_write!(task, state, heads)
@@ -212,11 +221,15 @@ module AgentCodingTool
             "verified_conflicts" => verified_conflicts
           }
         end
+        AttemptRecovery.new(data_root: @data_root).retry_ready!(id, current_run: run_dir) if attempt > 1
+        raise InvalidState, "launch: task/preparation changed before reservation" unless
+          state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task
         @report["status"] = "reserving"
         save_report
         @coordinator.start(id, allow_write_collision: allow_write_collision,
                            expected_collisions: @collisions,
                            launch_authorization: @report["collision_authorization"])
+        @report["execution_state"] = state_store.load(id)
         @report["status"] = "reserved"
         save_report
         result = execute(command, lock)
@@ -365,6 +378,9 @@ module AgentCodingTool
       raise InvalidState, "launch: partial evidence; operator judgment required"
     end
 
+    # Refuses unknown history, unclosed failures or reused preparation before a
+    # new run directory or native resource exists. Historical closeout is checked
+    # against original evidence rather than the current task's snapshot.
     def prior_runs!(id, state)
       task_root = File.join(@run_root, id)
       if File.exist?(task_root)
@@ -376,11 +392,13 @@ module AgentCodingTool
           end
         end
       end
+      AttemptRecovery.new(data_root: @data_root).retry_ready!(id)
       reports.select { |report| report["task_id"] == id }.each do |report|
         unless TERMINAL.include?(report["status"])
           raise InvalidState, "#{id}: previous run liveness unknown; operator judgment required"
         end
-        if report["status"] == "preflight_failed"
+        if report["status"] == "preflight_failed" &&
+           !File.file?(File.join(File.dirname(report.fetch("_report_path")), "closeout.json"))
           raise InvalidState, "#{id}: failed preflight requires explicit abandonment before launch"
         end
         if report["prepared_at"] == state["prepared_at"]

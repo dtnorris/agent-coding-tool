@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "securerandom"
 require "time"
 
 module AgentCodingTool
@@ -190,19 +191,24 @@ module AgentCodingTool
         raise InvalidState, "#{id}: has recorded outcome #{previous_outcome}; use --retry to prepare a new attempt"
       end
 
+      data_root = File.dirname(File.dirname(@state_store.state_path(id)))
+      if File.directory?(File.join("#{data_root}-runs", id)) || File.symlink?(File.join("#{data_root}-runs", id))
+        AttemptRecovery.new(data_root: data_root).retry_ready!(id)
+      end
+
       validate_skill_identity!(id, state)
       validate_planning_guidance!(task, state)
       snapshot = snapshot_task(task)
       prompt = @prompt_renderer.render(task, snapshot, dependencies: dependencies)
       collisions = write_collisions(id, task, snapshot, states: PREPARE_COLLISION_STATES)
-      timestamp = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
+      timestamp = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S%6NZ')}-#{SecureRandom.hex(6)}"
       prompt_path = File.join(@prompt_root, "#{id}-#{timestamp}.txt")
       FileUtils.mkdir_p(@prompt_root)
       File.write(prompt_path, prompt)
 
       new_state = state.merge(
         "id" => id,
-        "prepared_at" => Time.now.utc.iso8601,
+        "prepared_at" => Time.now.utc.iso8601(6),
         "snapshot" => snapshot,
         "prompt_path" => prompt_path,
         "coding_skill" => @prompt_renderer.skill_identity

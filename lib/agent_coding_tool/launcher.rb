@@ -35,6 +35,56 @@ module AgentCodingTool
       raise Error, "launch: #{e.class}: #{e.message}"
     end
 
+    # Rechecks overlapping reservations under the caller's shared reservation lock.
+    # Inputs identify a host run; returns verified sibling identities, or raises
+    # InvalidState for unknown workers, incompatible pins or ambiguous ownership.
+    # This grants neither publication authority nor current integration approval.
+    def verify_delivery_overlap!(id, run_dir)
+      safe_root!
+      task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
+      store = StateStore.new(File.join(@data_root, "state"))
+      state = store.load(id)
+      bases = task.fetch("repositories").filter_map { |name, spec|
+        state.fetch("snapshot").fetch(name) if spec.fetch("access") == "write" }
+      @report = JSON.parse(File.binread(File.join(run_dir, "handoff.json")))
+      @collisions = TaskStore.new(File.join(@data_root, "tasks")).all.filter_map do |other|
+        next if other.fetch("id") == id
+        other_state = store.load(other.fetch("id"))
+        next unless other_state["snapshot"] && (other_state["started_at"] ||
+          other_state.dig("result", "outcome") == "candidate_complete")
+        shared = shared_writers(other, other_state.fetch("snapshot"), bases)
+        next if shared.empty?
+        { "task_id" => other.fetch("id"), "status" => other_state["started_at"] ? "IN_FLIGHT" : "CANDIDATE",
+          "repositories" => shared }
+      end
+      verified = reject_unknown_reservations!(id, bases, allow_write_collision: true)
+      return verified if verified.empty?
+
+      own = verify_conflicting_worker!(task, state,
+        @report.merge("_report_path" => File.join(run_dir, "handoff.json")),
+        task.fetch("repositories").filter_map { |name, spec| name if spec.fetch("access") == "write" }, bases)
+      rows = [own, *verified]
+      reports.each do |report|
+        next unless rows.any? { |row| row["task_id"] == report["task_id"] }
+        report.dig("collision_authorization", "verified_conflicts")&.each do |previous|
+          current = rows.find { |row| row["task_id"] == previous["task_id"] }
+          if current && current.values_at("task_id", "attempt", "invocation_id") != previous.values_at("task_id", "attempt", "invocation_id")
+            raise InvalidState, "delivery: sibling invocation changed since verified launch"
+          end
+        end
+      end
+      rows.each do |row|
+        paths = row.fetch("all_worktrees")
+        others = rows.reject { |other| other.equal?(row) }.flat_map { |other| other.fetch("all_worktrees") }
+        if paths.any? { |path| others.any? { |other| path == other || path.start_with?("#{other}/") || other.start_with?("#{path}/") } }
+          raise InvalidState, "delivery: overlapping execution roots"
+        end
+      end
+      rows.map { |row| row.slice("task_id", "attempt", "invocation_id", "workspaces", "authorities") }
+    rescue KeyError, TypeError, JSON::ParserError => e
+      raise InvalidState, "delivery: incomplete overlap evidence: #{e.class}"
+    end
+
     private
 
     def safe_root!
@@ -53,6 +103,8 @@ module AgentCodingTool
         File.stat(@run_root).uid == Process.uid && (File.stat(@run_root).mode & 0o077).zero?
     end
 
+    # Runs one task under the reservation lock and optionally delivers its exact
+    # host-validated result. Returns worker status; preflight errors retain evidence.
     def run_locked(id, model, reasoning, lock, allow_write_collision)
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       validate_task!(id, task)
@@ -172,11 +224,9 @@ module AgentCodingTool
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
           if delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
             @err.puts "DELIVERY DEFERRED: another launch holds the reservation lock; review separately"
-          elsif delivery.configured?(id) && overlapping_reservations?(id, task, state)
-            @err.puts "DELIVERY DEFERRED: overlapping writable task remains active or pending review; integration requires separate operator review"
           elsif delivery.configured?(id)
             begin
-              delivered = delivery.deliver(id, run_dir: run_dir)
+              delivered = delivery.deliver(id, run_dir: run_dir, reservation_lock: lock)
               urls = delivered["prs"] ? delivered.fetch("prs").values.map { |pr| pr.fetch("url") } :
                                           [delivered.fetch("pr").fetch("url")]
               @out.puts "Draft PR#{delivered["prs"] ? "s" : ""}: #{urls.join(', ')} (CANDIDATE)"
@@ -339,6 +389,8 @@ module AgentCodingTool
       end
     end
 
+    # Returns verified overlapping host attempts for the target's pinned bases.
+    # Opt-in alone is insufficient: unknown ownership or liveness raises InvalidState.
     def reject_unknown_reservations!(id, bases, allow_write_collision:)
       # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
       # pass also sees stale manual starts and orphaned host evidence, neither of
@@ -346,7 +398,7 @@ module AgentCodingTool
       store = StateStore.new(File.join(@data_root, "state"))
       all_reports = reports
       verified = []
-      @coordinator.tasks.each do |other|
+      TaskStore.new(File.join(@data_root, "tasks")).all.each do |other|
         other_id = other.fetch("id")
         next if other_id == id
         other_state = store.load(other_id)
@@ -404,6 +456,8 @@ module AgentCodingTool
       raise InvalidState, "launch: malformed worker write authority; inspect #{report['_report_path']}"
     end
 
+    # Verifies a sibling's task/state/run and shared pinned authorities, returning
+    # owned roots/identity. Unverified HEAD movement, sandbox or process state raises.
     def verify_conflicting_worker!(task, state, report, names, bases)
       other_id = task.fetch("id")
       path = report.fetch("_report_path")
@@ -417,6 +471,13 @@ module AgentCodingTool
                [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] }
         raise InvalidState, "launch: #{other_id} has foreign or partial task/attempt evidence at #{path}"
       end
+      if (authorization = state.dig("write_collision_override", "launch"))
+        unless report["collision_authorization"] == authorization &&
+               authorization.values_at("task_id", "attempt", "invocation_id", "prepared_at") ==
+                 report.values_at("task_id", "attempt", "invocation_id", "prepared_at")
+          raise InvalidState, "launch: #{other_id} invocation differs from its verified start"
+        end
+      end
       names.each do |name|
         previous = state.fetch("snapshot").fetch(name)
         unless bases.any? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
@@ -426,7 +487,10 @@ module AgentCodingTool
       end
       root = Config.load(File.join(@data_root, "config.yml")).worktree_root
       manager = WorktreeManager.new(root: root, record_path: record_path)
-      inventory = manager.inspect!
+      # Only host-validated exact candidate commits may replace the prepared HEAD.
+      overrides = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
+                                 .verified_delivery_heads(other_id, report, run_dir)
+      inventory = manager.inspect!(head_overrides: overrides)
       unless report["worktrees"].is_a?(Hash) &&
              immutable_inventory(report.fetch("worktrees")) == immutable_inventory(inventory) &&
              inventory["task_id"] == other_id && inventory["attempt"] == report["attempt"] &&
@@ -450,6 +514,9 @@ module AgentCodingTool
                report.fetch("launch_heads").fetch(name).values_at("remote_url", "branch", "pushed_sha") ==
                  state.fetch("snapshot").fetch(name).values_at("remote_url", "branch", "pushed_sha") }
         raise InvalidState, "launch: #{other_id} launch roots or pinned heads are unverified"
+      end
+      unless report["sandbox_probe"].is_a?(Hash) && report.dig("sandbox_probe", "checked_at")
+        raise InvalidState, "launch: #{other_id} sandbox verification is unavailable"
       end
       case report.fetch("status")
       when "running"
@@ -500,22 +567,6 @@ module AgentCodingTool
       end
     rescue ArgumentError, Errno::ESRCH, Errno::EPERM, SystemCallError
       raise InvalidState, "launch: #{report['task_id']} worker liveness is unknown; inspect before retrying"
-    end
-
-    def overlapping_reservations?(id, task, state)
-      authorities = task.fetch("repositories").filter_map { |name, spec|
-        state.fetch("snapshot").fetch(name) if spec.fetch("access") == "write" }
-      return true if reports.any? { |report|
-        report["task_id"] != id && !TERMINAL.include?(report["status"]) &&
-          report_writes_overlap?(report, authorities) }
-      store = StateStore.new(File.join(@data_root, "state"))
-      @coordinator.tasks.any? do |other|
-        next false if other.fetch("id") == id
-        other_state = store.load(other.fetch("id"))
-        other_state.is_a?(Hash) && other_state["snapshot"].is_a?(Hash) &&
-          (other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete") &&
-          shared_writers(other, other_state.fetch("snapshot"), authorities).any?
-      end
     end
 
     def preflight_codex!(model, reasoning)

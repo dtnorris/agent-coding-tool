@@ -1060,12 +1060,12 @@ class CLITest < Minitest::Test
         output = run_status(dir, coordinator, argv)
         assert_includes output,
                         "IG-07A: PREPARED (NEXT) — Pipeline work\n" \
-                        "    reason: cannot start; IG-09C (IN_FLIGHT) writes alpha\n"
+                        "    reason: manual overlap warning; IG-09C (IN_FLIGHT) writes alpha\n"
         assert_includes output,
                         "IG-11C: PREPARED — Pipeline work\n" \
-                        "    reason: cannot start; IG-09C (IN_FLIGHT) writes alpha\n"
-        refute_includes output, "cannot start; IG-07A"
-        refute_includes output, "cannot start; IG-11C"
+                        "    reason: manual overlap warning; IG-09C (IN_FLIGHT) writes alpha\n"
+        refute_includes output, "manual overlap warning; IG-07A"
+        refute_includes output, "manual overlap warning; IG-11C"
       end
     end
   end
@@ -1115,7 +1115,7 @@ class CLITest < Minitest::Test
 
     assert_equal 0, broad_cli.run(%w[status --all])
     reason = broad.string.lines.find { |line| line.include?("reason:") }.chomp
-    assert_includes reason, "cannot start; 2 blockers:"
+    assert_includes reason, "manual overlap warning; 2 overlaps:"
     assert reason.end_with?("...")
     assert_operator visible_width(reason), :<=, 58
 
@@ -1124,8 +1124,8 @@ class CLITest < Minitest::Test
                                             terminal_width: 20)
     explicit_cli.instance_variable_set(:@coordinator, coordinator)
     assert_equal 0, explicit_cli.run(%w[status P1])
-    assert_includes explicit.string, "    reason: cannot start; A (IN_FLIGHT) writes alpha, beta\n"
-    assert_includes explicit.string, "    reason: cannot start; C (CANDIDATE) writes gamma\n"
+    assert_includes explicit.string, "    reason: manual overlap warning; A (IN_FLIGHT) writes alpha, beta; use separately isolated development\n"
+    assert_includes explicit.string, "    reason: manual overlap warning; C (CANDIDATE) writes gamma; use separately isolated development\n"
   end
 
   def test_read_only_refresh_and_collision_are_distinct_dashboard_diagnostics
@@ -1143,7 +1143,7 @@ class CLITest < Minitest::Test
 
     assert_equal 0, cli.run(%w[status --all])
     assert_includes out.string, "read-only pushed branch changed"
-    assert_includes out.string, "    reason: cannot start; A (IN_FLIGHT) writes pipeline\n"
+    assert_includes out.string, "    reason: manual overlap warning; A (IN_FLIGHT) writes pipeline\n"
   end
 
   def test_status_rejects_conflicting_completion_filters

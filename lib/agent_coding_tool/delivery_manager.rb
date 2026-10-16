@@ -25,18 +25,87 @@ module AgentCodingTool
       File.file?(contract_path(id))
     end
 
-    def deliver(id, run_dir:)
+    # Validates and delivers one host run while holding the shared reservation and
+    # task delivery locks. A launcher may pass its already held reservation lock.
+    # Returns delivery details; refusals preserve artifacts and raise InvalidState.
+    def deliver(id, run_dir:, reservation_lock: nil)
       raise InvalidTask, "delivery: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       run_dir = File.realpath(run_dir)
       expected_parent = File.join("#{@data_root}-runs", id)
       raise InvalidState, "delivery: foreign run" unless File.dirname(run_dir) == expected_parent
-      File.open(File.join(run_dir, "delivery.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-        raise InvalidState, "delivery: another delivery holds lock" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-        deliver_locked(id, run_dir)
+      @run_dir = run_dir
+      @overlap_identity = nil
+      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
+      verifier.send(:safe_root!)
+      path = File.join("#{@data_root}-runs", "launch.lock")
+      raise InvalidState, "delivery: symlinked reservation lock" if File.symlink?(path)
+      owned_lock = reservation_lock || File.open(path, File::RDWR | File::CREAT, 0o600)
+      begin
+        unless owned_lock.stat.ino == File.stat(path).ino && owned_lock.stat.dev == File.stat(path).dev &&
+               owned_lock.flock(File::LOCK_EX | File::LOCK_NB)
+          raise InvalidState, "delivery: another launch holds the reservation lock"
+        end
+        verify_overlap!(id)
+        File.open(File.join(run_dir, "delivery.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
+          raise InvalidState, "delivery: another delivery holds lock" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+          deliver_locked(id, run_dir)
+        end
+      ensure
+        owned_lock.close unless reservation_lock
       end
     end
 
+    # Returns HEAD overrides only for exact committed candidates whose private
+    # contract, command logs, scope and bytes still verify. Does not run tests or
+    # mutate evidence. Missing/altered validation raises InvalidState; base HEADs
+    # need no override. Multi-repository evidence retains its grouped contract.
+    def verified_delivery_heads(id, report, run_dir)
+      writers = report.fetch("writable_repositories", [report.fetch("writable_repository")])
+      workspaces = report.fetch("workspaces", { report.fetch("writable_repository") => report.fetch("workspace") })
+      advanced = writers.select { |name| git!(workspaces.fetch(name), "rev-parse", "HEAD").strip !=
+        report.fetch("preparation").fetch(name).fetch("pushed_sha") }
+      return {} if advanced.empty?
+      multi = writers.length > 1
+      verifier = multi ? MultiDeliveryManager.new(data_root: @data_root, coordinator: @coordinator) : self
+      contract, contract_sha = multi ? verifier.send(:multi_contract!, id, writers) : contract!(id)
+      verifier.verify_candidate_cross_checks!(id, report, run_dir, contract, contract_sha) if multi
+      advanced.to_h do |name|
+        directory = multi ? File.join(run_dir, "repositories", name) : run_dir
+        path = File.join(directory, "delivery.json")
+        raise InvalidState, "delivery: missing/foreign candidate evidence" unless File.file?(path) && !File.symlink?(path) && File.realpath(path) == path
+        detail = JSON.parse(File.binread(path))
+        base = report.fetch("preparation").fetch(name)
+        policy = multi ? contract.fetch("repositories").fetch(name) : contract
+        unless detail.values_at("schema", "task_id", "contract_sha256", "base_sha", "workspace", "branch") ==
+               [SCHEMA, id, contract_sha, base.fetch("pushed_sha"), workspaces.fetch(name), "act/#{id}/attempt-#{report.fetch('attempt')}"] &&
+               %w[committed pushed draft_pr].include?(detail["stage"]) && detail.fetch("commit_sha").match?(SHA) &&
+               detail.fetch("paths").all? { |path| policy.fetch("allowed_paths").any? { |glob| File.fnmatch?(glob, path, File::FNM_PATHNAME) } } &&
+               detail.fetch("commands").length == policy.fetch("commands").length &&
+               detail.fetch("commands").each_with_index.all? { |item, index|
+                 valid_command!(item, policy.fetch("commands")[index], directory, index, policy) }
+          raise InvalidState, "delivery: unverified candidate HEAD"
+        end
+        verify_worker_artifacts!(report, run_dir)
+        verify_commit!(workspaces.fetch(name), detail.fetch("commit_sha"), detail)
+        [name, detail.fetch("commit_sha")]
+      end
+    rescue KeyError, TypeError, JSON::ParserError => e
+      raise InvalidState, "delivery: malformed candidate evidence: #{e.class}"
+    end
+
     private
+
+    # Revalidates host ownership before mutation; rejects a changed reservation
+    # set during trusted tests. Returns identities; no lifecycle writes occur.
+    def verify_overlap!(id)
+      return unless @run_dir
+      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
+      identity = verifier.verify_delivery_overlap!(id, @run_dir)
+      if @overlap_identity && @overlap_identity != identity
+        raise InvalidState, "delivery: write reservations changed during validation"
+      end
+      @overlap_identity = identity
+    end
 
     def contract_path(id) = File.join("#{@data_root}-validation", "#{id}.yml")
 
@@ -174,6 +243,7 @@ module AgentCodingTool
       raise InvalidState, "delivery: competing feature ref" if remote && remote != commit
       if details["stage"] == "committed"
         @guard.verify!(contract.fetch("publication_guard"), base.fetch("remote_url"), :push, commit) unless remote == commit
+        verify_authority!(id, name, base)
         @provider.push(workspace, base.fetch("remote"), branch, commit) unless remote == commit
         raise InvalidState, "delivery: pushed ref not verified" unless @provider.branch(base.fetch("remote_url"), branch) == commit
         details["stage"] = "pushed"
@@ -184,6 +254,7 @@ module AgentCodingTool
         raise InvalidState, "delivery: competing/ambiguous PR" if prs.length > 1
         if prs.empty?
           @guard.verify!(contract.fetch("publication_guard"), base.fetch("remote_url"), :pr, commit)
+          verify_authority!(id, name, base)
           @provider.create_draft(base.fetch("remote_url"), branch, contract.fetch("base_branch"),
                                  task.fetch("title"), body)
           prs = @provider.pull_requests(base.fetch("remote_url"), branch)
@@ -228,7 +299,10 @@ module AgentCodingTool
       end
     end
 
+    # Rechecks overlap ownership and the task's prepared authority before mutation.
+    # Inputs identify task/repository/base; stale or unavailable evidence raises.
     def verify_authority!(id, name, base)
+      verify_overlap!(id)
       heads = @coordinator.launch_heads(id)
       raise InvalidState, "delivery: STALE INPUT" unless heads.fetch(name).values_at("remote_url", "branch", "pushed_sha") ==
         base.values_at("remote_url", "branch", "pushed_sha")

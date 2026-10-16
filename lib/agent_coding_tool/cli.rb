@@ -378,6 +378,8 @@ module AgentCodingTool
       { statuses:, ranked:, metrics:, selection:, tasks_by_id: }
     end
 
+    # Prints one ranked snapshot, including optional isolated manual work. Inputs
+    # are the shared planner's rows/metrics; no state changes or probes occur.
     def render_next_plan(selection, ranked, metrics, tasks_by_id)
       @out.puts "Next safe parallel starts (READY priority first; never trade a higher-ranked task for width):"
       if selection.fetch("starts").empty?
@@ -396,12 +398,15 @@ module AgentCodingTool
       end
       @out.puts "  Prepare and start still recheck their safety gates before worker handoff."
 
-      display_next_section("Waiting for write capacity", selection.fetch("waiting_capacity")) do |row|
+      display_next_section("Additional manual parallel work", selection.fetch("waiting_capacity")) do |row|
         conflicts = row.fetch("conflicts").map do |conflict|
           "#{conflict.fetch('task_id')} (#{conflict.fetch('status')}) on " \
             "#{format_authorities(conflict.fetch('authorities'))}"
         end
         @out.puts "  #{row.fetch('id')} (#{row.fetch('status')}): #{conflicts.join('; ')}"
+        @out.puts "    use separately isolated development; manual isolation/liveness unverified"
+        @out.puts "    act prepare #{row.fetch('id')}" if row.fetch("status") == "READY"
+        @out.puts "    act start #{row.fetch('id')} (warns and proceeds; integration remains separate)"
       end
       display_next_section("Running lanes", selection.fetch("occupied").select { |row| row.fetch("status") == "IN_FLIGHT" }) do |row|
         @out.puts "  #{row.fetch('id')}: #{format_authorities(row.fetch('authorities'))}"
@@ -430,6 +435,8 @@ module AgentCodingTool
       @out.puts "Unlock counts are conditional on verified completion, not present eligibility."
     end
 
+    # Returns the same advisory plan as machine-readable evidence/actions without
+    # reprobing or asserting current isolation. Missing plan fields raise KeyError.
     def next_json_document(plan)
       selection = plan.fetch(:selection)
       ranked = plan.fetch(:ranked)
@@ -460,6 +467,8 @@ module AgentCodingTool
             { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
               "depends_on" => tasks.fetch(id).fetch("depends_on", []),
               "priority_rank" => priority.fetch(id),
+              "execution_evidence" => status["execution_evidence"],
+              "candidate_handoff" => status["candidate_handoff"],
               "freshness" => next_freshness(status, tasks.fetch(id)) }
           end,
           "reservations" => occupied.map { |row| next_authority_row(row) }
@@ -475,7 +484,9 @@ module AgentCodingTool
           end,
           "waiting_capacity" => selection.fetch("waiting_capacity").map do |row|
             next_action_row(row, priority, metrics).merge(
-              "category" => "wait_write_capacity",
+              "category" => "manual_parallel",
+              "isolation" => "unverified", "liveness" => "unknown",
+              "next_action" => "use separately isolated development, then prepare/start; integration remains separate",
               "conflicts" => row.fetch("conflicts").map { |conflict| next_authority_row(conflict) }
             )
           end,
@@ -785,7 +796,7 @@ module AgentCodingTool
 
       if status == "IN_FLIGHT"
         @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
-        display_parallel_authorization(item)
+        display_parallel_authorization(item, compact: true)
         if item["reason"]
           puts_wrapped(display_in_flight_reason(item.fetch("reason")),
                        first_prefix: "    ", continuation_prefix: "    ")
@@ -800,7 +811,7 @@ module AgentCodingTool
         puts_wrapped(detail,
                      first_prefix: "    ", continuation_prefix: "    ")
       end
-      display_parallel_authorization(item) if status == "CANDIDATE"
+      display_parallel_authorization(item, compact: true) if %w[CANDIDATE STALE_CANDIDATE].include?(status)
       if recorded_retryable_outcome?(item)
         display_compact_handoff(item)
       elsif item["reason"]
@@ -831,22 +842,51 @@ module AgentCodingTool
       end
     end
 
-    def display_parallel_authorization(item)
+    # Renders recorded execution/candidate evidence; compact dashboards truncate
+    # at their existing width. No probes, writes or live-isolation claims occur.
+    def display_parallel_authorization(item, compact: false)
       override = item.dig("state", "write_collision_override")
+      detail = lambda do |label, text|
+        @out.puts(compact ? compact_detail_line(label, text) : "    #{label}: #{text}")
+      end
+      if (evidence = item["execution_evidence"])
+        detail.call("execution", "isolation #{evidence.fetch('isolation')}; liveness unknown")
+      end
+      if (handoff = item["candidate_handoff"])
+        unless compact
+          detail.call("attempt", handoff["attempt"] || "unknown")
+          detail.call("artifact", handoff["artifact"] || "unknown")
+          detail.call("validation", handoff.fetch("validation_provenance"))
+          if (delivery = handoff["host_delivery"])
+            delivery.fetch("repositories").each do |name, record|
+              detail.call("candidate #{name}", "#{record['branch'] || 'unknown branch'} #{record['commit_sha'] || 'unknown commit'}; paths #{record['paths']&.join(', ') || 'unknown'}")
+            end
+          end
+          handoff.fetch("source").each do |source|
+            detail.call("candidate #{source.fetch('repository')}", "base #{source.fetch('prepared_sha')}; observed #{source.fetch('observed_sha')}")
+          end
+        end
+        detail.call("integration", compact ? "not approved; inspect act status #{item.fetch('id')}" : handoff.fetch("next_action"))
+      end
+      if (overlap = item.dig("state", "write_overlap"))
+        others = overlap.fetch("conflicts").map { |row| "#{row.fetch('task_id')} (#{row.fetch('status')})" }.join(", ")
+        detail.call("overlap", "#{overlap.fetch('basis')} with #{others}; observed #{overlap.fetch('observed_at')}; not a live isolation check")
+      end
       return unless override.is_a?(Hash) && override["conflicts"].is_a?(Array) && !override["conflicts"].empty?
 
-      kind = override["launch"] ? "verified ACT launch" : "manual start assertion"
+      kind = override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
       others = override.fetch("conflicts").map { |row| row.fetch("task_id") }.join(", ")
-      @out.puts "    parallel: #{kind} with #{others}; integration remains separate"
+      detail.call("parallel", "#{kind} with #{others}; integration remains separate")
     end
 
+    # Prints width-limited manual overlap warnings from one observed status row.
     def display_dashboard_write_collisions(item)
       collisions = write_collisions(item)
       return if collisions.empty?
 
       detail = collisions.map { |collision| write_collision_detail(collision, prefix: false) }.join("; ")
       count = collisions.length
-      summary = count == 1 ? "cannot start; #{detail}" : "cannot start; #{count} blockers: #{detail}"
+      summary = count == 1 ? "manual overlap warning; #{detail}" : "manual overlap warning; #{count} overlaps: #{detail}"
       @out.puts compact_detail_line("reason", summary)
     end
 
@@ -854,10 +894,11 @@ module AgentCodingTool
       item.fetch("write_collisions", [])
     end
 
+    # Returns one observed conflict's text, optionally including operator advice.
     def write_collision_detail(collision, prefix: true)
       repositories = collision.fetch("repositories").join(", ")
       detail = "#{collision.fetch('task_id')} (#{collision.fetch('status')}) writes #{repositories}"
-      prefix ? "cannot start; #{detail}" : detail
+      prefix ? "manual overlap warning; #{detail}; use separately isolated development" : detail
     end
 
     def recorded_retryable_outcome?(item)
@@ -1037,10 +1078,12 @@ module AgentCodingTool
       end
     end
 
+    # Parses one manual start, locks reservations, then prints durable overlap
+    # observations. Invalid arguments, unsafe evidence or refusal raise Error.
     def start_command(argv)
       allow_write_collision = false
       parser = OptionParser.new do |opts|
-        opts.on("--allow-write-collision", "explicitly allow concurrent write/write work") do
+        opts.on("--allow-write-collision", "legacy manual assertion (isolation remains unverified)") do
           allow_write_collision = true
         end
       end
@@ -1063,10 +1106,17 @@ module AgentCodingTool
       end
       lock_path = File.join(run_root, "launch.lock")
       raise InvalidState, "start: foreign/symlinked reservation lock" if File.symlink?(lock_path)
-      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+      state = File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
         raise InvalidState, "start: another launch holds the reservation lock; retry after it finishes" unless
           lock.flock(File::LOCK_EX | File::LOCK_NB)
         coordinator.start(id, allow_write_collision: allow_write_collision)
+      end
+      if (overlap = state["write_overlap"])
+        overlap.fetch("conflicts").each do |row|
+          @out.puts "WARNING: #{id} overlaps #{row.fetch('task_id')} (#{row.fetch('status')}) on " \
+                    "#{format_authorities(row.fetch('repositories').map { |name| state.fetch('snapshot').fetch(name).values_at('remote_url', 'branch') })}."
+        end
+        @out.puts "Manual start: isolation and worker liveness unverified; use separately isolated development and review integration."
       end
       @out.puts "Started #{id}: IN_FLIGHT"
     end

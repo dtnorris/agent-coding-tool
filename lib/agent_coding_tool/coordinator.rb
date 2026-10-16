@@ -167,6 +167,8 @@ module AgentCodingTool
       { "starts" => starts, "waiting_capacity" => waiting_capacity, "occupied" => occupied }
     end
 
+    # Snapshots a task and writes its prompt/state, clearing only attempt-local
+    # overlap/checkpoint pointers. Invalid prerequisites/pins raise before writes.
     def prepare(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
@@ -203,15 +205,23 @@ module AgentCodingTool
       new_state.delete("result") if retry_result
       new_state.delete("started_at")
       new_state.delete("write_collision_override")
+      new_state.delete("write_overlap")
       new_state.delete("checkpoint")
       @state_store.write(id, new_state)
 
       { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
     end
 
+    # Reserves a prepared task after dependency/freshness checks; returns its state.
+    # Manual overlaps are advisory, never verified isolation. Invalid input raises
+    # InvalidState/RepositoryError before any state write; CLI owns the shared lock.
     def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
+      unless state["result"].nil? || state["result"].is_a?(Hash)
+        raise InvalidState, "#{id}: malformed result state"
+      end
       outcome = state.dig("result", "outcome")
       raise InvalidState, "#{id}: already complete" if outcome == "complete"
       if outcome
@@ -219,8 +229,22 @@ module AgentCodingTool
       end
       raise InvalidState, "#{id}: prepare the task before starting" unless state["snapshot"]
       raise InvalidState, "#{id}: already in flight" if state["started_at"]
-
-      collisions = write_collisions(id, task, state.fetch("snapshot"), states: START_COLLISION_STATES)
+      unless state["id"] == id && state["prepared_at"].is_a?(String) &&
+             state["snapshot"].is_a?(Hash) && state["snapshot"].keys.sort == task.fetch("repositories").keys.sort &&
+             state["prompt_path"].is_a?(String) && File.file?(state["prompt_path"]) && !File.symlink?(state["prompt_path"])
+        raise InvalidState, "#{id}: missing/invalid preparation"
+      end
+      begin
+        Time.iso8601(state.fetch("prepared_at"))
+      rescue ArgumentError
+        raise InvalidState, "#{id}: invalid preparation timestamp"
+      end
+      validate_skill_identity!(id, state)
+      effective = statuses([id], strict_freshness: true).first
+      unless effective.fetch("status") == "PREPARED"
+        raise InvalidState, "#{id}: start blocked: #{effective['status']} #{effective['reason']}"
+      end
+      collisions = effective.fetch("write_collisions", [])
       if expected_collisions && collisions != expected_collisions
         raise InvalidState, "#{id}: write reservations changed during launch; inspect and retry"
       end
@@ -229,12 +253,17 @@ module AgentCodingTool
                                   launch_authorization["conflicts"] != collisions)
         raise InvalidState, "#{id}: invalid launch collision authorization"
       end
-      unless collisions.empty? || allow_write_collision
-        raise InvalidState, write_collision_error(id, collisions)
-      end
-
       started_at = Time.now.utc.iso8601
       state["started_at"] = started_at
+      unless collisions.empty?
+        state["write_overlap"] = {
+          "observed_at" => started_at,
+          "basis" => launch_authorization ? "verified_launch_at_start" : "manual_unverified",
+          "conflicts" => collisions.map { |row| row.merge("repositories" => row.fetch("repositories").dup) },
+          "authorities" => collisions.flat_map { |row| row.fetch("repositories") }.uniq.sort.map { |name|
+            state.fetch("snapshot").fetch(name).slice("remote_url", "branch") }
+        }
+      end
       if allow_write_collision && !collisions.empty?
         state["write_collision_override"] = {
           "allowed_at" => started_at,
@@ -405,6 +434,8 @@ module AgentCodingTool
       { "pending" => { "task" => task, "state" => state, "outcome" => outcome, "snapshot" => snapshot } }
     end
 
+    # Resolves prepared state against batched observed heads, retaining original
+    # candidate provenance. Returns presentation data; malformed references raise.
     def freshness_status(pending, pushed_heads)
       task = pending.fetch("task")
       state = pending.fetch("state")
@@ -414,12 +445,9 @@ module AgentCodingTool
       refresh, stale = changed_repositories(task, snapshot, pushed_heads).partition do |name|
         snapshot.key?(name) && task.fetch("repositories").fetch(name).fetch("access") == "read_only"
       end
-      unless stale.empty?
-        label = outcome == "candidate_complete" ? "STALE_CANDIDATE" : "STALE"
-        return status_hash(label, task, state, "pushed branch changed: #{stale.join(', ')}")
-      end
-
-      label = if outcome == "candidate_complete"
+      label = if !stale.empty?
+                outcome == "candidate_complete" ? "STALE_CANDIDATE" : "STALE"
+              elsif outcome == "candidate_complete"
                 "CANDIDATE"
               elsif state["started_at"]
                 "IN_FLIGHT"
@@ -427,7 +455,61 @@ module AgentCodingTool
                 "PREPARED"
               end
       reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
-      status_hash(label, task, state, reason)
+      reason = "pushed branch changed: #{stale.join(', ')}" unless stale.empty?
+      status = status_hash(label, task, state, reason)
+      if outcome == "candidate_complete"
+        delivery = recorded_candidate_delivery(task.fetch("id"), state)
+        status["candidate_handoff"] = {
+          "task_id" => task.fetch("id"),
+          "attempt" => delivery&.fetch("attempt") || state.dig("write_collision_override", "launch", "attempt") || state.dig("checkpoint", "attempt"),
+          "artifact" => state.dig("result", "artifact"),
+          "checkpoint" => state["checkpoint"],
+          "validation" => state.dig("result", "tests"),
+          "validation_provenance" => delivery ? "recorded host delivery; inspection does not revalidate bytes or logs" : "recorded result; independent host validation unavailable here",
+          "host_delivery" => delivery,
+          "overlaps" => state.dig("write_overlap", "conflicts") || state.dig("write_collision_override", "conflicts"),
+          "changed_paths" => delivery && delivery.fetch("repositories").transform_values { |record| record["paths"] },
+          "source" => task.fetch("repositories").filter_map { |name, spec|
+            next unless spec.fetch("access") == "write"
+            repo = snapshot.fetch(name)
+            { "repository" => name, "prepared_sha" => repo.fetch("pushed_sha"),
+              "observed_sha" => pushed_heads.fetch(repo.values_at("remote_url", "branch")) } },
+          "integration" => "not approved",
+          "reconciliation" => stale.empty? ? "review required" : "source changed; renewed validation required",
+          "next_action" => "review candidate against current main; explicitly reconcile and renew validation if source changed; publication, merge and finish need separate authority"
+        }
+      end
+      status
+    end
+
+    # Returns recorded candidate metadata for one matching host attempt, or nil
+    # when unavailable/ambiguous/malformed. Reads only private records; never hashes
+    # worktrees, probes liveness or turns old validation into integration approval.
+    def recorded_candidate_delivery(id, state)
+      root = "#{File.dirname(File.dirname(@state_store.state_path(id)))}-runs"
+      return unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && File.directory?(root) && File.realpath(root) == root
+      runs = Dir.glob(File.join(root, id, "*", "handoff.json")).filter_map do |path|
+        next unless File.realpath(path) == path
+        report = JSON.parse(File.binread(path))
+        next unless report.values_at("schema_version", "task_id", "prepared_at", "preparation") ==
+          [Launcher::SCHEMA, id, state["prepared_at"], state["snapshot"]]
+        [File.dirname(path), report]
+      end
+      return unless runs.length == 1
+      run_dir, report = runs.first
+      writers = report.fetch("writable_repositories", [report.fetch("writable_repository")])
+      return unless writers.is_a?(Array) && writers.all? { |name| name.is_a?(String) && name.match?(/\A[A-Za-z0-9_-]+\z/) }
+      records = writers.to_h do |name|
+        path = writers.length == 1 ? File.join(run_dir, "delivery.json") : File.join(run_dir, "repositories", name, "delivery.json")
+        return unless File.file?(path) && File.realpath(path) == path
+        record = JSON.parse(File.binread(path))
+        return unless record.values_at("schema", "task_id", "base_sha") ==
+          [DeliveryManager::SCHEMA, id, state.fetch("snapshot").fetch(name).fetch("pushed_sha")]
+        [name, record.slice("branch", "commit_sha", "base_sha", "stage", "paths", "manifest", "commands", "pr")]
+      end
+      { "attempt" => report.fetch("attempt"), "invocation_id" => report.fetch("invocation_id"), "repositories" => records }
+    rescue SystemCallError, JSON::ParserError, KeyError, TypeError, NoMethodError
+      nil
     end
 
     def incomplete_dependencies(task)
@@ -569,14 +651,8 @@ module AgentCodingTool
       end
     end
 
-    def write_collision_error(id, collisions)
-      conflicts = collisions.map { |collision| "#{collision.fetch('task_id')} (#{collision.fetch('status')})" }.join(", ")
-      repositories = collisions.flat_map { |collision| collision.fetch("repositories") }.uniq.sort.join(", ")
-      "#{id}: conflicts with active task#{'s' if collisions.length > 1} #{conflicts}\n" \
-        "shared writable repositories: #{repositories}\n" \
-        "finish or reprepare the conflicting work first, or rerun start with --allow-write-collision"
-    end
-
+    # Builds read-only presentation fields from a lifecycle label/task/state.
+    # Recorded execution evidence is historical; missing liveness remains unknown.
     def status_hash(label, task, state, reason = nil)
       status = {
         "id" => task.fetch("id"),
@@ -586,6 +662,12 @@ module AgentCodingTool
         "state" => state
       }
       result = state["result"]
+      if state["started_at"] || result&.fetch("outcome", nil) == "candidate_complete"
+        status["execution_evidence"] = {
+          "isolation" => state.dig("write_collision_override", "launch") ? "last_verified_at_launch" : "unverified",
+          "liveness" => "unknown"
+        }
+      end
       status["next_action"] = result["next_action"] if result&.key?("next_action")
       if %w[PREPARED IN_FLIGHT CANDIDATE].include?(label) && CheckpointPolicy.required?(task)
         status["checkpoint"] = state.dig("checkpoint", "status") || "missing"

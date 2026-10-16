@@ -49,7 +49,7 @@ class NextTest < Minitest::Test
       output = next_output(dir, coordinator)
 
       assert_equal ["A-BRIDGE", "D-FREE"], section_ids(output, "Next safe parallel starts")
-      assert_equal ["B-LEFT", "C-RIGHT"], section_ids(output, "Waiting for write capacity")
+      assert_equal ["B-LEFT", "C-RIGHT"], section_ids(output, "Additional manual parallel work")
       assert_includes output, "act prepare A-BRIDGE\n    act start A-BRIDGE"
       assert_includes output, "worker: GPT-6 Sol / High"
       assert_includes output, "expected immediate unlocks: 1 tasks / 1 parallel (conditional)"
@@ -86,7 +86,7 @@ class NextTest < Minitest::Test
 
       output = next_output(dir, coordinator)
 
-      assert_equal %w[D-ALIAS F-COLLISION], section_ids(output, "Waiting for write capacity")
+      assert_equal %w[D-ALIAS F-COLLISION], section_ids(output, "Additional manual parallel work")
       assert_equal %w[E-READER C-PREPARED], section_ids(output, "Next safe parallel starts")
       assert_includes output, "C-PREPARED (PREPARED)"
       assert_includes output, "    act start C-PREPARED"
@@ -142,7 +142,7 @@ class NextTest < Minitest::Test
       output = next_output(dir, coordinator_with(dir, inspector))
 
       assert_equal %w[A-MAIN B-RELEASE C-READ], section_ids(output, "Next safe parallel starts")
-      refute_includes output, "Waiting for write capacity"
+      refute_includes output, "Additional manual parallel work"
     end
   end
 
@@ -257,11 +257,15 @@ class NextTest < Minitest::Test
       waits = document.dig("recommendations", "waiting_capacity")
 
       assert_equal section_ids(human, "Next safe parallel starts"), starts.map { |row| row.fetch("id") }
-      assert_equal section_ids(human, "Waiting for write capacity"), waits.map { |row| row.fetch("id") }
+      assert_equal section_ids(human, "Additional manual parallel work"), waits.map { |row| row.fetch("id") }
       assert_equal %w[A-BRIDGE C-FREE], starts.map { |row| row.fetch("id") }
       assert_equal ["act prepare A-BRIDGE", "act start A-BRIDGE"], starts.first.fetch("commands")
       assert_equal({ "model" => "GPT-6 Sol", "thinking" => "High" }, starts.first.fetch("worker_recommendation"))
       assert_equal "SELECTED", waits.first.fetch("conflicts").first.fetch("status")
+      assert_equal "manual_parallel", waits.first.fetch("category")
+      assert_equal "unverified", waits.first.fetch("isolation")
+      assert_equal "unknown", waits.first.fetch("liveness")
+      assert_includes waits.first.fetch("next_action"), "separately isolated development"
       assert_equal remote("x"), starts.first.fetch("authorities").first.fetch("remote_url")
       assert_equal "main", starts.first.fetch("authorities").first.fetch("branch")
       assert_equal 1, starts.first.dig("downstream", "immediate_unlock_count")

@@ -527,7 +527,7 @@ class CoordinatorTest < Minitest::Test
       write_task(dir, id: "T1", repositories: shared.merge(first_only))
       write_task(dir, id: "T2", repositories: shared.merge(second_only))
       names = shared.keys + first_only.keys + second_only.keys
-      inspector = InstrumentedInspector.new(names.to_h { |name| [name, name[0] * 40] })
+      inspector = InstrumentedInspector.new(names.to_h { |name| [name, "a" * 40] })
       coordinator = coordinator_with_inspector(dir, inspector)
       coordinator.prepare("T1")
       coordinator.start("T1")

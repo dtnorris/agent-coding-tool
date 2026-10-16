@@ -35,9 +35,9 @@ checkout only.
   has the same writable authority, but prints a collision warning.
 - Writable pushed-head movement after preparation makes the task stale;
   read-only movement requires refresh/reconciliation.
-- Starting a prepared task explicitly marks it in flight and rejects fresh
-  write/write collisions with in-flight or candidate work unless the operator
-  explicitly overrides; no agent liveness is detected.
+- Starting a prepared task explicitly marks it in flight and warns on fresh
+  write/write overlap with in-flight or candidate work; manual isolation and
+  agent liveness remain unverified.
 - Worker outcomes are recorded explicitly; no prose interpretation is
   attempted.
 - `needs_judgment` and `blocked` are normal outcomes, not failures to be
@@ -132,7 +132,7 @@ but does not reserve one. The compatible start set is selected in priority
 order, not rearranged to maximize the number of workers. READY rows show
 `act prepare TASK` followed by `act start TASK`; fresh PREPARED rows show only
 `act start TASK`. Both lifecycle commands recheck their own gates before a
-prompt can be handed to a worker. The output also separates capacity waits,
+prompt can be handed to a worker. The output also separates additional manual parallel work,
 running lanes, candidates awaiting human review/application, dependency waits,
 and recorded interventions. Expected unlock counts are conditional consequences
 of verified completion, not claims that downstream work is already eligible.
@@ -149,7 +149,9 @@ current IN_FLIGHT/CANDIDATE writable remote URL and branch pairs.
 `candidate_review`, `interventions`, and `waiting_dependencies` arrays.
 Start rows include the same grounded lifecycle commands as the text view,
 optional configured model/thinking advice, and conditional downstream counts.
-Capacity rows identify selected or occupied conflicting authorities. Empty
+The compatibility `waiting_capacity` rows identify selected or occupied
+conflicting authorities as `manual_parallel` possibilities, with an explicit
+isolation action and unknown liveness. Empty
 sections remain empty arrays. Array ordering follows the existing ranked
 planner, including ACT-first READY priority and natural task-ID ties; no
 clock-generated plan ID is introduced.
@@ -254,12 +256,12 @@ Prepared, in-flight, and candidate tasks are compared against current pushed
 heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
 movement preserves the state with a refresh/reconciliation warning.
 Presentation filtering does not alter task state or dependency resolution.
-Fresh `PREPARED` rows also show live reasons when normal `start` is currently
-blocked by a fresh `IN_FLIGHT` or `CANDIDATE` writer with the same authoritative
+Fresh `PREPARED` rows also show observed overlaps with a fresh
+`IN_FLIGHT` or `CANDIDATE` writer with the same authoritative
 repository and branch. These terminal-width-aware diagnostics are recalculated
 on every status query and disappear with the collision; they do not change the
 task's `PREPARED` state. `PREPARED`/`PREPARED` overlap remains advisory, and
-explicit `status TASK` shows every blocker without dashboard truncation.
+explicit `status TASK` shows every overlap without dashboard truncation.
 
 Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` →
 `received` → `CANDIDATE` → `finish` → `COMPLETE`. `received` is shorthand for
@@ -294,21 +296,18 @@ UTC `started_at` without changing the snapshot or prompt. Requires an existing
 task and preparation with no recorded outcome; a second start fails with
 `already in flight`.
 
-By default, start fails closed when another fresh `IN_FLIGHT` or `CANDIDATE`
-task writes the same authoritative repository and branch. `PREPARED` work does
-not block: the first explicitly started task wins. `COMPLETE`, `FAILED`,
-`BLOCKED`, `NEEDS_JUDGMENT`, `STALE`, and `STALE_CANDIDATE` do not block.
-Read/write and read/read overlap remain legal. Repository identity is the
-prepared snapshot's existing `[remote_url, branch]` authority, so different
-logical task repository keys that resolve to the same remote and branch still
-collide.
+Ordinary manual starts warn and proceed when another fresh `IN_FLIGHT` or
+`CANDIDATE` task writes the same prepared `[remote_url, branch]` authority.
+Warnings identify the tasks, states and effective authorities, including aliases.
+The task-local `write_overlap` observation records `manual_unverified`: it proves
+neither isolation nor worker liveness. Use separately isolated development and
+preserve one candidate per task. Read/write and read/read overlap remain legal.
 
-Use `--allow-write-collision` only to intentionally run conflicting write work.
-When it bypasses an actual collision, the runtime state records the override
-time and conflicting tasks/repositories. The flag is per start invocation;
-there is no global disable switch. CLI `start` shares the launch reservation
-lock, so a manual start cannot interleave with launch's final ownership check
-and state reservation; a busy lock gives a retryable error.
+`--allow-write-collision` remains accepted as a legacy manual assertion; it
+adds no verified isolation. Existing historical override records and prompts
+retain their original meaning. Preparation, dependency, lifecycle and freshness
+checks still refuse invalid starts before state changes. CLI `start` shares the
+launch/delivery reservation lock; a busy lock gives a retryable error.
 
 Collision checks are advisory scheduling safety for a human-operated workflow,
 not a process lock or autonomous scheduler. Manual lifecycle commands do not
@@ -451,12 +450,37 @@ transcript; `session_transcript_path` is null because V1 does not discover
 Codex's private rollout path. Missing session metadata is reported as null.
 The optional delivery gate independently verifies freshness, artifact integrity
 and the human-authored validation contract before publication.
-Automatic delivery is deferred while another task with the same writable
-authority is in flight, candidate, or has unresolved execution evidence.
+Automatic delivery, explicit `act deliver TASK`, and recovery use the same
+fail-closed overlap check under the shared reservation lock. Compatible pinned
+ACT-managed workers can retain independent candidates while siblings run or
+await integration. Private task/attempt/invocation, distinct worktrees and
+task-owned branches, sandbox/process evidence and exact trusted validation
+remain required. Unknown manual/browser workers or unresolved execution block
+delivery. An advanced sibling HEAD is accepted only when its exact recorded
+candidate commit, changed-file manifest, scope, contract and logs still verify;
+a distinct branch or disjoint filenames alone do not establish compatibility.
+Each mutation boundary rechecks reservations and source freshness. Existing
+publication guards still apply independently.
 Collision permission does not authorize integration, publication or completion.
 If one integration advances pushed main, the other's preparation becomes
 stale. Its patch/checkpoint remains recovery evidence and requires explicit
-reconciliation and fresh validation against the new head.
+reconciliation and fresh validation against the new head. Deliberately defer
+merging each draft until review against current main; a feature push or draft
+PR is not merge approval. Do not combine unrelated tasks into one PR. A
+multi-repository task keeps one branch/PR per modified repository under its
+existing grouped validation contract. Checkpoint recording still supports one
+writer and does not replace multi-repository delivery validation.
+
+`status TASK` and `next --json` retain the original prepared SHA, observed main
+SHA, artifact, recorded tests and overlaps where available. Missing attempt,
+changed-path, isolation or live-process evidence is unknown, never inferred.
+Candidate inspection is read-only and does not manufacture integration approval.
+`next` prefers uncontended tasks using the existing ranking; additional manual
+parallel work is advisory and requires separately isolated development. The
+JSON `waiting_capacity` key is retained for compatibility with category
+`manual_parallel`. Launch still requires its explicit overlap opt-in and host
+verification. Starts, checkpoints and feature delivery never complete a task;
+publication, merge and finish each require their own operator authority.
 
 Worker exit retains ACT's IN_FLIGHT reservation. `exited` describes process
 termination, including nonzero codes, and never means task completion.

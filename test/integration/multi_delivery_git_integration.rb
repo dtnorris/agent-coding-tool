@@ -79,6 +79,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
       validation = "#{data}-validation"
       [File.join(data, "tasks"), File.join(data, "state"), run, validation].each { |path| FileUtils.mkdir_p(path) }
       File.chmod(0o700, validation)
+      File.chmod(0o700, "#{data}-runs")
       visible = File.join(root, "ACT-Worktrees")
       File.write(File.join(data, "config.yml"), YAML.dump("worktree_root" => visible))
       repositories, snapshot = {}, {}
@@ -163,6 +164,18 @@ class MultiDeliveryGitIntegration < Minitest::Test
       assert_equal result, manager.deliver("TASK", run_dir: run)
       assert_equal 2, provider.pushes.length
       assert_equal "changed beta", git(paths.fetch("beta"), "show", "HEAD:file.txt")
+      report = JSON.parse(File.binread(File.join(run, "handoff.json")))
+      expected_heads = paths.transform_values { |path| git(path, "rev-parse", "HEAD") }
+      assert_equal expected_heads, manager.verified_delivery_heads("TASK", report, run)
+      log = File.join(run, "cross-repository", "validation-0.stdout")
+      original = File.binread(log)
+      begin
+        File.binwrite(log, "altered cross-check")
+        assert_raises(AgentCodingTool::InvalidState) { manager.verified_delivery_heads("TASK", report, run) }
+        assert_equal 2, provider.pushes.length
+      ensure
+        File.binwrite(log, original)
+      end
     end
   end
 

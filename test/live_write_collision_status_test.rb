@@ -162,12 +162,12 @@ class LiveWriteCollisionStatusTest < Minitest::Test
                    "alpha" => { "access" => "write" },
                    "reference" => { "access" => "read_only" }
                  })
-      heads = { "alpha" => "a" * 40, "reference" => "r" * 40 }
+      heads = { "alpha" => "a" * 40, "reference" => "b" * 40 }
       coordinator = coordinator_for(dir, heads)
       coordinator.prepare("A")
       coordinator.prepare("B")
       coordinator.start("A")
-      heads["reference"] = "s" * 40
+      heads["reference"] = "c" * 40
 
       status = coordinator.status("B")
 

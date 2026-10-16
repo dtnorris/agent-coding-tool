@@ -5,7 +5,11 @@ module AgentCodingTool
   # Per-repository records make partial publication recoverable without replaying
   # the coding worker or silently treating one PR as the whole task.
   class MultiDeliveryManager < DeliveryManager
+    # Validates/delivers a grouped host run under the inherited reservation lock.
+    # Returns per-repository PRs; refusals retain truthful partial-stage evidence.
     def deliver_multi_locked(id, run_dir, report)
+      @run_dir = run_dir
+      verify_overlap!(id)
       contract, contract_sha = multi_contract!(id, report.fetch("writable_repositories"))
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       writers = task.fetch("repositories").filter_map { |name, spec| name if spec.fetch("access") == "write" }
@@ -92,6 +96,31 @@ module AgentCodingTool
       { "stage" => "draft_pr", "task_id" => id, "prs" => modified }
     rescue JSON::ParserError, KeyError, TypeError, IndexError => e
       raise InvalidState, "delivery: invalid/partial multi-repository evidence: #{e.class}"
+    end
+
+    # Reads grouped validation for advanced sibling candidates without executing
+    # commands or changing records. Inputs are pinned host evidence/contracts;
+    # returns true, or raises InvalidState for changed/missing cross-check logs.
+    def verify_candidate_cross_checks!(id, report, run_dir, contract, contract_sha)
+      root = File.join(run_dir, "cross-repository")
+      path = File.join(root, "validation.json")
+      raise InvalidState, "delivery: missing/foreign cross-checks" unless File.file?(path) && File.realpath(path) == path
+      evidence = JSON.parse(File.binread(path))
+      inventory = report.fetch("worktrees")
+      signature = inventory.fetch("entries").to_h { |entry|
+        [entry.fetch("name"), entry.values_at("path", "base_sha", "remote_url", "access")] }
+      paths = inventory.fetch("entries").to_h { |entry| [entry.fetch("name"), entry.fetch("path")] }
+      checks = contract.fetch("cross_repository_checks")
+      policy = contract.fetch("repositories").values.first
+      unless evidence.values_at("task_id", "contract_sha256", "worktrees") == [id, contract_sha, signature] &&
+             evidence.fetch("commands").length == checks.length && checks.each_with_index.all? { |check, index|
+               argv = check.fetch("argv").map { |arg|
+                 arg.gsub(/\{worktree:([A-Za-z0-9_-]+)\}/) { paths.fetch(Regexp.last_match(1)) } }
+               valid_command!(evidence.fetch("commands")[index], argv, root, index, policy) }
+        raise InvalidState, "delivery: cross-repository validation changed"
+      end
+      verify_readers!(inventory)
+      true
     end
 
     private
@@ -246,6 +275,8 @@ module AgentCodingTool
       raise InvalidState, "delivery: trusted contract changed" unless multi_contract!(id, records.keys).last == contract_sha
     end
 
+    # Advances one validated repository's idempotent delivery stages, rechecking
+    # authority after external guards. Failures raise with prior evidence retained.
     def publish_repository!(id, name, info, task)
       detail = info.fetch(:detail)
       return if detail["stage"] == "unchanged"
@@ -273,6 +304,7 @@ module AgentCodingTool
       raise InvalidState, "delivery: competing feature ref" if remote && remote != commit
       if detail["stage"] == "committed"
         @guard.verify!(policy.fetch("publication_guard"), base.fetch("remote_url"), :push, commit) unless remote == commit
+        verify_authority!(id, name, base)
         @provider.push(workspace, base.fetch("remote"), branch, commit) unless remote == commit
         raise InvalidState, "delivery: pushed ref not verified" unless @provider.branch(base.fetch("remote_url"), branch) == commit
         detail["stage"] = "pushed"
@@ -284,6 +316,7 @@ module AgentCodingTool
         if prs.empty?
           body = multi_pr_body(task, detail, info)
           @guard.verify!(policy.fetch("publication_guard"), base.fetch("remote_url"), :pr, commit)
+          verify_authority!(id, name, base)
           @provider.create_draft(base.fetch("remote_url"), branch, policy.fetch("base_branch"),
                                  "#{id}: #{task.fetch('title')} (#{name})", body)
           prs = @provider.pull_requests(base.fetch("remote_url"), branch)
@@ -305,6 +338,8 @@ module AgentCodingTool
       JSON.parse(File.binread(path)).fetch("attempt")
     end
 
+    # Updates grouped PR references after rechecking guard and source/overlap
+    # authority. Inputs are validated records/PRs; failed verification raises.
     def link_prs!(id, records, prs)
       urls = prs.values.map { |pr| pr.fetch("url") }.sort
       records.each do |name, info|
@@ -318,6 +353,7 @@ module AgentCodingTool
         if detail["cross_links"] != siblings
           @guard.verify!(info.fetch(:contract).fetch("publication_guard"), base.fetch("remote_url"),
                          :pr, detail.fetch("commit_sha"))
+          verify_authority!(id, name, base)
           @provider.update_body(base.fetch("remote_url"), detail.fetch("pr").fetch("url"), body)
           updated = @provider.pull_requests(base.fetch("remote_url"), detail.fetch("branch"))
           raise InvalidState, "delivery: PR links not verified" unless

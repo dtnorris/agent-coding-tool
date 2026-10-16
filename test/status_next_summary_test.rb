@@ -95,7 +95,7 @@ class StatusNextSummaryTest < Minitest::Test
       refute_match(/^NEXT:/, dashboard)
       assert_match(/^A-CANDIDATE: CANDIDATE \(NEXT\) — Task$/, dashboard)
       assert_match(/^B-WAIT: READY — Task$/, dashboard)
-      assert_includes output_for(dir, coordinator, %w[next]), "Waiting for write capacity:"
+      assert_includes output_for(dir, coordinator, %w[next]), "Additional manual parallel work:"
       refute_includes dashboard, "act finish"
     end
   end

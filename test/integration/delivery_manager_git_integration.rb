@@ -74,6 +74,7 @@ class DeliveryManagerTest < Minitest::Test
       [ordinary, data, File.join(data, "tasks"), File.join(data, "state"),
        "#{data}-validation", run_dir].each { |p| FileUtils.mkdir_p(p) }
       File.chmod(0o700, "#{data}-validation")
+      File.chmod(0o700, "#{data}-runs")
       git(root, "init", "-q", "--bare", remote)
       git(root, "init", "-q", "-b", "main", ordinary)
       git(ordinary, "config", "user.name", "Test")

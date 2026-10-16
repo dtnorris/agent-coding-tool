@@ -6,7 +6,75 @@ require_relative "test_helper"
 class WriteCollisionTest < Minitest::Test
   include TestHelpers
 
-  def test_in_flight_write_collision_blocks_start_without_mutating_prepared_task
+  # Multiple conflict warnings identify only the authorities shared with that task.
+  def test_cli_overlap_warnings_bind_each_conflict_to_its_own_authority
+    with_workspace do |dir|
+      write_task(dir, id: "A", repositories: { "alpha" => { "access" => "write" } })
+      write_task(dir, id: "C", repositories: { "beta" => { "access" => "write" } })
+      write_task(dir, id: "B", repositories: { "alpha" => { "access" => "write" }, "beta" => { "access" => "write" } })
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40, "beta" => "b" * 40)
+      %w[A B C].each { |id| coordinator.prepare(id) }
+      %w[A C].each { |id| coordinator.start(id) }
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, cli.run(%w[start B])
+      alpha = out.string.lines.find { |line| line.include?("overlaps A") }
+      beta = out.string.lines.find { |line| line.include?("overlaps C") }
+      assert_includes alpha, "example/alpha.git [main]"
+      refute_includes alpha, "example/beta.git"
+      assert_includes beta, "example/beta.git [main]"
+      refute_includes beta, "example/alpha.git"
+    end
+  end
+
+  # Ordinary CLI starts warn with effective authority; the legacy flag is optional.
+  def test_ordinary_cli_start_warns_and_records_unverified_overlap
+    with_workspace do |dir|
+      %w[A B].each { |id| write_task(dir, id:) }
+      coordinator = coordinator_for(dir, "alpha" => "a" * 40)
+      %w[A B].each { |id| coordinator.prepare(id) }
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err: StringIO.new)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, cli.run(%w[start A])
+      assert_equal 0, cli.run(%w[start B])
+      assert_includes out.string, "B overlaps A (IN_FLIGHT)"
+      assert_includes out.string, "git@github.com:example/alpha.git [main]"
+      assert_equal "manual_unverified", coordinator.status("B").dig("state", "write_overlap", "basis")
+      refute coordinator.status("B").fetch("state").key?("write_collision_override")
+    end
+  end
+
+  # Dependency, freshness and preparation refusals preserve every task/prompt byte.
+  def test_manual_start_rechecks_dependencies_freshness_and_preparation_without_partial_writes
+    %w[dependency stale malformed missing_prompt timestamp result].each do |scenario|
+      with_workspace do |dir|
+        write_task(dir, id: "DEP")
+        write_task(dir, id: "T", depends_on: ["DEP"])
+        heads = { "alpha" => "a" * 40 }
+        coordinator = coordinator_for(dir, heads)
+        coordinator.record("DEP", outcome: "complete")
+        coordinator.prepare("T")
+        store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+        state = store.load("T")
+        case scenario
+        when "dependency" then coordinator.reset("DEP")
+        when "stale" then heads["alpha"] = "b" * 40
+        when "malformed" then state["snapshot"]["alpha"].delete("pushed_sha"); store.write("T", state)
+        when "missing_prompt" then File.unlink(state.fetch("prompt_path"))
+        when "timestamp" then state["prepared_at"] = "invalid"; store.write("T", state)
+        when "result" then state["result"] = "damaged"; store.write("T", state)
+        end
+        paths = Dir.glob(File.join(dir, "**", "*")).select { |path| File.file?(path) }
+        before = paths.to_h { |path| [path, File.binread(path)] }
+        assert_raises(AgentCodingTool::Error) { coordinator.start("T") }
+        assert_equal before, paths.to_h { |path| [path, File.binread(path)] }, scenario
+      end
+    end
+  end
+
+  def test_manual_overlap_starts_independently_without_mutating_sibling_or_prompt
     with_workspace do |dir|
       write_task(dir, id: "A")
       write_task(dir, id: "B")
@@ -14,17 +82,19 @@ class WriteCollisionTest < Minitest::Test
       coordinator.prepare("A")
       coordinator.prepare("B")
       coordinator.start("A")
-      before = coordinator.status("B").fetch("state")
+      sibling = File.binread(File.join(dir, "state", "A.yml"))
+      prompt_path = coordinator.status("B").dig("state", "prompt_path")
+      prompt = File.binread(prompt_path)
 
-      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("B") }
+      state = coordinator.start("B")
 
-      assert_includes error.message, "A (IN_FLIGHT)"
-      assert_includes error.message, "shared writable repositories: alpha"
-      assert_includes error.message, "--allow-write-collision"
-      assert_equal before, coordinator.status("B").fetch("state")
-      refute coordinator.status("B").fetch("state").key?("started_at")
-      assert_equal "PREPARED", coordinator.status("B").fetch("status")
-      assert_equal "IN_FLIGHT", coordinator.status("A").fetch("status")
+      assert_equal "manual_unverified", state.dig("write_overlap", "basis")
+      assert_equal ["A"], state.dig("write_overlap", "conflicts").map { |row| row.fetch("task_id") }
+      assert_equal [{ "remote_url" => "git@github.com:example/alpha.git", "branch" => "main" }], state.dig("write_overlap", "authorities")
+      refute state.key?("write_collision_override")
+      assert_equal sibling, File.binread(File.join(dir, "state", "A.yml"))
+      assert_equal prompt, File.binread(prompt_path)
+      assert_equal %w[IN_FLIGHT IN_FLIGHT], coordinator.statuses.map { |row| row.fetch("status") }
     end
   end
 
@@ -148,7 +218,7 @@ class WriteCollisionTest < Minitest::Test
     end
   end
 
-  def test_fresh_candidate_blocks_but_stale_candidate_does_not
+  def test_fresh_candidate_warns_and_stale_candidate_remains_recoverable
     with_workspace do |dir|
       write_task(dir, id: "A")
       write_task(dir, id: "B")
@@ -159,8 +229,8 @@ class WriteCollisionTest < Minitest::Test
       coordinator.record("A", outcome: "candidate_complete")
       coordinator.prepare("B")
 
-      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("B") }
-      assert_includes error.message, "A (CANDIDATE)"
+      state = coordinator.start("B")
+      assert_equal "CANDIDATE", state.dig("write_overlap", "conflicts").first.fetch("status")
 
       heads["alpha"] = "b" * 40
       assert_equal "STALE_CANDIDATE", coordinator.status("A").fetch("status")
@@ -206,10 +276,9 @@ class WriteCollisionTest < Minitest::Test
       coordinator.prepare("B")
       coordinator.start("A")
 
-      error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("B") }
-
-      assert_includes error.message, "A (IN_FLIGHT)"
-      assert_includes error.message, "shared writable repositories: alias"
+      state = coordinator.start("B")
+      assert_equal ["alias"], state.dig("write_overlap", "conflicts").first.fetch("repositories")
+      assert_equal [{ "remote_url" => remote, "branch" => "main" }], state.dig("write_overlap", "authorities")
     end
   end
 
@@ -227,7 +296,10 @@ class WriteCollisionTest < Minitest::Test
       cli.instance_variable_set(:@coordinator, coordinator)
 
       assert_equal 0, cli.run(%w[start B --allow-write-collision])
-      assert_equal "Started B: IN_FLIGHT\n", out.string
+      assert_includes out.string, "Started B: IN_FLIGHT\n"
+      assert_includes out.string, "A (IN_FLIGHT)"
+      assert_includes out.string, "git@github.com:example/alpha.git [main]"
+      assert_includes out.string, "isolation and worker liveness unverified"
       assert_empty err.string
       assert coordinator.status("B").fetch("state").key?("write_collision_override")
     end

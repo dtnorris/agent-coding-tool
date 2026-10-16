@@ -4,6 +4,7 @@ require "optparse"
 require "io/console"
 require "time"
 require "json"
+require "shellwords"
 
 module AgentCodingTool
   class CLI
@@ -34,6 +35,8 @@ module AgentCodingTool
     DEPENDENCY_REASON_PREFIX = "dependencies incomplete: "
     READ_ONLY_FRESHNESS_REASON_PREFIX =
       "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: "
+    READY_DISPLAY_LIMIT = 6
+    READY_FAMILY_LIMIT = 3
     BLOCKED_DISPLAY_LIMIT = 3
     DEFAULT_DASHBOARD_WIDTH = 100
     ANSI_RESET = "\e[0m"
@@ -275,12 +278,22 @@ module AgentCodingTool
       end
     end
 
+    # Renders explicit details or a broad dashboard from one effective snapshot.
+    # argv accepts completion flags or one family selector; invalid combinations
+    # raise Error/OptionParser::ParseError before status resolution. Family and
+    # compression filters run after global NEXT selection and never change state.
     def status_command(argv)
       options = { completion_filter: :recent }
       parser = OptionParser.new do |opts|
+        opts.on("--fam FAMILY", "show one task-ID family without READY compression") do |value|
+          raise Error, "status accepts only one --fam selector" if options.key?(:family)
+
+          options[:family] = value
+        end
         opts.on("--all", "show every task, including all completed tasks") { options[:all] = true }
         opts.on("--active", "show no completed tasks") { options[:active] = true }
       end
+      parser.require_exact = true
       parser.parse!(argv)
       if options[:all] && options[:active]
         raise Error, "status --all and --active are mutually exclusive"
@@ -289,7 +302,12 @@ module AgentCodingTool
       options[:completion_filter] = :active if options[:active]
 
       id = argv.shift
-      raise Error, "usage: agent-coding-tool status [TASK] [--all | --active]" unless argv.empty?
+      unless argv.empty? && !(id && options.key?(:family))
+        raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active]"
+      end
+      if options.key?(:family) && !coordinator.tasks.any? { |task| task_family(task.fetch("id")) == options[:family] }
+        raise Error, "unknown task family: #{options[:family]}"
+      end
 
       statuses = if id
                    coordinator.statuses([id])
@@ -299,12 +317,18 @@ module AgentCodingTool
       broad_dashboard = id.nil?
       completion_metrics = {}
       next_id = nil
+      family_summaries = {}
       if broad_dashboard
         completion_metrics = completion_dashboard_metrics(statuses)
         statuses = sort_statuses(statuses, completion_metrics)
         if coordinator.respond_to?(:next_start_set)
           selection = coordinator.next_start_set(statuses, statuses)
           next_id = next_status_id(selection, statuses)
+        end
+        if options.key?(:family)
+          statuses = statuses.select { |item| task_family(item.fetch("id")) == options[:family] }
+        elsif !options[:all]
+          statuses, family_summaries = compress_ready_statuses(statuses, next_id:)
         end
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
@@ -316,6 +340,9 @@ module AgentCodingTool
 
         if broad_dashboard
           display_dashboard_item(item, completion_metrics, next_id:)
+          family = task_family(item.fetch("id"))
+          summary = item.fetch("status") == "READY" ? family_summaries.delete(family) : nil
+          display_family_summary(family, summary) if summary
         else
           status = item.fetch("status")
           @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
@@ -547,18 +574,94 @@ module AgentCodingTool
       authorities.map { |remote, branch| "#{remote} [#{branch}]" }.join(", ")
     end
 
+    # Returns a new bucket-ordered array. Only READY receives ACT preference,
+    # descending unlock/dependency metrics, natural numeric ID ties and finally
+    # full-ID ties. Other lifecycle ordering and input rows are preserved.
     def sort_statuses(statuses, completion_metrics)
       statuses.each_with_index
               .sort_by do |item, index|
                 status = item.fetch("status")
                 depth, count, unlock_count, parallel_width =
                   completion_metrics.fetch(item.fetch("id"), [0, 0, 0, 0])
-                ready_rank = status == "READY" ? [-parallel_width, -unlock_count, -depth, -count] : [0, 0, 0, 0]
+                id = item.fetch("id")
+                ready_rank = if status == "READY"
+                               [task_family(id) == "ACT" ? 0 : 1, -parallel_width, -unlock_count,
+                                -depth, -count, natural_task_id(id), id]
+                             else
+                               [0, 0, 0, 0, 0, [], ""]
+                             end
                 complete_rank = status == "COMPLETE" ? completion_rank(item) : [0, 0]
                 blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
                 [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, index]
               end
               .map(&:first)
+    end
+
+    # Prints one subordinate READY family summary from [total, hidden] counts.
+    # At narrow widths the drill-down command stays intact on its own line;
+    # commands longer than the terminal may overflow, as other detail tokens do.
+    def display_family_summary(family, summary)
+      total, hidden = summary
+      detail = "#{normalize_dashboard_text(family)}: #{total} READY, #{hidden} hidden"
+      command = "act stat --fam=#{Shellwords.escape(family)}"
+      command = "act stat --fam #{Shellwords.escape(family)}" unless family.start_with?("-")
+      if hidden.positive? && display_width("    #{detail} — #{command}") <= dashboard_width
+        @out.puts "    #{detail} — #{command}"
+      else
+        puts_wrapped(detail, first_prefix: "    ", continuation_prefix: "    ")
+        @out.puts "    #{command}" if hidden.positive?
+      end
+    end
+
+    # Returns the first hyphen-delimited ID prefix; no hyphen or an empty
+    # prefix falls back to the whole accepted ID. Grouping grants no authority.
+    def task_family(id)
+      prefix = id.split("-", 2).first
+      prefix.nil? || prefix.empty? ? id : prefix
+    end
+
+    # Returns comparable tagged text/numeric runs; leading zeros compare equally.
+    # The caller uses the full ID to resolve equivalent keys deterministically.
+    def natural_task_id(id)
+      id.scan(/\d+|\D+/).map do |part|
+        part.match?(/\A\d+\z/) ? [1, part.to_i] : [0, part]
+      end
+    end
+
+    # Returns [visible statuses, family => [total READY, hidden READY]]. Input
+    # must already be globally ranked. At most six READY rows are allocated for
+    # up to three families (three per family); four or more get one each.
+    # Operator-approved exception: a hidden READY NEXT replaces the lowest-ranked
+    # displayed member of its own family. Ordering, caps and planner stay intact.
+    # Six or fewer READY rows are returned unchanged, without summaries.
+    def compress_ready_statuses(statuses, next_id:)
+      ready = statuses.select { |item| item.fetch("status") == "READY" }
+      return [statuses, {}] if ready.length <= READY_DISPLAY_LIMIT
+
+      families = ready.group_by { |item| task_family(item.fetch("id")) }
+      selected = families.transform_values { |items| [items.first.fetch("id")] }
+      if families.length <= READY_FAMILY_LIMIT
+        ready.each do |item|
+          break if selected.values.sum(&:length) >= READY_DISPLAY_LIMIT
+
+          members = selected.fetch(task_family(item.fetch("id")))
+          id = item.fetch("id")
+          members << id if members.length < READY_FAMILY_LIMIT && !members.include?(id)
+        end
+      end
+      if ready.any? { |item| item.fetch("id") == next_id }
+        members = selected.fetch(task_family(next_id))
+        unless members.include?(next_id)
+          members.pop
+          members << next_id
+        end
+      end
+      visible_ids = selected.values.flatten.to_h { |id| [id, true] }
+      summaries = families.to_h do |family, items|
+        [family, [items.length, items.length - selected.fetch(family).length]]
+      end
+      visible = statuses.select { |item| item.fetch("status") != "READY" || visible_ids.key?(item.fetch("id")) }
+      [visible, summaries]
     end
 
     def completion_dashboard_metrics(statuses)
@@ -1032,6 +1135,8 @@ module AgentCodingTool
 
         Commands:
           status [TASK] [--all | --active]
+          status --fam FAMILY [--all | --active]
+                              show the complete READY family; global NEXT only
           next [--json]       advise safe parallel work without changing state
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
@@ -1056,6 +1161,17 @@ module AgentCodingTool
           reset TASK
           publish [TASK | --all] [--dry-run]
                               explicitly commit and push ACTD changes
+
+        READY dashboard:
+          ACT family first, then parallel unlock width, unlock count, depth/count,
+          then natural task-ID ties. Advisory only; reservations still apply.
+          Families use the first hyphen prefix; empty/no prefix uses the whole ID.
+          At 7+ READY: 4+ families get one each; 1-3 families get at most six
+          rows, breadth first, at most three per family. A hidden READY NEXT
+          replaces the lowest displayed member of its family; global order holds.
+          Summaries count total/hidden READY. --all, --fam and TASK do not compress.
+          --fam is exact and exclusive with TASK; --all and --active conflict.
+          The recent COMPLETE window is global, before family filtering.
 
         Outcomes:
           candidate_complete  worker result is ready for human application/review

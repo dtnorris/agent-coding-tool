@@ -759,7 +759,7 @@ class CLITest < Minitest::Test
     previous_no_color ? ENV["NO_COLOR"] = previous_no_color : ENV.delete("NO_COLOR")
   end
 
-  def test_status_ranks_ready_tasks_by_downstream_depth_then_distinct_count_then_stable_order
+  def test_status_ranks_ready_tasks_by_downstream_depth_then_distinct_count_then_natural_id
     statuses = [
       { "id" => "R-STABLE-B", "status" => "READY", "title" => "Stable B" },
       { "id" => "B", "status" => "BLOCKED", "title" => "Blocked",
@@ -792,10 +792,10 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status --active])
+    assert_equal 0, cli.run(%w[status --all])
 
     visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
-    assert_equal %w[R-DEEP R-DIAMOND R-LESS R-WIDE R-CYCLE R-STABLE-B R-STABLE-A], visible_ready
+    assert_equal %w[R-DEEP R-DIAMOND R-LESS R-WIDE R-CYCLE R-STABLE-A R-STABLE-B], visible_ready
     assert_includes out.string,
                     "R-DEEP: READY — Deep\n    downstream: 4 levels / 4 tasks; unlocks: 0 tasks / 0 parallel\n"
     assert_includes out.string,

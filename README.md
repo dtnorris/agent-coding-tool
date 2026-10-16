@@ -151,30 +151,79 @@ Start rows include the same grounded lifecycle commands as the text view,
 optional configured model/thinking advice, and conditional downstream counts.
 Capacity rows identify selected or occupied conflicting authorities. Empty
 sections remain empty arrays. Array ordering follows the existing ranked
-planner and stable task-store order; no clock-generated plan ID is introduced.
+planner, including ACT-first READY priority and natural task-ID ties; no
+clock-generated plan ID is introduced.
 The snapshot states which freshness was observed and that prepare/start must
 revalidate. It does not grant authority, launch a worker, or resolve a stale
 candidate or human judgment. Malformed or unavailable pushed-head evidence
 produces no partial JSON, an error on stderr, and a nonzero exit.
 
-`bin/agent-coding-tool status [TASK] [--all | --active]`
+`bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active]`
 
-Shows effective task state. The default dashboard includes every non-blocked
-active task, the three easiest blocked tasks, and the five most recently
+Shows effective task state. The default dashboard includes active work with
+READY compression as described below, the three easiest blocked tasks, and the five most recently
 completed tasks ranked by their recorded completion timestamps. Retained
 timestamped completions display oldest-to-newest, with the newest at the
 bottom. Completed tasks without a usable recorded timestamp remain visible
 before the chronological rows in stable task-store order. `--all` shows every
 task with the same COMPLETE ordering, and `--active` excludes every completed
 task while retaining the three-blocker dashboard limit. The two options are
-mutually exclusive. Explicit `status TASK` lookup always shows the named task.
+mutually exclusive. Explicit `status TASK` lookup always shows the named task
+without compression or a NEXT marker.
+
+`act stat --fam CL` (`bin/agent-coding-tool status --fam CL`) shows all READY
+work in the exact `CL` family without compression, plus that family's ordinary
+status/diagnostics. Families are mechanical presentation groups: the first
+hyphen-delimited task-ID prefix (`CL-AFDP-01A` and `CL-AFW-07A` are `CL`;
+`ACT-STATE-01` is `ACT`). IDs without a hyphen use their whole ID; an empty
+prefix also falls back to the whole ID. Matching is case-sensitive and exact
+(`CL` does not match `CLX`). These groups imply no dependency, ownership or
+execution compatibility. There is no family registry or task schema change.
+Families are known from the full task registry, including families with only
+completed or blocked work. A selector beginning with a hyphen can be passed as
+`--fam=-legacy`. Unknown/missing families, repeated selectors, TASK with
+`--fam`, unsupported options (including `--family`), and `--all --active` fail
+with a nonzero error. `--fam CL --all` includes every CL completion;
+`--fam CL --active` excludes all completions. The default five-recent-COMPLETE
+window is applied globally **before** the family filter, so a completed-only
+family can have an empty default view. The three-BLOCKED limit is applied
+**after** the family filter; `--all` removes that limit.
+
+Broad default and `--active` views show every READY task up to six. At seven
+or more READY tasks, every READY family receives its highest-ranked member
+first. With four or more families, exactly one representative is shown per
+family, even if that is fewer or more than six rows. With one to three
+families, remaining positions are filled from global READY rank up to six
+rows total, never exceeding three per family. Capacity stays unused if these
+caps prevent filling it. Selected rows retain global rank order. `--all`,
+`--fam` and explicit task lookup remain uncompressed.
+
+The one global NEXT is chosen from the complete ranked plan **before** display
+filtering, with existing actionable/candidate/capacity/intervention fallbacks
+and cross-family reservations intact. Operator-approved exception to
+highest-ranked family representation: if compression would hide the globally
+recommended READY task, it replaces the lowest-ranked displayed task in its
+own family. Family coverage, allocation caps and global ranking are preserved;
+reservation checks are never bypassed. Family drill-down marks NEXT only when
+that same global task is present, never a family-local substitute. Each family
+in a compressed view has one subordinate summary such as
+`CL: 8 READY, 7 hidden — act stat --fam CL`; zero-hidden counts are shown too.
+Counts include only the full READY set, before compression. Narrow output
+wraps summaries while keeping each drill-down command intact; a command wider
+than the terminal can overflow just like other unbreakable detail tokens.
 
 Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`,
 `NEEDS_JUDGMENT`, `IN_FLIGHT`, `READY`, then other active or exceptional
-states, with `BLOCKED` last. READY tasks are ranked by immediate
-collision-aware parallel unlock width, immediate unlock count, longest
-downstream dependency path, then
-distinct downstream task count. READY and fresh CANDIDATE rows show downstream
+states, with `BLOCKED` last. Within READY only, ACT-family work ranks ahead
+of all other families. Each tier retains descending immediate collision-aware
+parallel unlock width, immediate unlock count, longest downstream dependency
+path, then distinct downstream task count. Genuine ties use natural task-ID
+ordering (numeric runs compare numerically: ACT-02 before ACT-10,
+CL-AFDP-01A before CL-AFDP-02), then the full ID for equivalent natural keys
+(such as leading zeros). Other lifecycle ordering is unchanged. Priority does
+not promote blocked/stale/failed work to READY, grant execution authority or
+bypass freshness, dependencies or write reservations. A READY task waiting for
+capacity stays READY. READY and fresh CANDIDATE rows show downstream
 depth/count and `unlocks: N tasks / M parallel`: `N` is the number of
 dependency-blocked tasks that would become READY if the row's task completed,
 while `M` is the exact maximum subset that could start together without

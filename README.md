@@ -1074,11 +1074,30 @@ reader, ordinary checkout, private evidence, shared Git administration and a
 known active external workspace. It launches no model or implementation worker
 and contacts no inference service. Unsupported hosts fail rather than skip.
 
-Run `rake` for the full test suite. Tests use explicit temporary data
-directories and do not depend on personal task data. The publisher tests in
-the normal suite use a deterministic Git runner fake, so they do not launch
-Git subprocesses. Run the slower disposable-repository smoke tests explicitly
-when changing Git staging, delivery, checkpoint or retry behavior:
+The test commands have distinct contracts during the test-suite migration:
+
+| Command | Required behavior |
+| --- | --- |
+| `bundle exec rake` | Configured ACTD YAML validation, then the existing default tests. |
+| `bundle exec rake test` | Unchanged `test/**/*_test.rb` selection, without ACTD YAML validation. |
+| `bundle exec rake test:git_contract` | Separately discovered Git contracts and their required-case inventory; fails closed until TST-15 supplies them. |
+| `bundle exec rake test:integration` | All five offline native Git suites listed below, each in a separate Ruby process. |
+| `bundle exec rake test:all` | Git contracts, native integrations, then the same default selection with required-case and result verification. |
+
+The default commands retain their existing behavior until a later coordinated,
+reviewed change. They do not establish aggregate or host operational acceptance.
+The aggregate uses real Rake prerequisites: a failed prerequisite stops the task,
+and each prerequisite runs once per invocation. It currently fails when Git
+contracts are absent. Tests use explicit temporary data directories and do not
+depend on personal task data. The publisher tests in the default suite use a
+deterministic Git runner fake. Run the offline native gate when changing Git
+staging, delivery, checkpoint or retry behavior:
+
+```sh
+bundle exec rake test:integration
+```
+
+The five retained suites can also be run individually for diagnosis:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
@@ -1092,6 +1111,42 @@ The retry integration exercises cold public CLI handoffs, native Git ownership,
 preservation, negative recovery and historical fixed-path classification. Its
 fake worker/sandbox/host-tool boundaries do not establish macOS host acceptance.
 The deterministic retry-liveness matrix runs in the normal suite.
+
+`test/required_cases.json` freezes the default and native file/case obligations
+inspected at ACT `198aaee6f70d953a3858dfaf61c7a377567e66d2`, plus the new
+entry-point regression cases. It is an acceptance inventory, not generated
+discovery output. The verified tasks reject a missing or unexpected suite file,
+an empty inventory, omitted required case, duplicate execution, failed process,
+missing/malformed summary or case evidence, inconsistent counts, zero assertions,
+and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
+the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
+replayed unchanged; a child's nonzero exit status is preserved (signals map to
+128 plus signal number). Evidence records completed `Class#test_method` identities
+and assertion counts independently of the human-readable summary. The default
+selection runs together; native and Git-contract files run separately to avoid
+Minitest class collisions. Existing fixture deadlines remain authoritative;
+there is no total integration runtime ceiling.
+
+For the TST-15 handoff, put genuine contract suites in
+`test/git_contract/**/*_contract.rb` and supply
+`test/git_contract/required_cases.json` as a nonempty JSON object mapping each
+root-relative filename to a nonempty array of required `Class#test_method`
+identities. This naming keeps contracts outside the unchanged default glob.
+Every discovered contract file must be inventoried. No passing placeholder
+contract establishes acceptance. TST-16 reconciles the fixed native identities
+with its coverage inventory; TST-17/18/19 consume these entry points and must
+preserve named coverage when moving behavior. TST-20 owns final coordinated
+Rakefile and inventory reconciliation after operator-accepted integration.
+An inventory change needs review against original behavior obligations; do not
+regenerate it from reduced discovery to make an omission pass.
+
+The offline gate does not invoke `manual_parallel_native_sandbox.rb`. Its
+separately authorized real-macOS/installed-Codex qualification above remains
+required for host operational acceptance. Unavailable qualification means
+BLOCKED host acceptance, even if offline gates pass.
+`terminal_attempt_reproduction.rb` remains historical characterization, not a
+required green gate. Restricted-environment failures must be reported separately
+from product failures and do not establish qualified-host success.
 
 V1 intentionally has no database, daemon, web UI, agent API, autonomous
 planner, or agent-to-agent messaging. Add those only when

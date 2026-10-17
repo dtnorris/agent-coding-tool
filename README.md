@@ -664,9 +664,9 @@ exemptions and read-only work do not introduce a separate task classification.
 Task-specific requirements, safety constraints, Git restrictions and acceptance
 criteria take precedence. Existing task YAML needs no changes.
 
-ACT reads the Git blob at commit `f902abd63ed09ac4419106366c19bf577fc3cf08`
+ACT reads the Git blob at commit `e4e92e678b567ceaabe9c9d9c94215f6729099ba`
 from the `agent-skills` checkout beside the ACT source checkout. Its SHA-256 is
-`83561709382c0196faacd287aeb1b1c798a687e40457bf513d996ddba9cb1ce8`.
+`5337876cc23dfc7961d21fba3ed01dab50adef98991e02e244b3512f19198982`.
 The prompt records both values. The checkout must contain that commit and blob;
 its current branch and working-file contents do not affect rendering. ACT
 does not fetch, use replacement objects, or fall back to a moving branch.

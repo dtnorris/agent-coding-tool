@@ -9,8 +9,8 @@ module AgentCodingTool
   class PromptRenderer
     SKILL_PATH = "skills/karpathy-manning-dtnorris-guidelines/SKILL.md"
     SKILL_IDENTITY = {
-      "revision" => "f902abd63ed09ac4419106366c19bf577fc3cf08",
-      "sha256" => "83561709382c0196faacd287aeb1b1c798a687e40457bf513d996ddba9cb1ce8"
+      "revision" => "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
+      "sha256" => "5337876cc23dfc7961d21fba3ed01dab50adef98991e02e244b3512f19198982"
     }.freeze
     PLANNING_SKILL_PATH = "skills/agentic-task-planning/SKILL.md"
     PLANNING_SKILL_IDENTITY = {

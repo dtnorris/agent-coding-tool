@@ -1,0 +1,12 @@
+{
+  "test/git_contract/native_contract.rb": [
+    "NativeGitContract#test_authoritative_refs_snapshot_and_dirty_state",
+    "NativeGitContract#test_commit_contents_modes_and_ref_movement",
+    "NativeGitContract#test_concurrent_remote_requests",
+    "NativeGitContract#test_failures_and_exceptions",
+    "NativeGitContract#test_linked_worktree_ownership",
+    "NativeGitContract#test_native_process_observer",
+    "NativeGitContract#test_nul_status_parser_and_refusal",
+    "NativeGitContract#test_strict_replay"
+  ]
+}

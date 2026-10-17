@@ -3,6 +3,7 @@
 require "rake/testtask"
 require "yaml"
 require_relative "lib/agent_coding_tool"
+require_relative "test/suite_runner"
 
 Rake::TestTask.new do |task|
   task.libs << "lib"
@@ -11,14 +12,22 @@ Rake::TestTask.new do |task|
 end
 
 namespace :test do
-  desc "Empty Git contract suite entry point; performs no verification"
-  task :git_contract
+  desc "Run required Git contracts; fail when their inventory or evidence is missing"
+  task :git_contract do
+    TestSuiteRunner.run(:git_contract, root: __dir__)
+  end
 
-  desc "Empty integration suite entry point; runs no tests"
-  task :integration
+  desc "Run all five required offline native Git suites in separate Ruby processes"
+  task :integration do
+    TestSuiteRunner.run(:integration, root: __dir__)
+  end
 
-  desc "Empty aggregate suite entry point; does not establish acceptance"
-  task :all
+  task :verified_default do
+    TestSuiteRunner.run(:default, root: __dir__)
+  end
+
+  desc "Require Git contracts, native integrations and verified default test coverage"
+  task all: [:git_contract, :integration, :verified_default]
 end
 
 namespace :actd do

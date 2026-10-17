@@ -2,11 +2,15 @@
 
 require_relative "test_helper"
 require_relative "launcher_support"
+require_relative "recovery_observations"
 require "stringio"
 
+# Native pre-worker abandonment, with real evidence, ownership and removal;
+# strict empty observations verify lifecycle refusals precede external commands.
 class PreflightRecoveryTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
+  include RecoveryObservations
 
   def git(*args, chdir:)
     stdout, stderr, status = Open3.capture3("git", *args, chdir: chdir)
@@ -55,6 +59,8 @@ class PreflightRecoveryTest < Minitest::Test
     end
   end
 
+  # Interrupts after the first owned removal, checks retained evidence and the
+  # remaining native resource, then requires a successful production resume.
   def test_recovery_resumes_after_one_native_removal_without_erasing_evidence
     fixture(git: true) do
       reader = File.join(@root, "reader")
@@ -66,12 +72,21 @@ class PreflightRecoveryTest < Minitest::Test
       task.fetch("repositories")["reader"] = { "access" => "read_only", "path" => reader }
       File.write(task_path, YAML.dump(task))
       report = failed_attempt
+      report_path = Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0)
+      original_report = File.binread(report_path)
+      original_state = @store.load("T")
       count = 0
       interrupted = recovery(after_removal: ->(*) { count += 1; raise "interrupted" if count == 1 })
       assert_raises(RuntimeError) { interrupted.abandon("T") }
-      assert_equal "preflight_failed", JSON.parse(File.binread(Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0))).fetch("status")
+      assert_equal original_report, File.binread(report_path)
+      assert_equal original_state, @store.load("T")
+      inventory = JSON.parse(File.binread(report.fetch("worktrees_path")))
+      assert_equal %w[removed ready], inventory.fetch("entries").map { |entry| entry.fetch("state") }
+      refute File.exist?(inventory.fetch("entries").first.fetch("path"))
+      assert File.directory?(inventory.fetch("entries").last.fetch("path"))
       assert recovery.abandon("T").fetch("abandoned")
       refute File.exist?(report.fetch("workspace"))
+      assert_equal ["removed"], JSON.parse(File.binread(report.fetch("worktrees_path"))).fetch("entries").map { |entry| entry.fetch("state") }.uniq
     end
   end
 
@@ -86,6 +101,8 @@ class PreflightRecoveryTest < Minitest::Test
     end
   end
 
+  # Reuses one native failed attempt across independent refusal controls. Each
+  # reversible mutation is restored before the next control; foreign bytes stay.
   def test_dirty_foreign_changed_active_and_worker_started_attempts_refuse_removal
     fixture(git: true) do
       report = failed_attempt
@@ -98,22 +115,37 @@ class PreflightRecoveryTest < Minitest::Test
         AgentCodingTool::PreflightRecovery.new(data_root: @data, liveness: ->(*) { false }).abandon("T")
       end
       assert File.directory?(path)
+      foreign = File.join(@root, "worktrees", "T", "foreign")
+      FileUtils.mkdir_p(foreign)
+      File.binwrite(File.join(foreign, "keep"), "operator\x00\xff".b)
+      assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
+      assert File.directory?(report.fetch("workspace"))
+      assert_equal "operator\x00\xff".b, File.binread(File.join(foreign, "keep"))
+      File.unlink(File.join(foreign, "keep"))
+      Dir.rmdir(foreign)
+
+      report_path = Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0)
+      original_report = File.binread(report_path)
+      original_inventory = File.binread(report.fetch("worktrees_path"))
+      original_state = @store.load("T")
+      begin
+        File.write(report_path, JSON.pretty_generate(report.merge("child_pid" => 12345)))
+        changed_report = File.binread(report_path)
+        with_recovery_observations([]) do
+          error = assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
+          assert_includes error.message, "pre-worker identity or lifecycle is unverified"
+        end
+        assert_equal changed_report, File.binread(report_path)
+        assert_equal original_inventory, File.binread(report.fetch("worktrees_path"))
+        assert_equal original_state, @store.load("T")
+        assert File.directory?(path)
+      ensure
+        File.binwrite(report_path, original_report)
+      end
+      refute recovery.preflight("T").fetch("abandoned")
       git("commit", "--allow-empty", "-m", "changed", chdir: path)
       assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
-    end
-    fixture(git: true) do
-      report = failed_attempt
-      FileUtils.mkdir_p(File.join(@root, "worktrees", "T", "foreign"))
-      assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
-      assert File.directory?(report.fetch("workspace"))
-    end
-    fixture(git: true) do
-      report = failed_attempt
-      path = Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0)
-      report["child_pid"] = 12345
-      File.write(path, JSON.pretty_generate(report))
-      assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
-      assert File.directory?(report.fetch("workspace"))
+      assert_equal original_inventory, File.binread(report.fetch("worktrees_path"))
     end
   end
 end

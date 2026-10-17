@@ -223,48 +223,59 @@ class ParallelDeliveryTest < Minitest::Test
     end
   end
 
-  # Unknown process/boundary/attempt evidence refuses before any publication.
+  # Returns bytes at the supplied fixture state/source paths for refusal checks.
+  # Missing evidence raises rather than treating a lost candidate as unchanged.
+  def candidate_bytes(paths)
+    paths.to_h { |path| [path, File.binread(path)] }
+  end
+
+  # Reuses one native ownership pair for reversible refusals, then a reservation
+  # race during trusted validation. Each refusal must preserve both candidates.
   def test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate
     delivery_fixture do
       provider, guard = independent_runs
       manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)
-      report, sibling_dir = run_for("T")
+      _, sibling_dir = run_for("T")
       path = File.join(sibling_dir, "handoff.json")
-      original = File.binread(path)
+      original_handoff = File.binread(path)
       _, run_dir = run_for("B")
+      candidate_paths = %w[T B].flat_map do |id|
+        report, = run_for(id)
+        [@store.state_path(id), *%w[file.txt worker-change.txt].map { |name| File.join(report.fetch("workspace"), name) }]
+      end
+      candidates = candidate_bytes(candidate_paths)
       mutations = [
-        ->(row) { row["status"] = "judgment_required" },
-        ->(row) { row.delete("sandbox_probe") },
-        ->(row) { row["attempt"] = 2 },
-        ->(row) { row["workspace"] = @ordinary },
-        ->(row) { row["launch_heads"].values.first["pushed_sha"] = "f" * 40 }
+        [/judgment_required execution evidence/, ->(row) { row["status"] = "judgment_required" }],
+        [/sandbox verification is unavailable/, ->(row) { row.delete("sandbox_probe") }],
+        [/worktree ownership differs/, ->(row) { row["attempt"] = 2 }],
+        [/launch roots or pinned heads are unverified/, ->(row) { row["workspace"] = @ordinary }],
+        [/launch roots or pinned heads are unverified/, ->(row) { row["launch_heads"].values.first["pushed_sha"] = "f" * 40 }],
+        [/sibling invocation changed/, ->(row) { row["invocation_id"] = "forged-invocation" }]
       ]
-      mutations.each do |mutation|
-        altered = JSON.parse(original)
+      mutations.each do |message, mutation|
+        altered = JSON.parse(original_handoff)
         mutation.call(altered)
         File.binwrite(path, JSON.generate(altered))
-        assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+        assert_match message, error.message
         assert_empty provider.pushes
-        assert File.file?(File.join(report.fetch("workspace"), "worker-change.txt"))
+        assert_equal candidates, candidate_bytes(candidate_paths)
       ensure
-        File.binwrite(path, original)
+        File.binwrite(path, original_handoff)
       end
       @terminal_liveness.unknown = true
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+      assert_match(/terminal worker liveness is uncertain/, error.message)
       assert_empty provider.pushes
-    end
-  end
+      assert_equal candidates, candidate_bytes(candidate_paths)
+      @terminal_liveness.unknown = false
 
-  # A reservation changed by an external writer during validation is rechecked.
-  def test_reservation_race_and_held_lock_refuse_before_publication
-    delivery_fixture do
-      provider, guard = independent_runs
-      manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)
-      _, run_dir = run_for("B")
       File.open(File.join("#{@data}-runs", "launch.lock"), File::RDWR) do |lock|
         assert lock.flock(File::LOCK_EX | File::LOCK_NB)
-        assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+        assert_match(/another launch holds the reservation lock/, error.message)
       end
+      assert_equal candidates, candidate_bytes(candidate_paths)
       write_task(@data, id: "EXTERNAL", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       @coordinator.prepare("EXTERNAL")
       original = manager.method(:run_command!)
@@ -274,8 +285,12 @@ class ParallelDeliveryTest < Minitest::Test
         coordinator.start("EXTERNAL")
         result
       end
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+      assert_match(/manual worker isolation and activity are unverified/, error.message)
       assert_empty provider.pushes
+      assert_empty provider.refs
+      assert_empty provider.prs
+      assert_equal candidates, candidate_bytes(candidate_paths)
       assert_equal "IN_FLIGHT", @coordinator.status("B").fetch("status")
       assert File.file?(File.join(run_dir, "validation-0.stdout"))
     end

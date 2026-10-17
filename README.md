@@ -100,6 +100,27 @@ for substantive coding work, including edit scripts. An explicit exception is
 missing or empty reasons and unknown modes. Existing task files parse unchanged;
 previously prepared prompt files remain snapshots and do not gain these instructions.
 
+## Outcome-first task registration
+
+ACT coordinates engineering tasks, but completing tasks is not the objective. The objective is delivering integrated, verified, operator-useful outcomes.
+
+Before registering or splitting substantial work:
+
+1. **Original outcome:** Identify the operator-visible result and existing acceptance requirements.
+2. **Established evidence:** Determine what already works and what remains unproved.
+3. **Next gate:** Identify the smallest falsifiable step toward completion, including pass/fail and stop conditions.
+4. **Necessary work:** Register only changes genuinely required for safe execution, trustworthy verification, or original acceptance.
+
+Add `depends_on` edges only for demonstrated prerequisites. Do not make incidental cleanup, tooling improvements, speculative hardening, or unrelated defects mandatory dependencies.
+
+When work encounters a blocker, distinguish product defects from fixture, environment, instrumentation, integration, and task-management problems. Prefer bounded repairs and existing recovery mechanisms. Preserve original acceptance requirements and report out-of-scope work separately.
+
+Use `planning_guidance: required` for ACT-generated substantial planning and registration assignments so they receive the complete canonical planning skill. Ordinary implementation tasks retain the standard coding guidance.
+
+ACT's `next` and status rankings describe technical readiness and dependency consequences. They are advisory, not a measure of which outcome matters most. The operator determines outcome priority.
+
+Preserve all safety, Git authority, provenance, testing, recovery, and cost controls. Never weaken verification or silently expand task authority to accelerate completion. Stop expanding work once the original outcome is verified.
+
 ## Typical workflow
 
 1. Create a task YAML file in the external data directory.

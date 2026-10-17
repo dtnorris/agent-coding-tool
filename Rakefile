@@ -10,6 +10,17 @@ Rake::TestTask.new do |task|
   task.pattern = "test/**/*_test.rb"
 end
 
+namespace :test do
+  desc "Empty Git contract suite entry point; performs no verification"
+  task :git_contract
+
+  desc "Empty integration suite entry point; runs no tests"
+  task :integration
+
+  desc "Empty aggregate suite entry point; does not establish acceptance"
+  task :all
+end
+
 namespace :actd do
   desc "Validate YAML syntax in the configured agent-coding-tool-data directory"
   task :validate_yaml do

@@ -183,6 +183,72 @@ class RakefileTest < Minitest::Test
     end
   end
 
+  # Explicit file and case registration is necessary and sufficient for a new
+  # native launcher fixture; unregistered files/cases fail before gate success.
+  def test_new_native_launcher_requires_explicit_file_and_case_registration
+    with_suite_fixture do |root, native|
+      path = "test/integration/launcher_git_integration.rb"
+      cases = ["LauncherGitIntegration#test_launcher"]
+      write_suite(root, path, cases)
+      stdout, stderr, status = run_fixture_rake(root, "test:integration")
+      assert_equal 1, status.exitstatus
+      assert_includes stderr, "discovered files differ"
+      refute_includes stdout, "pid="
+
+      inventory = JSON.parse(File.read(File.join(root, "test/required_cases.json")))
+      inventory.fetch("integration")[path] = cases
+      write_file(root, "test/required_cases.json", JSON.generate(inventory))
+      write_suite(root, path, cases + ["LauncherGitIntegration#test_unregistered"])
+      _stdout, stderr, status = run_fixture_rake(root, "test:integration")
+      assert_equal 1, status.exitstatus
+      assert_includes stderr, "unregistered case"
+
+      write_suite(root, path, cases)
+      stdout, stderr, status = run_fixture_rake(root, "test:integration")
+      assert_predicate status, :success?, stderr
+      (native.keys + [path]).each { |name| assert_equal 1, stdout.scan("#{name} pid=").length }
+      assert_equal 6, stdout.scan(/pid=(\d+)/).flatten.uniq.length
+    end
+  end
+
+  # Moving an original default identity requires its exact registration at the
+  # native destination; missing file, case or reporter evidence prevents success.
+  def test_original_default_case_requires_registered_native_replacement_evidence
+    with_suite_fixture do |root, _native|
+      original_case = "LauncherTest#test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout"
+      path = "test/integration/launcher_git_integration.rb"
+      replacement_case = "LauncherGitIntegration#test_launcher"
+      inventory = JSON.parse(File.read(File.join(root, "test/required_cases.json")))
+      inventory.fetch("default")["test/example_test.rb"] << original_case
+      write_file(root, "test/required_cases.json", JSON.generate(inventory))
+      _stdout, stderr, status = run_fixture_rake(root, "test:verified_default")
+      assert_equal 1, status.exitstatus
+      assert_includes stderr, "missing required case"
+
+      inventory.fetch("default")["test/example_test.rb"].delete(original_case)
+      inventory.fetch("integration")[path] = [original_case, replacement_case]
+      write_file(root, "test/required_cases.json", JSON.generate(inventory))
+      _stdout, stderr, status = run_fixture_rake(root, "test:verified_default", "test:integration")
+      assert_equal 1, status.exitstatus
+      assert_includes stderr, "discovered files differ"
+
+      write_suite(root, path, [replacement_case])
+      _stdout, stderr, status = run_fixture_rake(root, "test:integration")
+      assert_equal 1, status.exitstatus
+      assert_includes stderr, "missing required case"
+
+      write_suite(root, path, [original_case, replacement_case])
+      original = File.binread(File.join(root, path))
+      File.write(File.join(root, path), original + "\nMinitest.after_run { File.unlink(ENV.fetch('ACT_SUITE_EVIDENCE')) }\n")
+      _stdout, _stderr, status = run_fixture_rake(root, "test:integration")
+      refute_predicate status, :success?
+      File.binwrite(File.join(root, path), original)
+      stdout, stderr, status = run_fixture_rake(root, "test:verified_default", "test:integration")
+      assert_predicate status, :success?, stderr
+      assert_includes stdout, "#{path} pid="
+    end
+  end
+
   # Absent B evidence fails both public entries before any aggregate success.
   def test_missing_git_contracts_fail_closed
     with_suite_fixture do |root, _inventory|
@@ -202,17 +268,22 @@ class RakefileTest < Minitest::Test
   # per-case evidence fail real invocation; exact restored bytes pass afterward.
   def test_native_gate_rejects_missing_coverage_and_invalid_results
     with_suite_fixture do |root, inventory|
+      inventory.each do |relative_path, cases|
+        path = File.join(root, relative_path)
+        original = File.binread(path)
+        File.unlink(path)
+        _stdout, stderr, status = run_fixture_rake(root, "test:integration")
+        assert_equal 1, status.exitstatus, relative_path
+        assert_includes stderr, "discovered files differ"
+        write_suite(root, relative_path, cases.drop(1))
+        _stdout, stderr, status = run_fixture_rake(root, "test:integration")
+        assert_equal 1, status.exitstatus, relative_path
+        assert_includes stderr, "missing required case"
+        File.binwrite(path, original)
+      end
       relative_path, cases = inventory.first
       path = File.join(root, relative_path)
       original = File.binread(path)
-      File.unlink(path)
-      _stdout, stderr, status = run_fixture_rake(root, "test:integration")
-      assert_equal 1, status.exitstatus
-      assert_includes stderr, "discovered files differ"
-      write_suite(root, relative_path, cases.drop(1))
-      _stdout, stderr, status = run_fixture_rake(root, "test:integration")
-      assert_equal 1, status.exitstatus
-      assert_includes stderr, "missing required case"
       mutations = {
         "failing case" => original.sub("assert true", "flunk 'injected failure'"),
         "skip" => original.sub("assert true", "skip 'unapproved'"),
@@ -221,6 +292,7 @@ class RakefileTest < Minitest::Test
         "malformed summary" => original + "\nmodule Minitest; class SummaryReporter; def summary; 'malformed summary'; end; end; end\n",
         "missing evidence" => original + "\nMinitest.after_run { File.unlink(ENV.fetch('ACT_SUITE_EVIDENCE')) }\n",
         "malformed evidence" => original + "\nMinitest.after_run { File.write(ENV.fetch('ACT_SUITE_EVIDENCE'), '{') }\n",
+        "duplicate evidence" => original + "\nMinitest.after_run { path = ENV.fetch('ACT_SUITE_EVIDENCE'); rows = JSON.parse(File.read(path)); File.write(path, JSON.generate(rows + rows)) }\n",
         "inconsistent summary" => original + "\nmodule Minitest; class SummaryReporter; def summary; '99 runs, 99 assertions, 0 failures, 0 errors, 0 skips'; end; end; end\n"
       }
       mutations.each do |label, source|

@@ -28,11 +28,12 @@ class ManualParallelLaunchTest < Minitest::Test
 
   # Starts A manually, preserving staged/unstaged, binary, untracked and ignored
   # work in its legitimate external worktree. Optional main movement ages only A.
-  # Native Git errors fail setup; no managed A execution evidence is manufactured.
+  # Only source movement needs an earlier T preparation to refresh. Native Git
+  # errors fail setup; no managed A execution evidence is manufactured.
   def manual_pair(advance: false, checkpoint: false)
     write_task(@data, id: "A", repositories: { "alias" => { "access" => "write", "path" => @ordinary } })
     cli!("prepare", "A")
-    cli!("prepare", "T")
+    cli!("prepare", "T") if advance
     cli!("start", "A")
     @external = File.join(@root, "external-A")
     setup_git("worktree", "add", "-b", "external-A", @external, @base, chdir: @ordinary)
@@ -151,49 +152,82 @@ class ManualParallelLaunchTest < Minitest::Test
     end
   end
 
-  # Each invalid new-task gate and each kind of unresolved managed evidence
-  # refuses before a worker, without rewriting the older candidate or artifacts.
+  # Reversible pre-creation refusals share one manual candidate. Staleness runs
+  # last because it advances native refs; creation failures keep separate roots
+  # and retained failed-attempt evidence. Every launch remains a cold public CLI.
   def test_refusal_matrix_preserves_manual_candidate
-    %w[stale prompt dependency occupied symlink branch partial malformed missing contradictory managed_state].each do |scenario|
+    groups = [
+      %w[prompt dependency partial malformed missing contradictory managed_state stale],
+      %w[occupied], %w[symlink], %w[branch]
+    ]
+    reasons = {
+      "stale" => /launch blocked: STALE/, "prompt" => /generated prompt changed/,
+      "dependency" => /BLOCKED dependencies incomplete: DEP/,
+      "occupied" => /occupied attempt container/, "symlink" => /symlinked ancestor/,
+      "branch" => /conflicting branch/, "partial" => /partial\/foreign run artifacts/,
+      "malformed" => /partial evidence/, "missing" => /foreign or partial task\/attempt evidence/,
+      "contradictory" => /no unique ACT-owned worker evidence/,
+      "managed_state" => /no unique ACT-owned worker evidence/
+    }
+    groups.each do |scenarios|
       fixture(git: true, process: true, mutable_remote: true) do
         manual_pair
-        case scenario
-        when "stale"
-          File.write(File.join(@ordinary, "file.txt"), "moved\n")
-          setup_git("commit", "-am", "move", chdir: @ordinary)
-          setup_git("push", "origin", "main", chdir: @ordinary)
-        when "prompt"
-          File.write(@store.load("T").fetch("prompt_path"), "changed")
-        when "dependency"
-          write_task(@data, id: "DEP")
-          write_task(@data, id: "T", depends_on: ["DEP"], repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
-        when "occupied", "symlink"
-          path = File.join(@root, "worktrees/T/attempt-1")
-          FileUtils.mkdir_p(File.dirname(path))
-          scenario == "symlink" ? File.symlink(@external, path) : FileUtils.mkdir_p(path)
-        when "branch"
-          setup_git("branch", "act/T/attempt-1", @base, chdir: @ordinary)
-        when "partial", "malformed", "missing", "contradictory"
-          directory = "#{@data}-runs/A/partial"
-          FileUtils.mkdir_p(directory, mode: 0o700)
-          unless scenario == "partial"
+        paths = [File.join(@data, "tasks/T.yml"), @store.state_path("A"),
+                 @store.state_path("T"), @store.load("T").fetch("prompt_path")]
+        originals = paths.to_h { |path| [path, File.binread(path)] }
+        preserved = older_bytes
+        scenarios.each do |scenario|
+          assert_equal originals, paths.to_h { |path| [path, File.binread(path)] }, scenario
+          case scenario
+          when "stale"
+            File.write(File.join(@ordinary, "file.txt"), "moved\n")
+            setup_git("commit", "-am", "move", chdir: @ordinary)
+            setup_git("push", "origin", "main", chdir: @ordinary)
+          when "prompt"
+            File.write(@store.load("T").fetch("prompt_path"), "changed")
+          when "dependency"
+            write_task(@data, id: "DEP")
+            write_task(@data, id: "T", depends_on: ["DEP"], repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+          when "occupied", "symlink"
+            path = File.join(@root, "worktrees/T/attempt-1")
+            FileUtils.mkdir_p(File.dirname(path))
+            scenario == "symlink" ? File.symlink(@external, path) : FileUtils.mkdir_p(path)
+          when "branch"
+            setup_git("branch", "act/T/attempt-1", @base, chdir: @ordinary)
+          when "partial", "malformed", "missing", "contradictory"
+            directory = "#{@data}-runs/A/partial"
+            FileUtils.mkdir_p(directory, mode: 0o700)
+            unless scenario == "partial"
+              state = @store.load("A")
+              report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "A",
+                         "prepared_at" => state.fetch("prepared_at"), "preparation" => state.fetch("snapshot"), "status" => "running" }
+              report["preparation"] = {} if scenario == "contradictory"
+              File.write(File.join(directory, "handoff.json"), scenario == "malformed" ? "broken" : JSON.generate(report))
+            end
+          when "managed_state"
             state = @store.load("A")
-            report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "A",
-                       "prepared_at" => state.fetch("prepared_at"), "preparation" => state.fetch("snapshot"), "status" => "running" }
-            report["preparation"] = {} if scenario == "contradictory"
-            File.write(File.join(directory, "handoff.json"), scenario == "malformed" ? "broken" : JSON.generate(report))
+            state["write_collision_override"] = { "launch" => { "invocation_id" => "missing managed run" } }
+            @store.write("A", state)
           end
-        when "managed_state"
-          state = @store.load("A")
-          state["write_collision_override"] = { "launch" => { "invocation_id" => "missing managed run" } }
-          @store.write("A", state)
+          before = older_bytes
+          _output, error, status = cli("launch", "T", "--codex", "--allow-write-collision")
+          assert_equal 2, status.exitstatus, "#{scenario}: #{error}"
+          assert_match reasons.fetch(scenario), error, scenario
+          refute File.exist?(File.join(@root, "worker-pid")), scenario
+          refute @store.load("T")["started_at"], scenario
+          assert_equal originals.fetch(@store.state_path("T")), File.binread(@store.state_path("T")), scenario
+          assert_equal before, before.to_h { |path, _| [path, File.binread(path)] }, scenario
+          assert_empty Dir.glob("#{@data}-runs/T/*"), scenario if scenarios.length > 1
+
+          # Restore only this row's fixture-authored task/prompt/state bytes and
+          # synthetic sibling evidence. No product recovery or Git reset is used.
+          originals.each { |path, bytes| File.binwrite(path, bytes) }
+          File.unlink(File.join(@data, "tasks/DEP.yml")) if scenario == "dependency"
+          if %w[partial malformed missing contradictory].include?(scenario)
+            FileUtils.remove_entry("#{@data}-runs/A")
+          end
+          assert_equal preserved, older_bytes, scenario
         end
-        before = older_bytes
-        _output, error, status = cli("launch", "T", "--codex", "--allow-write-collision")
-        assert_equal 2, status.exitstatus, "#{scenario}: #{error}"
-        refute File.exist?(File.join(@root, "worker-pid")), scenario
-        refute @store.load("T")["started_at"], scenario
-        assert_equal before, before.to_h { |path, _| [path, File.binread(path)] }, scenario
       end
     end
   end

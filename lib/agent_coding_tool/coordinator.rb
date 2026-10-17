@@ -282,7 +282,8 @@ module AgentCodingTool
       unless collisions.empty?
         state["write_overlap"] = {
           "observed_at" => started_at,
-          "basis" => launch_authorization ? "verified_launch_at_start" : "manual_unverified",
+          "basis" => launch_authorization&.key?("quiescent_manual") ? "operator_attested_quiescent_launch" :
+            launch_authorization ? "verified_launch_at_start" : "manual_unverified",
           "conflicts" => collisions.map { |row| row.merge("repositories" => row.fetch("repositories").dup) },
           "authorities" => collisions.flat_map { |row| row.fetch("repositories") }.uniq.sort.map { |name|
             state.fetch("snapshot").fetch(name).slice("remote_url", "branch") }

@@ -23,6 +23,8 @@ module AgentCodingTool
 
     def launch(id, model: nil, reasoning: nil, allow_write_collision: false)
       raise InvalidTask, "launch: unsafe task ID" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      @quiescent_reviews = {}
+      @own_entries = []
       safe_root!
       raise InvalidState, "launch: foreign/symlinked lock" if File.symlink?(File.join(@run_root, "launch.lock"))
       File.open(File.join(@run_root, "launch.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
@@ -47,6 +49,9 @@ module AgentCodingTool
       bases = task.fetch("repositories").filter_map { |name, spec|
         state.fetch("snapshot").fetch(name) if spec.fetch("access") == "write" }
       @report = JSON.parse(File.binread(File.join(run_dir, "handoff.json")))
+      if @report["quiescent_manual_authorization"] || state.dig("write_collision_override", "launch", "quiescent_manual")
+        raise InvalidState, "delivery: quiescent manual launch requires separate operator review; retain/export the patch; managed delivery is disabled for this run"
+      end
       @collisions = TaskStore.new(File.join(@data_root, "tasks")).all.filter_map do |other|
         next if other.fetch("id") == id
         other_state = store.load(other.fetch("id"))
@@ -177,6 +182,7 @@ module AgentCodingTool
           state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task
         File.binwrite(@report.fetch("prompt_path"), prompt)
         inventory = manager.create(task_id: id, attempt: attempt, task: task, snapshot: state.fetch("snapshot"))
+        @own_entries = inventory.fetch("entries")
         @report["worktrees"] = inventory
         workspaces = inventory.fetch("entries").select { |entry| entry.fetch("access") == "write" }.to_h { |entry| [entry.fetch("name"), entry.fetch("path")] }
         workspace = workspaces.fetch(names.first)
@@ -196,6 +202,8 @@ module AgentCodingTool
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
         end
         verified_conflicts = current_conflicts
+        @quiescent_roots = @quiescent_reviews.values.flat_map { |value| value.fetch("observation").fetch("checkouts").map { |row| row.fetch("path") } }
+        @quiescent_roots << @data_root if @quiescent_reviews.any?
         @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") } +
           AttemptRecovery.new(data_root: @data_root).protected_paths(id, before_attempt: attempt)
         sandbox_probe!(inventory, workspace, run_dir)
@@ -224,6 +232,20 @@ module AgentCodingTool
         AttemptRecovery.new(data_root: @data_root).retry_ready!(id, current_run: run_dir) if attempt > 1
         raise InvalidState, "launch: task/preparation changed before reservation" unless
           state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task
+        if @quiescent_reviews.any?
+          current_lock = File.lstat(File.join(@run_root, "launch.lock"))
+          unless current_lock.file? && current_lock.uid == Process.uid && (current_lock.mode & 0o077).zero? &&
+                 [current_lock.dev, current_lock.ino] == [lock.stat.dev, lock.stat.ino]
+            raise InvalidState, "launch: quiescence reservation lock changed"
+          end
+          @report["quiescent_manual_authorization"] = @quiescent_reviews.values.map do |value|
+            quiescence.consume!(value, invocation_id: invocation_id, own_entries: @own_entries)
+          end
+          # Public lifecycle evidence contains only bounded IDs/checksums, never
+          # workspace details or the operator's private reason.
+          @report["collision_authorization"]["quiescent_manual"] = @report.fetch("quiescent_manual_authorization")
+          @err.puts "QUIESCENT MANUAL EXCEPTION: operator-attested ended activity; external process termination is not ACT-verified. Integration/publication requires operator review."
+        end
         @report["status"] = "reserving"
         save_report
         @coordinator.start(id, allow_write_collision: allow_write_collision,
@@ -235,7 +257,9 @@ module AgentCodingTool
         result = execute(command, lock)
         if result == 0 && @report["status"] == "exited"
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
-          if delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
+          if @report["quiescent_manual_authorization"]
+            @err.puts "DELIVERY DEFERRED: quiescent manual exception requires separate operator review; implementation and evidence retained"
+          elsif delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
             @err.puts "DELIVERY DEFERRED: another launch holds the reservation lock; review separately"
           elsif delivery.configured?(id)
             begin
@@ -343,6 +367,10 @@ module AgentCodingTool
         entry == "launch.lock" ||
           (entry == ".DS_Store" && File.lstat(File.join(@run_root, entry)).file?)
       end
+      if entries.include?(QuiescenceReview::NAMESPACE)
+        quiescence.records!
+        entries.delete(QuiescenceReview::NAMESPACE)
+      end
       if entries.include?("checkpoints")
         checkpoint_root = File.join(@run_root, "checkpoints")
         unless File.directory?(checkpoint_root) && !File.symlink?(checkpoint_root) &&
@@ -439,6 +467,15 @@ module AgentCodingTool
         end
         matching = all_reports.select { |row| row["task_id"] == other_id &&
           row["prepared_at"] == other_state["prepared_at"] && row["preparation"] == other_state["snapshot"] }
+        if matching.empty? && @quiescent_reviews && other_state["started_at"] &&
+           all_reports.none? { |report| report["task_id"] == other_id }
+          value = quiescence.verify!(other_id, id, own_entries: @own_entries)
+          if @quiescent_reviews[other_id] && @quiescent_reviews[other_id] != value
+            raise InvalidState, "launch: quiescence authorization changed during preflight"
+          end
+          @quiescent_reviews[other_id] = value
+          next
+        end
         unless matching.length == 1
           raise InvalidState, "launch: #{other_id} has no unique ACT-owned worker evidence; manual worker isolation and activity are unverified. Review its worker/worktree before retrying"
         end
@@ -452,7 +489,15 @@ module AgentCodingTool
           raise InvalidState, "launch: #{report['task_id']} has partial, interrupted or unknown execution evidence; inspect #{report['_report_path']} and confirm liveness before recovery"
         end
       end
+      if @quiescent_reviews && (@quiescent_reviews.keys - @collisions.map { |row| row.fetch("task_id") }).any?
+        raise InvalidState, "launch: quiescent reservation changed during preflight"
+      end
       verified.sort_by { |row| row.fetch("task_id") }
+    end
+
+    # Returns the bounded private review facility; it grants no delivery authority.
+    def quiescence
+      QuiescenceReview.new(data_root: @data_root, coordinator: @coordinator, source_root: @source_root)
     end
 
     def shared_writers(task, snapshot, bases)
@@ -632,11 +677,15 @@ module AgentCodingTool
       command << "-"
     end
 
+    # Adds the managed workspace contract to the saved prompt. Quiescence adds
+    # trust limits only: supplied external locations/reasons stay host-private.
     def execution_envelope(workspaces, heads)
+      notice = @quiescent_reviews&.any? ? "An older manual reservation is operator-attested quiescent; external termination is unverified. Delivery requires separate operator review.\n" : ""
       "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n" \
         "The exact ACT prompt above retains task authority. Writable worktrees: #{JSON.generate(workspaces)}. Original paths are observations, not writable roots.\n" \
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Concurrent ACT worktrees are outside this worker's writable sandbox: #{JSON.generate(@parallel_roots || [])}. Collision permission grants no integration authority.\n" \
+        "#{notice}" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
         "If required external reads, prerequisites or final freshness cannot be established, stop and report that limitation. Do not claim refreshed GitHub refs.\n" \
@@ -658,7 +707,7 @@ module AgentCodingTool
         targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
         targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
       end
-      (@parallel_roots || []).each do |path|
+      ((@parallel_roots || []) + (@quiescent_roots || [])).uniq.each do |path|
         targets << [File.join(path, ".act-probe-#{SecureRandom.hex(6)}"), false]
       end
       inventory.fetch("entries").map { |entry| entry.fetch("parent") }.uniq.each do |parent|

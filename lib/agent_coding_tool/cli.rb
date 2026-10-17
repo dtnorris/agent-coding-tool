@@ -71,6 +71,7 @@ module AgentCodingTool
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
+      when "quiescence" then return quiescence_command(argv)
       when "deliver" then return deliver_command(argv)
       when "checkpoint" then return checkpoint_command(argv)
       when "worktrees" then return worktree_command(argv, cleanup: false)
@@ -232,11 +233,50 @@ module AgentCodingTool
       0
     end
 
+    # Reviews/approves one exact private manual-task overlap. Review JSON includes
+    # local paths; approval asserts operator knowledge, never process verification.
+    # Invalid/incomplete options or stale evidence raise without lifecycle writes.
+    def quiescence_command(argv)
+      action, older = argv.shift(2)
+      options = { repositories: [], workspaces: [] }
+      parser = OptionParser.new do |opts|
+        opts.on("--for TASK") { |value| options[:target] = value }
+        opts.on("--repository NAME") { |value| options[:repositories] << value }
+        opts.on("--workspace PATH") { |value| options[:workspaces] << value }
+        opts.on("--review SHA256") { |value| options[:review_sha256] = value }
+        opts.on("--activity STATUS") { |value| options[:activity] = value }
+        opts.on("--all-writers-accounted-for") { options[:all_writers_accounted_for] = true }
+        opts.on("--reason TEXT") { |value| options[:reason] = value }
+      end
+      parser.parse!(argv)
+      target = options.delete(:target)
+      unless argv.empty? && %w[review approve].include?(action) && older && target
+        raise Error, "usage: act quiescence {review|approve} OLDER --for TARGET ..."
+      end
+      facility = QuiescenceReview.new(data_root: @data_root, coordinator: coordinator, source_root: @root)
+      result = if action == "review"
+                 raise InvalidTask, "quiescence: approval flags require approve" unless (options.keys - [:repositories, :workspaces]).empty?
+                 facility.review(older, target, **options)
+               else
+                 unless options.delete(:repositories).empty? && options.delete(:workspaces).empty?
+                   raise InvalidTask, "quiescence: approve the reviewed scope; do not supply new locations"
+                 end
+                 required = [:review_sha256, :activity, :all_writers_accounted_for, :reason]
+                 raise InvalidTask, "quiescence: explicit review, activity, complete scope and reason required" unless (required - options.keys).empty?
+                 facility.approve(older, target, **options)
+               end
+      @out.puts JSON.pretty_generate(result)
+      @err.puts "PRIVATE LOCAL REVIEW: operator-attested activity, not ACT-verified termination; expires five minutes after inspection; single launch only."
+      0
+    rescue Psych::Exception, KeyError, TypeError, ArgumentError, SystemCallError
+      raise InvalidState, "quiescence: incomplete or unsafe local evidence", cause: nil
+    end
+
     def launch_command(argv)
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
-        opts.on("--allow-write-collision", "authorize this launch against verified isolated ACT workers") { options[:allow_write_collision] = true }
+        opts.on("--allow-write-collision", "authorize verified ACT isolation or a reviewed quiescent manual overlap") { options[:allow_write_collision] = true }
         opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
         opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
       end
@@ -918,7 +958,11 @@ module AgentCodingTool
       end
       return unless override.is_a?(Hash) && override["conflicts"].is_a?(Array) && !override["conflicts"].empty?
 
-      kind = override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
+      kind = if override.dig("launch", "quiescent_manual")
+               "operator-attested quiescence; external termination unverified; delivery requires operator review"
+             else
+               override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
+             end
       others = override.fetch("conflicts").map { |row| row.fetch("task_id") }.join(", ")
       detail.call("parallel", "#{kind} with #{others}; integration remains separate")
     end
@@ -1263,6 +1307,10 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+          quiescence review OLDER --for TARGET --repository NAME [--workspace PATH ...]
+                              inspect exact overlap and all known external locations
+          quiescence approve OLDER --for TARGET --review SHA256 --activity ended --all-writers-accounted-for --reason TEXT
+                              attest ended activity; private, five-minute, single-use
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH | --attempt NUMBER]
           checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]

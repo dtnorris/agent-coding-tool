@@ -333,7 +333,7 @@ remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
 Launch uses a collision override only for this invocation when
 `--allow-write-collision` is present and every conflicting writer has verified
-ACT-owned task/attempt evidence, a distinct worktree at the same prepared
+ACT-owned task/attempt evidence (or the bounded quiescent-manual review below), a distinct worktree at the same prepared
 writable baseline, and known process state. The second worker's sandbox probe
 also denies writes to the first worker's worktrees. Ordinary launch still
 rejects a write/write collision; read-only overlap does not require the flag.
@@ -349,6 +349,77 @@ it never records COMPLETE. Existing manual lifecycle commands retain their
 contracts; `publish` remains ACTD-only.
 Do not use manual prepare/reset/start to change a reservation while its worker
 may still be running.
+
+### Quiescent manual reservations
+
+An unfinished manual `IN_FLIGHT` reservation can remain intact while a new
+managed worker develops independently. This requires an explicit private review,
+not just `--allow-write-collision`. Run from the ACT checkout, outside the external
+workspaces. First stop external work through its own operator workflow. Review
+all writable locations and activity, including other hosts; ACT cannot prove
+external process termination or containment. If activity or scope is unknown,
+do not approve. Never use this interface to resume the older task implicitly.
+
+```sh
+act quiescence review IG-19E-F2 --for FO-25 --repository adventure-finder
+# Add --repository NAME for every shared target writable mapping, and
+# --workspace /absolute/known/external/checkout for each additional location.
+# Inspect the returned exact authorities, bases, native inventories and files.
+act quiescence approve IG-19E-F2 --for FO-25 --review <review_sha256> --activity ended --all-writers-accounted-for --reason 'External agent ended; preserve unfinished candidate for separate review'
+act launch FO-25 --codex --allow-write-collision --reasoning high
+```
+
+`--repository` names are the prospective task's repository mapping keys. Supply
+exactly the complete shared writable set. Ordinary prepared checkouts are included
+automatically. All other worktrees in every known checkout's native Git inventory
+must be explicitly supplied with repeated `--workspace`; separate clones must also
+be supplied. Unknown native locations refuse rather than disappearing from scope.
+The review displays private local paths; do not paste its JSON into task YAML,
+prompts or publication. Reason text is private, limited to 512 UTF-8 bytes without
+control characters. `active`, `unknown`, missing completeness or a mismatched
+review cannot approve a launch. `ended` is an operator assertion, never a verified
+PID/session record. A conservative `lsof` check additionally refuses observable
+local use or incomplete/unavailable diagnostics; silence cannot prove absence of
+another-host workers. Close external editors/shells using those workspaces before
+review. No daemon, process termination, external monitoring or authentication is added.
+
+Review and approval use the existing reservation lock. Evidence lives only in
+`<data-directory>-runs/.quiescence`, with operator-only ownership/permissions,
+atomic file replacement and damage checksums (not cryptographic identity proof).
+Review binds both task/preparation/prompt bytes, config, exact authorities/bases,
+native Git identities/registries, HEAD, index and tracked/untracked/ignored file
+bytes and metadata. Dirty or unpublished external candidates are preserved.
+Symlinked/foreign roots, incomplete inventories, overlapping prospective task
+paths, submodule/special-file layouts and state changes refuse. Filesystem hashing
+may be expensive in large dirty/ignored trees; no background scans are installed.
+
+Approval expires **five minutes after inspection**, even if approved later. A
+new review replaces only that pair's private authorization. It changes no older
+task state, prompt, result, checkpoint, worktree, branch or publication eligibility.
+Launch rechecks before worktree creation, after worktree setup, after the sandbox
+probe and immediately before consuming the approval/reserving execution. Only the
+new worker's independently verified native inventory is excluded from the original
+registry comparison. A changed approval or new conflicting reservation refuses.
+The single-use approval is atomically consumed before execution, bound to the new
+invocation; a crash may require fresh review and normal attempt recovery. It is
+never an automatic retry or generic persistent collision bypass.
+
+The managed worktree/sandbox/prompt/freshness/dependency/process safeguards remain
+mandatory. External locations and ACTD receive extra sandbox deny probes; supplied
+external paths/reason are absent from worker stdin and publishable state. Status
+labels the exception `operator_attested_quiescent_launch`, separate from verified
+managed siblings. The older task remains honestly `IN_FLIGHT`.
+
+**Managed delivery is disabled for every run admitted by this exception**, even
+if a trusted validation/delivery contract is installed or the older task later
+ends. The candidate/worktree and private execution evidence remain available for
+separate operator patch review, validation and integration. `act deliver` refuses;
+there is no new publication override. Neither worker exit nor approval records
+CANDIDATE/COMPLETE. Ordinary manual `start` and verified ACT-managed parallel
+launch/delivery retain their existing contracts. ACT-16 retry/closeout is unchanged.
+ACT-18 external-activity observations are not implemented at this source revision;
+this feature creates no such observation and grants no exemption from a future
+active-observation guard. Reconcile that interface before adopting onto newer code.
 
 Launch requires at least one writable repository on authoritative `main`. SSH/HTTPS
 GitHub remotes and absolute local remotes (for offline fixtures) are supported;
@@ -1023,6 +1094,19 @@ authorize an AFTEST-01 launch. The worker has a 30-second sleep ceiling, the
 second launch is limited to 20 seconds, and no LLM inference, network, GitHub
 mutation or paid resource is involved. This pilot does not validate a real Mac
 Codex sandbox; that separate host check remains required before operational use.
+
+Run `ruby -Ilib:test test/quiescent_launch_test.rb` for the disposable cold-CLI
+quiescence journey, refusal/race matrix and publication-deferral checks. Git,
+worktrees and finite child processes are real; Codex sandbox/authentication and
+local open-file observation are declared fake boundaries. This proves protocol
+behavior, not real macOS sandbox containment or local lsof visibility. No inference
+or GitHub mutation occurs. On macOS, run the explicit native gate from the ACT
+checkout with the installed authenticated Codex 0.162.1 CLI on PATH:
+`ruby -Ilib:test test/integration/quiescence_native_sandbox.rb`. It performs real
+lsof/authentication/capability and sandbox write/deny probes in disposable Git
+worktrees, never `codex exec`, inference or real task mutation. An unsupported
+host skips with NOT RUN; unavailable/incomplete Mac guards fail. This separately
+required host gate is outside the default offline suite.
 
 Run `rake` for the full test suite. Tests use explicit temporary data
 directories and do not depend on personal task data. The publisher tests in

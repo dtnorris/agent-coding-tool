@@ -1116,7 +1116,7 @@ The deterministic retry-liveness matrix runs in the normal suite.
 inspected at ACT `198aaee6f70d953a3858dfaf61c7a377567e66d2`, plus the new
 entry-point regression cases. It is an acceptance inventory, not generated
 discovery output. The verified tasks reject a missing or unexpected suite file,
-an empty inventory, omitted required case, duplicate execution, failed process,
+an empty inventory, omitted or unregistered case, duplicate execution, failed process,
 missing/malformed summary or case evidence, inconsistent counts, zero assertions,
 and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
 the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
@@ -1139,6 +1139,34 @@ preserve named coverage when moving behavior. TST-20 owns final coordinated
 Rakefile and inventory reconciliation after operator-accepted integration.
 An inventory change needs review against original behavior obligations; do not
 regenerate it from reduced discovery to make an omission pass.
+
+For TST-17/18/19 integration, David is the single owner of
+`test/required_cases.json` updates until handing that responsibility to TST-20.
+The migration workers supply their test patches and explicit original-to-destination
+coverage tables; they do not independently edit the shared manifest. Use the
+existing fixed inventory, with no runner registration extension:
+
+1. Review each original identity and subcase against
+   `test/coverage/ACTFAST-native-coverage.md`. Preserve default identities while
+   making decision tests faster; register each new native subcase separately.
+   For a whole-case move, retain the exact original `Class#test_method` at its
+   mandatory destination. Renamed, split or consolidated replacements require
+   independent behavioral review and an explicit original/subcase-to-file/identity
+   table before any original obligation is removed.
+2. Add each new `test/integration/*_git_integration.rb` path and its exact case
+   identities to the `integration` object. Preserve all five existing native
+   file entries and their cases unless an independently verified replacement is
+   accepted. Update default entries only for reviewed moves or new default cases;
+   preserve every untouched family. Do not derive obligations from discovery.
+3. Compose the reviewed test and manifest changes in the same disposable
+   candidate before validation or integration. A manifest entry without its file
+   or evidence must fail. Workers may run their own files directly for focused
+   development; that is not verified aggregate acceptance. Preserve sibling
+   candidates and reconcile the manifest serially after each integration.
+4. Run the inexpensive `bundle exec ruby -Ilib:test test/rakefile_test.rb`
+   fixture gate first. Full native and aggregate acceptance belongs to the
+   operator on the composed candidate. Refresh baseline and preparation when
+   integration advances main; this procedure grants no publication authority.
 
 The offline gate does not invoke `manual_parallel_native_sandbox.rb`. Its
 separately authorized real-macOS/installed-Codex qualification above remains

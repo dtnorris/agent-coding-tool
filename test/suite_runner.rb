@@ -56,7 +56,8 @@ module TestSuiteRunner
   end
 
   # Checks stdout summary against independently recorded identities and counts.
-  # Returns true, or exits 1 for missing/malformed, empty, skipped or failed results.
+  # Returns true, or exits 1 for missing/malformed, unregistered, duplicated,
+  # empty, skipped or failed results. Case identities must match exactly.
   # Invalid JSON and filesystem errors propagate and fail the invoking Rake task.
   def self.validate(stdout, evidence_path, required_cases, label:)
     summaries = stdout.lines.filter_map { |line| SUMMARY.match(line.chomp)&.captures&.map(&:to_i) }
@@ -68,7 +69,7 @@ module TestSuiteRunner
       abort "#{label}: empty, failed, skipped or malformed case evidence"
     end
     cases = results.map { |row| row.fetch("case") }
-    abort "#{label}: missing required case or duplicate execution" unless (required_cases - cases).empty? && cases.uniq == cases
+    abort "#{label}: missing required case, unregistered case or duplicate execution" unless required_cases.sort == cases.sort && cases.uniq == cases
     expected = [results.length, results.sum { |row| row.fetch("assertions") }, 0, 0, 0]
     abort "#{label}: inconsistent or empty test summary" unless expected[1].positive? && summaries.first == expected
     true

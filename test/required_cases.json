@@ -255,6 +255,8 @@
       "RakefileTest#test_environment_override_selects_the_alternate_data_directory",
       "RakefileTest#test_default_and_test_keep_existing_selection_and_yaml_prerequisite",
       "RakefileTest#test_real_tasks_execute_isolated_suites_and_aggregate_prerequisites_once",
+      "RakefileTest#test_new_native_launcher_requires_explicit_file_and_case_registration",
+      "RakefileTest#test_original_default_case_requires_registered_native_replacement_evidence",
       "RakefileTest#test_missing_git_contracts_fail_closed",
       "RakefileTest#test_native_gate_rejects_missing_coverage_and_invalid_results",
       "RakefileTest#test_process_bytes_status_and_spawn_exception_are_preserved"

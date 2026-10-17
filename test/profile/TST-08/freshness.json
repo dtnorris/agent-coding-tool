@@ -1,0 +1,120 @@
+{
+  "checked_at_utc": "2026-10-17T02:39:38Z",
+  "mechanism": "connected GitHub commit(main), compare_commits, and exact-ref file reads",
+  "initial_check_matched_all": true,
+  "last_pre_movement_check_utc": "2026-10-17T02:30:57Z",
+  "repositories": [
+    {
+      "repository": "dtnorris/agent-coding-tool",
+      "branch": "main",
+      "prepared_sha": "4013979f9c603a5b8d94d0817f4329e445f478e7",
+      "refreshed_sha": "4013979f9c603a5b8d94d0817f4329e445f478e7",
+      "matches": true
+    },
+    {
+      "repository": "dtnorris/agent-coding-tool-data",
+      "branch": "main",
+      "prepared_sha": "db299a4d11f8d97512a2bf4a9cf1628c95d09339",
+      "refreshed_sha": "0ebe7eba35e2d14fda8baf8957550bfa8585c161",
+      "matches": false,
+      "classification": "read-only movement reconciled"
+    },
+    {
+      "repository": "dtnorris/agent-skills",
+      "branch": "main",
+      "prepared_sha": "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
+      "refreshed_sha": "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
+      "matches": true
+    }
+  ],
+  "actd_delta": {
+    "ahead_by": 3,
+    "files": [
+      {
+        "filename": "state/FO-25.yml",
+        "status": "modified",
+        "additions": 130,
+        "deletions": 11,
+        "changes": 141,
+        "previous_filename": null
+      },
+      {
+        "filename": "state/TST-08.yml",
+        "status": "added",
+        "additions": 37,
+        "deletions": 0,
+        "changes": 37,
+        "previous_filename": null
+      },
+      {
+        "filename": "state/prompts/FO-25-20261017T014924666380Z-16641a13b643.txt",
+        "status": "added",
+        "additions": 241,
+        "deletions": 0,
+        "changes": 241,
+        "previous_filename": null
+      },
+      {
+        "filename": "state/prompts/TST-08-20261017T015420680133Z-a0b66a2a35eb.txt",
+        "status": "added",
+        "additions": 316,
+        "deletions": 0,
+        "changes": 316,
+        "previous_filename": null
+      },
+      {
+        "filename": "state/prompts/TST-08-20261017T020540526250Z-226418a82373.txt",
+        "status": "added",
+        "additions": 316,
+        "deletions": 0,
+        "changes": 316,
+        "previous_filename": null
+      },
+      {
+        "filename": "state/prompts/TST-08-20261017T021412111211Z-5b60610f8c28.txt",
+        "status": "added",
+        "additions": 317,
+        "deletions": 0,
+        "changes": 317,
+        "previous_filename": null
+      },
+      {
+        "filename": "tasks/FO-26.yml",
+        "status": "added",
+        "additions": 259,
+        "deletions": 0,
+        "changes": 259,
+        "previous_filename": null
+      },
+      {
+        "filename": "tasks/TST-08.yml",
+        "status": "modified",
+        "additions": 11,
+        "deletions": 0,
+        "changes": 11,
+        "previous_filename": null
+      }
+    ],
+    "selected_yaml_blob_identities": [
+      {
+        "path": "tasks/TST-08.yml",
+        "sha": "6eb374ce617360334b35f23421bffdb455a0951f"
+      },
+      {
+        "path": "state/TST-08.yml",
+        "sha": "f3d7b1ba92c5c4073a1f25d77f11dfecb129d273"
+      },
+      {
+        "path": "state/FO-25.yml",
+        "sha": "97a7252622b711f9160833653a25bf546448849d"
+      },
+      {
+        "path": "tasks/FO-26.yml",
+        "sha": "a46d4678456616d2713ef2e660e861514718f255"
+      }
+    ],
+    "measured_corpus_files": 250,
+    "refreshed_selected_corpus_files": 252,
+    "reconciliation": "TST-08 adds only the runtime clarification already supplied by the operator. Its new state agrees with this attempt. FO-25 completion and FO-26 registration are unrelated. Added prompt files are excluded from YAML selection. A copied selected-corpus view at the new ref parses all 252 YAML files. Complete suite measurements stay bound to the original 250-file snapshot; no third complete baseline ran. Original read-only worktree remains untouched."
+  }
+}

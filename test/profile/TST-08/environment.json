@@ -1,0 +1,99 @@
+{
+  "recorded_at_utc": "2026-10-17T02:23:36.946540+00:00",
+  "baseline": "4013979f9c603a5b8d94d0817f4329e445f478e7",
+  "actd": "db299a4d11f8d97512a2bf4a9cf1628c95d09339",
+  "skills": "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
+  "coding_skill_revision": "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
+  "planning_skill_revision": "358f7f28ac6f9205227c0378cbf6bb99ad63a179",
+  "lock_sha256": "f641fb8cf6da99b0d3893de535b475da839390f33003e68467108d4d04634adb",
+  "runtime": [
+    {
+      "command": [
+        "ruby",
+        "-v"
+      ],
+      "exit": 0,
+      "stdout": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [arm64-darwin23]\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "bundle",
+        "-v"
+      ],
+      "exit": 0,
+      "stdout": "4.0.17\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "bundle",
+        "check"
+      ],
+      "exit": 0,
+      "stdout": "The Gemfile's dependencies are satisfied\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "sw_vers"
+      ],
+      "exit": 0,
+      "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "uname",
+        "-a"
+      ],
+      "exit": 0,
+      "stdout": "Darwin Mac 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041 arm64\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "sysctl: sysctl fmt -1 1024 1: Operation not permitted\n"
+    },
+    {
+      "command": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "kern.bootsessionuuid"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "sysctl: sysctl fmt -1 1024 1: Operation not permitted\n"
+    }
+  ],
+  "logical_cpu_count": 14,
+  "filesystem": "APFS, local, journaled; /dev/disk3s5 on /System/Volumes/Data (mount table)",
+  "load_average_at_metadata_capture": [
+    4.56884765625,
+    6.322265625,
+    6.2080078125
+  ],
+  "workers": 1,
+  "parallel_minitest": false,
+  "coverage_mode": "none configured",
+  "cache": "Not flushed. Two early targeted CLI journeys and observer smokes preceded the first complete run; later runs are warm. Fixtures are newly created each process.",
+  "contention": "No concurrent suite/benchmark launched by this worker. Host-wide contention and thermal state unmeasured. Small read-only inspection and observer smoke calls overlapped the default run; no comparable quiet-host claim.",
+  "sample_counts": {
+    "complete_default": 1,
+    "instrumented_minitest": 1,
+    "default_attempt_aborted_before_discovery": 1
+  },
+  "spending_usd": 0,
+  "notes": "Final actual sample counts. Complete outcomes and raw bytes are authoritative in commands.json.",
+  "coding_skill_sha256": "5337876cc23dfc7961d21fba3ed01dab50adef98991e02e244b3512f19198982",
+  "planning_skill_sha256": "8a726b39a53bb43deebfc3ae81bd70cb657bada4ad69ac83afe35d88539fc009",
+  "refreshed_actd_head": "0ebe7eba35e2d14fda8baf8957550bfa8585c161",
+  "refreshed_selected_yaml_files": 252,
+  "refreshed_yaml_only_validation": "PASS; complete runs remain bound to prepared 250-file corpus"
+}

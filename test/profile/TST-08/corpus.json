@@ -1,0 +1,1006 @@
+{
+  "source_head": "db299a4d11f8d97512a2bf4a9cf1628c95d09339",
+  "selection": "config.yml, tasks/*.yml, state/*.yml; files only; unique sorted paths",
+  "files": [
+    {
+      "path": "config.yml",
+      "sha256": "cc591076afe52112054286e1ce582c0c4d2521437a8e6b957b01f164bfe109da"
+    },
+    {
+      "path": "state/ACT-01.yml",
+      "sha256": "3fc8aa49999f806ae3975c4a2de038081b8ee80d73c710dc8961b3d18ba2d452"
+    },
+    {
+      "path": "state/ACT-02.yml",
+      "sha256": "4f85984d35669859ba450b5e5c2d00ed16d69e79482c2a95141178c69d39f043"
+    },
+    {
+      "path": "state/ACT-03.yml",
+      "sha256": "9fbcd7bbcbc81abab67d36a3a735c219022c0e1e97c905b830c1f7bd15edf755"
+    },
+    {
+      "path": "state/ACT-05.yml",
+      "sha256": "9da2e9acb38fe1699ddb2970bd4f31beca981d1c07b5ff137275289b078119ca"
+    },
+    {
+      "path": "state/ACT-06.yml",
+      "sha256": "1c5ae944698e73e6f6ab548dedf24e31916f9ad013becb2ab9b7423ab142729f"
+    },
+    {
+      "path": "state/ACT-07.yml",
+      "sha256": "331845cf70915558028f45b070f79b8c2521775326fc46c5311892b61379af1a"
+    },
+    {
+      "path": "state/ACT-08.yml",
+      "sha256": "c14482399195df2be9df99d4ec4b94615f4a07b72a35b90caef63e6eca436766"
+    },
+    {
+      "path": "state/ACT-09.yml",
+      "sha256": "6c84bc208fa5847e6974d561564c75d195dab6e2ee4bdc9152cf50bee993468d"
+    },
+    {
+      "path": "state/ACT-10.yml",
+      "sha256": "2106811df306851d28c8635b77a61c3547f8c1d44022b396aa92ae76445dd4ab"
+    },
+    {
+      "path": "state/ACT-11.yml",
+      "sha256": "8659780b4389f7bdfe6b82dee5ef252704681c424714136b56f374ebdffba393"
+    },
+    {
+      "path": "state/ACT-12.yml",
+      "sha256": "a02da3c31e10ff1dbecc62a0afb04310ca0cb7d2db5cced3cc975e41f08be768"
+    },
+    {
+      "path": "state/ACT-13.yml",
+      "sha256": "3ffcf7707c2cfa146d5c7ccc1b0bf08056726200c0a98183b97328fcb2bfeff9"
+    },
+    {
+      "path": "state/ACT-14.yml",
+      "sha256": "1406e4f3d85e1b9e191e0b581f3dc3c92ba2bed7fca05ec4dc4c354b023fe517"
+    },
+    {
+      "path": "state/ACT-15.yml",
+      "sha256": "6d3a1e3935824ec611f883b7a948ea00c1324b892ed50711e62daccffb1f1243"
+    },
+    {
+      "path": "state/ACT-16.yml",
+      "sha256": "f6ee2f99ffaa88e72b2e4175ca923106b7b30e8172a9ba69875b852ede5848e9"
+    },
+    {
+      "path": "state/ACT-17.yml",
+      "sha256": "7ce078a9bfadfcf818f86e75dfe21cf84407459ed5ed26b69d86c1da0db12164"
+    },
+    {
+      "path": "state/ACT-STATE-01.yml",
+      "sha256": "56d58949006c0ef55e66da78e18ba09c3f98f6b9da7684bd4ffead4279a485fb"
+    },
+    {
+      "path": "state/AFTEST-01.yml",
+      "sha256": "30406f66987324e2935fdf9d59fc4f38bca0ef56ed8fd5f3d38ea720eef1b36c"
+    },
+    {
+      "path": "state/ARCH-01.yml",
+      "sha256": "f22a2e670c923c26d5bc3abf01bb55ae5a5df3e0cf84dcfab1344f1c0923dee8"
+    },
+    {
+      "path": "state/BUG-01.yml",
+      "sha256": "1abfe8a38497d6f2f983b4aa41ba0934d860f115aad4ee132137607c7b0215b0"
+    },
+    {
+      "path": "state/BUG-02A.yml",
+      "sha256": "a0f6083499ffc82579c61966d935f7a18d8b1481216dd011fc36c16f12813b22"
+    },
+    {
+      "path": "state/BUG-02B.yml",
+      "sha256": "6083bca4ae300f57cf53a584b7d326af4d95cba2bae36d09c0101ea8866a334a"
+    },
+    {
+      "path": "state/BUG-02C-P.yml",
+      "sha256": "b4f5d5ea08f0ed1a5e9d4079531deea32f13748a0894ba24a5118cce135d30fb"
+    },
+    {
+      "path": "state/BUG-02C-P2.yml",
+      "sha256": "d041f53207459f5f515e23e99e6d98f6f4134ce28f48a1b210ae220ef9dc3a47"
+    },
+    {
+      "path": "state/BUG-02C.yml",
+      "sha256": "c48f084e26b960c7579a3c9a4627ea2355f8a69e9dcc8d92558f5a867dc097b3"
+    },
+    {
+      "path": "state/BUG-02D.yml",
+      "sha256": "b87d0364bd330792e73e52bb306761c5ea13e978ffc3eec54645a743c16ea702"
+    },
+    {
+      "path": "state/BUG-03.yml",
+      "sha256": "7d162d8935e58ed8c5c46f336d91586393686cb0ee433fdf1aba2772f4490126"
+    },
+    {
+      "path": "state/BUG-04.yml",
+      "sha256": "33a3b099bd2bbab49d3f34423d5de228eb203d1e40efb24a5b484957bba005f1"
+    },
+    {
+      "path": "state/BUG-06.yml",
+      "sha256": "579dee5517ece500ab026cb82ce69d9134a2ed389c54d16572ec03bafbdbddc9"
+    },
+    {
+      "path": "state/CL-AFDP-01A.yml",
+      "sha256": "e35cc0e08b4c635c478e5542811183cffe385fd6a9668b691f35ca048091986e"
+    },
+    {
+      "path": "state/CL-AFW-07A.yml",
+      "sha256": "a834e3059dc3ff11e3c590f796a4e773d280c335740fe1b4bac7f8bc7ac380d1"
+    },
+    {
+      "path": "state/FO-24D-U1.yml",
+      "sha256": "27ee3255dc78fad0e54248191daa013c3ce9734d4a6901c7a1e62bad97f3d3da"
+    },
+    {
+      "path": "state/FO-25.yml",
+      "sha256": "cea1665ba354fe220ca31ab367870059e1be168ba045f157afd7bcf23e1e2638"
+    },
+    {
+      "path": "state/FS-01.yml",
+      "sha256": "3dddb2d0ebebb361327e49c716459d67b48746a90c61a2f3580192b9f5e7326f"
+    },
+    {
+      "path": "state/FS-02.yml",
+      "sha256": "6caa64723428e1c0f53985eb2b02005a924f7fad7862fd1eaa0e022c0a088385"
+    },
+    {
+      "path": "state/FS-03.yml",
+      "sha256": "e0c6f491aa17ef2f9508c4157aedb92fd10b7f3dd88687a79245f7ed2be6fcee"
+    },
+    {
+      "path": "state/FS-04.yml",
+      "sha256": "ee1ba9d3cc115b819653a7a9e18c98fed78365092b90a078f0834dc7872f28c8"
+    },
+    {
+      "path": "state/FS-05.yml",
+      "sha256": "c963072b0ae373f2b7d5786517fef7a0e7da88b1413b2f856bb3bb6790664f63"
+    },
+    {
+      "path": "state/FS-06.yml",
+      "sha256": "1a37946c09c2c353941d17de7f5ca537fb171689b2c12ca33588500b919a9798"
+    },
+    {
+      "path": "state/FS-06A.yml",
+      "sha256": "64ef0a99cecc0566ae2f357bdb09d57cc831630efb6db21da7ac398afc1916db"
+    },
+    {
+      "path": "state/FS-06B.yml",
+      "sha256": "d227868c4f57e7a8cc56f6d069ed6665464865133e05b79b73ef52e6a5fb226d"
+    },
+    {
+      "path": "state/FS-07.yml",
+      "sha256": "368e44245616adcdb55932037f1f26a172d870705cba42d39b13483a4bc58d93"
+    },
+    {
+      "path": "state/IG-01.yml",
+      "sha256": "08234c48c9c091b6a0c5a10601f3c244edce2013749f06cb0c7f54e6e4a3d99f"
+    },
+    {
+      "path": "state/IG-02.yml",
+      "sha256": "bce4e4b12a484c9be74cbc957d1f2d2820221e083237792bb819cdce886ae261"
+    },
+    {
+      "path": "state/IG-03.yml",
+      "sha256": "8cba66b58406ecd0782a7a59abf5788bb8dd32626cfbb2fd9d76ded84774ae45"
+    },
+    {
+      "path": "state/IG-04.yml",
+      "sha256": "f3569dcbb893febd96b392d27c787336fc7f23ba15035367ef34386a8eb6a9f8"
+    },
+    {
+      "path": "state/IG-05A.yml",
+      "sha256": "37aaffea2bd7c72e3a7778aa096bea21148bcf1b016d55a751ff522b07ef4612"
+    },
+    {
+      "path": "state/IG-05B.yml",
+      "sha256": "dfecb88e8ea12c010eb26033f1cd0a180b3cb2797af77010fd6fe6eab2bf656d"
+    },
+    {
+      "path": "state/IG-05C1.yml",
+      "sha256": "ed4200ad52b412a1d2a99b6fba189cb2ca1ae1edf10ba6e021731e2499622615"
+    },
+    {
+      "path": "state/IG-05C2.yml",
+      "sha256": "ebf82f9a0314ac7ac6dabf2b7523c31302f30684bb52c24a070987d1fb8171a7"
+    },
+    {
+      "path": "state/IG-05C3.yml",
+      "sha256": "6ac62d246be3bb2626efe0f234772d237f95ca5a525b4b1d88ff4684fb762108"
+    },
+    {
+      "path": "state/IG-05C4.yml",
+      "sha256": "e3c89eef99bd4a7656dc001baa108793148d8ed14d5fa3484cdb1c616aba2a97"
+    },
+    {
+      "path": "state/IG-06.yml",
+      "sha256": "65787b949abac982e179258ce4147c3121d712b97a92ce69969330de680f08b7"
+    },
+    {
+      "path": "state/IG-07A.yml",
+      "sha256": "a1ba2b9f5fcf08d4d231269da9387b5506070e12fb050869342cc4e357d3fd21"
+    },
+    {
+      "path": "state/IG-07B.yml",
+      "sha256": "bc89e6826c5c583bea1d1cb3a5f1f03026dbf5669f7a1d15526a12dd782aaa89"
+    },
+    {
+      "path": "state/IG-07C.yml",
+      "sha256": "39cc6337dfc27ebda17b927d5b123b05da07896cdb331e8404cee342468e61be"
+    },
+    {
+      "path": "state/IG-08.yml",
+      "sha256": "75a24555327aa1ed3bd0d5d6766ca9a8dab3a5f91ffe14f867e455217a327d78"
+    },
+    {
+      "path": "state/IG-09A.yml",
+      "sha256": "875b9ebc888e2b33ca051c367759235a87484217c6bb93ded69e492de1df7622"
+    },
+    {
+      "path": "state/IG-09B.yml",
+      "sha256": "b96a4bb13b5235f319df4acdf6d986e24ed0b92d1ce9c79b6d11863f11fbbf69"
+    },
+    {
+      "path": "state/IG-09C.yml",
+      "sha256": "f4e6f040e372182df2792ddcbf31413edaa58e942acf7f4f19f9f05227e6233b"
+    },
+    {
+      "path": "state/IG-10.yml",
+      "sha256": "406bfa46831a5b0942af9fc7496af406826acfece65a4a8eb695c08d90174ac3"
+    },
+    {
+      "path": "state/IG-11A.yml",
+      "sha256": "459fb7d5ccb82d3f1fdfbaa2c099cec01390ba3b6beb008bb865afdde4e00918"
+    },
+    {
+      "path": "state/IG-11B.yml",
+      "sha256": "19400cbe875acb47bab53d0250c3c970acaa84c9bfc4a0306b8c78fc6da3b9fd"
+    },
+    {
+      "path": "state/IG-11C.yml",
+      "sha256": "b0cc3b669b68038d5276f73d00fd59efaa6e6ff64c3671057c8dc3db805c43b5"
+    },
+    {
+      "path": "state/IG-12A.yml",
+      "sha256": "1528bcc87df511b1e8ac12f847dbdbde9f72d18bcde04fd800cd7eec79c25457"
+    },
+    {
+      "path": "state/IG-12B.yml",
+      "sha256": "2522734ccd30278bef37bf5c329dd7a8e32c9fc4442f404f096f010a9f80b25e"
+    },
+    {
+      "path": "state/IG-13A.yml",
+      "sha256": "526c442734f142fd2085013973f1ec4a0ddff931d922fba282b9debbcb9d541d"
+    },
+    {
+      "path": "state/IG-13B.yml",
+      "sha256": "15e9051254d34d86fcf84ed8e8294f6a35ed33a1e1568eac906da138c10b6454"
+    },
+    {
+      "path": "state/IG-13C.yml",
+      "sha256": "04bb3c2687ec1dc1889305fa7131c80a146d6d13bac7f107792db979fba5897b"
+    },
+    {
+      "path": "state/IG-14A.yml",
+      "sha256": "8306b9804f8a78bb12d0f33675c2380289d442fc6e320c615a601039a86a8571"
+    },
+    {
+      "path": "state/IG-14B.yml",
+      "sha256": "5a8035db3af0f960768872615c224c74661bf04bfc80e41d4d03c88487721ebe"
+    },
+    {
+      "path": "state/IG-14C.yml",
+      "sha256": "b7a4a40a3a8ec2aba0aea462d24529c8574fbaaef10fa83fdb49508fa755a0dc"
+    },
+    {
+      "path": "state/IG-14D.yml",
+      "sha256": "e1396151e41d1525020ac4d1ff8f8d01c1998dbbf642f0c0733cfee439bf7d81"
+    },
+    {
+      "path": "state/IG-14E.yml",
+      "sha256": "3f6e0eb32ec2a38c07128aeffd0c129d0713b19409048e0aae357d30ae8736e7"
+    },
+    {
+      "path": "state/IG-15A.yml",
+      "sha256": "b14046b9e06ec59ee51b687bba4c58c5c98a0c0b2c8e2f5ca3ef8ae0e3576348"
+    },
+    {
+      "path": "state/IG-15B.yml",
+      "sha256": "509dab8220ad343e278d836b812907ea8cffadf560a5381a26953c0e9fc53d0b"
+    },
+    {
+      "path": "state/IG-15C1.yml",
+      "sha256": "b02fa64dd839cb1777adc34386357f432ad4ce93f01e8c528eead6cc0c6bcc32"
+    },
+    {
+      "path": "state/IG-15C2.yml",
+      "sha256": "d98a68f681c49d90a7c67e602dbc57aae7910e6bdec057f83c313bb1d8f42427"
+    },
+    {
+      "path": "state/IG-15C3.yml",
+      "sha256": "d3c5ae2167e01b8d909edb56f80c352ef0c3e75538b33fc9cc6844e0df659645"
+    },
+    {
+      "path": "state/IG-15D.yml",
+      "sha256": "3e1f3b3bbbce8d18205f9429c605ccfe9534c5f777b15e7ecbabcb06f3caf9be"
+    },
+    {
+      "path": "state/IG-16A.yml",
+      "sha256": "5bbc49a285c93501afd011021717fe965bdd441dd65397a4c333f415da9ae1e8"
+    },
+    {
+      "path": "state/IG-16B.yml",
+      "sha256": "2364a22ce812accfad27e910eff3d7c1ff231782837cb134a45a1d6d48a8ff48"
+    },
+    {
+      "path": "state/IG-17.yml",
+      "sha256": "925d088bae4c62746a7dfbab95c59f52173015d09a0e6e3efc48dc605213848a"
+    },
+    {
+      "path": "state/IG-17F.yml",
+      "sha256": "64ea70f2b12311ef31724e239ea91d0fc40db1f4def1e666589b56f5a6387a17"
+    },
+    {
+      "path": "state/IG-18A.yml",
+      "sha256": "199ed77e74863561e1813f220c7199b45fddb45cb342284d2d37aa28ea40a8d9"
+    },
+    {
+      "path": "state/IG-18A1.yml",
+      "sha256": "387b9ad64d7f8e3a57d8580a432a355c4318d451101696cddc6f3b895c567532"
+    },
+    {
+      "path": "state/IG-18A2.yml",
+      "sha256": "503b3baa5f3e56b931b565878e782ea74d32bc433b870cc4e3ec77bfaafd423d"
+    },
+    {
+      "path": "state/IG-18A3.yml",
+      "sha256": "130f2657a140e19d10dd10b1cb79cbea93ab97ac73004fca778be168fd0662f6"
+    },
+    {
+      "path": "state/IG-18B.yml",
+      "sha256": "b68aed89054a5eeababb6f19b688d93394f95b57805ff9412ebe542128dd018a"
+    },
+    {
+      "path": "state/IG-18C.yml",
+      "sha256": "49f466fd0f6a865a41767e4c016a920afe9b54a7f9f9b53e70649b7dc6cc4815"
+    },
+    {
+      "path": "state/IG-19A.yml",
+      "sha256": "ba94af660c353526dde009ef80f93237a7bd1918953278e3889aedb7be39cc07"
+    },
+    {
+      "path": "state/IG-19B.yml",
+      "sha256": "42c617fb40214df39a302db3049c516a52b71ee79436ca9a583ba696373fe74e"
+    },
+    {
+      "path": "state/IG-19C.yml",
+      "sha256": "53c5aa71209bc9d6afffec6958003a7143bccbaddeef7006aa44aa4dac735362"
+    },
+    {
+      "path": "state/IG-19D-1.yml",
+      "sha256": "e58e8e0c1f07e462843b280e706df462af07ca6d0830bd560f9cc73034ff99db"
+    },
+    {
+      "path": "state/IG-19D-2.yml",
+      "sha256": "596b8fa0411449de592952fa4cecd05d266abbfaeef08f026f8d8cca11b91629"
+    },
+    {
+      "path": "state/IG-19D-3.yml",
+      "sha256": "7953c95f0016f695ce6bc7e30effa5db48eb9fd40ee8820d51d512f52d0d5e34"
+    },
+    {
+      "path": "state/IG-19D.yml",
+      "sha256": "953c994de3da3cfe6601fbf34cb4c1c3f43316401627f2516775eb5e10e46603"
+    },
+    {
+      "path": "state/IG-19E-F2.yml",
+      "sha256": "b84c6a93741d2df56b086348e230769631103dce92d68afbe300b8e466554258"
+    },
+    {
+      "path": "state/IG-19E.yml",
+      "sha256": "ea3e2aac9c013080516ee1e782ae40e54dedd5cb4adb1058764f3c4a2a69f34a"
+    },
+    {
+      "path": "state/IG-19F.yml",
+      "sha256": "28bab81ce61e549a76c77505d054f788798c8de9f775defc0fe1192a77c79a6b"
+    },
+    {
+      "path": "state/NC-01.yml",
+      "sha256": "bbf6d7233fcb6f994bd3b93f19e31aefa0d783254c1f8c0b0d4e0babf33a3781"
+    },
+    {
+      "path": "state/NC-02A.yml",
+      "sha256": "59ee2ff3242704f47e54c7cf2ff4287e7f1292b28b2c393a9144a7be3114c735"
+    },
+    {
+      "path": "state/NC-02B.yml",
+      "sha256": "df1595145dbbda05a79a521725d0b6536e9626d973408104008b54603d442942"
+    },
+    {
+      "path": "state/NC-02C.yml",
+      "sha256": "9008921902b6b42f9b4e1fe0de6062096b20d59e802647d636a62b75e78083d6"
+    },
+    {
+      "path": "state/NC-02D.yml",
+      "sha256": "c23c44b68d9ab646b3d0019b1d69a27780766c26290248cd39818948df7dae0c"
+    },
+    {
+      "path": "state/TST-01.yml",
+      "sha256": "a5e268117f3f965f2ecd6468ee403ea85adc751e33153c9e9cfc5766bfae8736"
+    },
+    {
+      "path": "state/TST-02.yml",
+      "sha256": "38cda544d27268a9f6459aeb69edbd9f8ca6959591d7d5027a170410a06a205f"
+    },
+    {
+      "path": "state/TST-05A.yml",
+      "sha256": "59469d34e861ce175888208149728e6d0204c6d6b7f193364a3ff3c89f198d59"
+    },
+    {
+      "path": "state/TST-05B.yml",
+      "sha256": "7ad354d000d9b72a82655728f94d0d2f9dc73d06b86d240c21025962b2430b2f"
+    },
+    {
+      "path": "state/TST-06A.yml",
+      "sha256": "501694455d4c0b05015381cc138302c1ae845567bd490c4001b88062a807841c"
+    },
+    {
+      "path": "state/TST-07.yml",
+      "sha256": "bdf994d84115bbf20f9d4d83a616c159b7f7eb66aa240afb45e38c157125c60d"
+    },
+    {
+      "path": "tasks/ACT-01.yml",
+      "sha256": "6f7a778390909c02a71063a4398ddafcbd12b94c310ee58f5dc177a386ba5bd8"
+    },
+    {
+      "path": "tasks/ACT-02.yml",
+      "sha256": "d9d3b977d1dbcda96b8f34071a488786ec87c12e50bafbf9cbfc6a6584d9875b"
+    },
+    {
+      "path": "tasks/ACT-03.yml",
+      "sha256": "b40204c73f0de065dc183a7879092f72492fab9d8e44f03a3126666802f36c9b"
+    },
+    {
+      "path": "tasks/ACT-05.yml",
+      "sha256": "2f032da7a12d8ac687cb538a2a9d060a601d910a6fa2ea06a3b5530c6b9bd089"
+    },
+    {
+      "path": "tasks/ACT-06.yml",
+      "sha256": "cc786a1c0a74824456054ebb9bc90c9400eb9c07b996c71cf8622759e8894d3b"
+    },
+    {
+      "path": "tasks/ACT-07.yml",
+      "sha256": "82a5d46777d4fa7202ddde048b688870f83320fc23abe8923d5f1f5e5878697e"
+    },
+    {
+      "path": "tasks/ACT-08.yml",
+      "sha256": "493547a73e1873db5d213e3dc3de36f8b23a2eebdc7059dc42635e53a1f93c8b"
+    },
+    {
+      "path": "tasks/ACT-09.yml",
+      "sha256": "8886520cc78bb2454678a550cc38d79de16821fa205f51951782db836148910d"
+    },
+    {
+      "path": "tasks/ACT-10.yml",
+      "sha256": "79dcd253ce8cee89df91f9b73af396c107f738673e0631961eafcbaeef39754d"
+    },
+    {
+      "path": "tasks/ACT-11.yml",
+      "sha256": "65a67c47494b31088b1eaba18d3f8f5afc4e47f7eea6d867292a3fdab172a37a"
+    },
+    {
+      "path": "tasks/ACT-12.yml",
+      "sha256": "510a187077c3f45d72e70dc74a5b2672ed2e5f7232c13f0d7c04dccbb6193367"
+    },
+    {
+      "path": "tasks/ACT-13.yml",
+      "sha256": "93a7ca3e8ecf0b10661f5a90d7cf447b62f3922df852d7f4b6326cd5d8a18285"
+    },
+    {
+      "path": "tasks/ACT-14.yml",
+      "sha256": "6e8b49c9756e93472a2bcc8c2c9749b7282f0fb8b94a695f9ba5795ea72987fb"
+    },
+    {
+      "path": "tasks/ACT-15.yml",
+      "sha256": "0504d463413a2f39a729309490b2d1698cc9943b83d0e67d4d06812abca93a58"
+    },
+    {
+      "path": "tasks/ACT-16.yml",
+      "sha256": "a8c852c656022b3240a95677d9f878f2e1c53cc596c9f61af7bdfa0d21b447ce"
+    },
+    {
+      "path": "tasks/ACT-17.yml",
+      "sha256": "53742ba31674c1aee7ff02451d9844c5a70021673a99140c4015d4f46d8a7c5e"
+    },
+    {
+      "path": "tasks/ACT-18.yml",
+      "sha256": "768f4a09847ed9c3e3eea3d5f247f7f386988a29c1fdab8afa138fb533f98a21"
+    },
+    {
+      "path": "tasks/ACT-STATE-01.yml",
+      "sha256": "6bf7a5010d5c049f8551cd41a9f9357cf157d49a67d5671d73078e9b4d3835b9"
+    },
+    {
+      "path": "tasks/AFTEST-01.yml",
+      "sha256": "234d3dced4f83fbf3bdd4e7d337f8b482bb84eec7e351b14a275345dffabfe3a"
+    },
+    {
+      "path": "tasks/ARCH-01.yml",
+      "sha256": "9b35d2ac76e6c813a8a85fb29a22a55d45dcec39ef992750135f6072f1d2cff5"
+    },
+    {
+      "path": "tasks/BUG-01.yml",
+      "sha256": "94b1db6ed8fec74cd78341a62d3f4f41344727cbf1e6420a93d278149153a148"
+    },
+    {
+      "path": "tasks/BUG-02A.yml",
+      "sha256": "4f6edeccf3d73498c0f30e7ff0a982da036da446bb688f6350794d5cb3afa53f"
+    },
+    {
+      "path": "tasks/BUG-02B.yml",
+      "sha256": "b86cbddaa7842b4b71d1eec7553f4630ee85bb6f80af74a4bcda7b512337697f"
+    },
+    {
+      "path": "tasks/BUG-02C-P.yml",
+      "sha256": "69970f26a756005af779c599d58a321c7c3adf97f1810f1397f5dd27a6aad585"
+    },
+    {
+      "path": "tasks/BUG-02C-P2.yml",
+      "sha256": "5800f2d27ab0edb6007bcf2085c09e4f5d9b10b2d9bb5a2c7865e1bbdbc5747c"
+    },
+    {
+      "path": "tasks/BUG-02C.yml",
+      "sha256": "7d2b16d6eb52fd990663e8860c46f7b38070f4b830e4fa30db160bb4bd31f7df"
+    },
+    {
+      "path": "tasks/BUG-02D.yml",
+      "sha256": "70981fc64063f266667e6611f2c85ed63bec6306b3dc86f7314773516fc77f69"
+    },
+    {
+      "path": "tasks/BUG-03.yml",
+      "sha256": "a5a1e07cb8a8a0552a32aadf536328c0f20bd0152d967875cfc900b87b08da42"
+    },
+    {
+      "path": "tasks/BUG-04.yml",
+      "sha256": "8d84907318b7bac652e1f3dd1f770779413aa1ac6806bb33a03ce5630ad2b434"
+    },
+    {
+      "path": "tasks/BUG-05.yml",
+      "sha256": "1519bb8d2e78119fde3a35df14d9df4e4e44419413ee8201d6dafa42d68c8cdb"
+    },
+    {
+      "path": "tasks/BUG-06.yml",
+      "sha256": "0e47e17f0c4fe16bc2cdabd76a7bdaea59a576f6c40af7fe1d242a9377ad1811"
+    },
+    {
+      "path": "tasks/CL-AFDP-01A.yml",
+      "sha256": "f8f195d69cdac0e4e994875804e9001fcd5f38b5323abb2035d6400fe4f442fd"
+    },
+    {
+      "path": "tasks/CL-AFDP-01B.yml",
+      "sha256": "218d0d4fb3aaf6779bf6c93f5d6536a8e0e94dc41bbd72ae183d640778ba9673"
+    },
+    {
+      "path": "tasks/CL-AFDP-02.yml",
+      "sha256": "097ee172883a1ee88ec0bea71188d7c283ea6caa9dae753b88f031e259a0eeab"
+    },
+    {
+      "path": "tasks/CL-AFDP-06.yml",
+      "sha256": "9750fa61420c75a8253865e64dd7e716d2555cfaea2371f55cf627240c32ad9a"
+    },
+    {
+      "path": "tasks/CL-AFDP-09A.yml",
+      "sha256": "714b7828e6f00a7872fc277a332cba8d0433c252b56c02f7b735a19160bc510a"
+    },
+    {
+      "path": "tasks/CL-AFFP-05.yml",
+      "sha256": "93d1efd4c4c47b77ca8bc1005f22acffdf8ebc8ede0a71c9328223823a981f82"
+    },
+    {
+      "path": "tasks/CL-AFSU-08A.yml",
+      "sha256": "b4bd350ba8c7dd877335de162e08cef799243253170c1baedc0ec14c5317a1fa"
+    },
+    {
+      "path": "tasks/CL-AFW-07A.yml",
+      "sha256": "018802301d86ac82306096e0789a3b2c86b2bdea8085c11321404369c7e965db"
+    },
+    {
+      "path": "tasks/CL-AFW-07B.yml",
+      "sha256": "3c0d648726876d2eb606fb83bf2757d9674e856e1f9fd8cb35daa94c21de9c4f"
+    },
+    {
+      "path": "tasks/CL-AFW-10.yml",
+      "sha256": "15b8081dec19bb447c598b4661459577d70b9d9579ff9a9a65071b3989bb10a4"
+    },
+    {
+      "path": "tasks/CL-RPOF-04A.yml",
+      "sha256": "55d17f942c1d8e8006518c19cd434251c19c6e40f4833074a46c30298bd09a03"
+    },
+    {
+      "path": "tasks/CL-RPOF-04B.yml",
+      "sha256": "dbb9088254d4f4c4772d59c7988efac8ba876b29c515513126a78c0b2ea50f49"
+    },
+    {
+      "path": "tasks/CL-WLO-01.yml",
+      "sha256": "a5d193c6defe5d8657bffd23ec8fb343aa8e8e3411ebf41aa1e4c6696d51ccdb"
+    },
+    {
+      "path": "tasks/ECT-01.yml",
+      "sha256": "c831026ce3411c1bb0ec07a0193383f0a582bd0316b0bcaef17d9d2c44915a96"
+    },
+    {
+      "path": "tasks/ECT-02.yml",
+      "sha256": "9ad5575c4b045190249489332c65893f235ee93d787accde21a7e45c462c47a0"
+    },
+    {
+      "path": "tasks/ECT-03.yml",
+      "sha256": "051fd6ab7ae95203133b8d64bca1ed181879efa96d3ae6f12f2e3c1f109b9ed5"
+    },
+    {
+      "path": "tasks/FO-24D-U1.yml",
+      "sha256": "f662dd8f863eba1a9cd8ad3c94fa2e005a34a0e147ba2d365602274eb8c05785"
+    },
+    {
+      "path": "tasks/FO-25.yml",
+      "sha256": "82d785c938069d1c26aed72fc84c799ca9ab324e795ad71c6c8b5f4229825448"
+    },
+    {
+      "path": "tasks/FS-01.yml",
+      "sha256": "5023fd2cbe20f4d88c846f4b872209205bab648adb16d57d2efd4ee2dfd3ab93"
+    },
+    {
+      "path": "tasks/FS-02.yml",
+      "sha256": "87684890b3f25ac5662ee4d6abfdba5362fe30b11ef2aece802203820be1cd8e"
+    },
+    {
+      "path": "tasks/FS-03.yml",
+      "sha256": "bcc828155ff1ed79bb0f132fc493143619437dc51fb411e3b69d9bf542132fb1"
+    },
+    {
+      "path": "tasks/FS-04.yml",
+      "sha256": "8137894f96fd21e40902d68b4d87711e5c4ac02ba41e56ed939d76380cd443f1"
+    },
+    {
+      "path": "tasks/FS-05.yml",
+      "sha256": "6e2ee3e51a793233454a719fd2e01f7ea7f74d5086fa194a11fd9512743af7a6"
+    },
+    {
+      "path": "tasks/FS-06.yml",
+      "sha256": "daa0f4fbe2091c2e16290b3cd62c3cca9bc6b17151263ac3a4020bd61f722bae"
+    },
+    {
+      "path": "tasks/FS-06A.yml",
+      "sha256": "71ebff8a37c83d6e004f99a324a26d790d0c7d7f6679d3e8b6af20e2b55143df"
+    },
+    {
+      "path": "tasks/FS-06B.yml",
+      "sha256": "f1f747d2f48699cc7f121b84800bc004dda44bf12e22a271bcf3ac219c16d30e"
+    },
+    {
+      "path": "tasks/FS-07.yml",
+      "sha256": "6543b33276146ddaddfbdef06f6921ff47d7517a5fc91806a7c504eb5edc8bc7"
+    },
+    {
+      "path": "tasks/IG-01.yml",
+      "sha256": "622ec99e44032e70591afa6ee52380f64cda987d8009c466792bb12ccc282aeb"
+    },
+    {
+      "path": "tasks/IG-02.yml",
+      "sha256": "494f3aed4e252bca7e6cf215d54d173ad8de6871a5e34126ebe2c3e3d358a9d3"
+    },
+    {
+      "path": "tasks/IG-03.yml",
+      "sha256": "db2548ccad60d7d1f83afb4997e6325a1dc134ca5959dd26d61a23b1dec2c1b6"
+    },
+    {
+      "path": "tasks/IG-04.yml",
+      "sha256": "88e0bdd69ef6363e6408a7d71c1da1051cd9a2c69451a96cee11fb73b2bdf977"
+    },
+    {
+      "path": "tasks/IG-05A.yml",
+      "sha256": "3daaaf40a4b36909a7346fcb2d137a9620bbd385014711f1009f7fae80afa8a2"
+    },
+    {
+      "path": "tasks/IG-05B.yml",
+      "sha256": "465c7063bcd08a312a00258b9ba3a0303443cd2b41c8243f9f34ce7f59aa4d5f"
+    },
+    {
+      "path": "tasks/IG-05C1.yml",
+      "sha256": "bbf8ca50a5f10542ee97f6680e76754fc5a38de28fd7ccb462537281758fcf58"
+    },
+    {
+      "path": "tasks/IG-05C2.yml",
+      "sha256": "a5b6953159e4f7310239b1a965958c1c770f7d3d6a6624f544cbcb851f07a565"
+    },
+    {
+      "path": "tasks/IG-05C3.yml",
+      "sha256": "ae897b70eb85be8dc32e929b23ddb5da9357ac23008811cfe4cfea18ce1ed011"
+    },
+    {
+      "path": "tasks/IG-05C4.yml",
+      "sha256": "e9dbbfffbe3fd98b65c60d774b26633dbc3e72c2e2dd6d4144ddf411041b5f9a"
+    },
+    {
+      "path": "tasks/IG-06.yml",
+      "sha256": "1ab6ed3c04d90a0ba1211459ac9b9c06ff91bc9776dcfff04c41f5b3a577d161"
+    },
+    {
+      "path": "tasks/IG-07A.yml",
+      "sha256": "816df47d7f056be7b9758e8bdb94987284f128014ccf50309ad33dfdc69c78bd"
+    },
+    {
+      "path": "tasks/IG-07B.yml",
+      "sha256": "331e22b11bc009a67fad5ba9a244e1ed039806570c4ac5466ed88e1647b7ac87"
+    },
+    {
+      "path": "tasks/IG-07C.yml",
+      "sha256": "25ede72db0ceb85fa8d32a7f45451e5ff2ef0ca47a5f23676f677cc11f1ce28e"
+    },
+    {
+      "path": "tasks/IG-08.yml",
+      "sha256": "9b644ef893fcb2e51633edc43ad02bab811cab347dd9134dcd5ae9e750d532eb"
+    },
+    {
+      "path": "tasks/IG-09A.yml",
+      "sha256": "b92958a4b1af582bfae071e994af99c7d5075e10ccb77edacbd8cfe93953ea28"
+    },
+    {
+      "path": "tasks/IG-09B.yml",
+      "sha256": "7f7da52bf7efcdb357b037f9791a84010247c417b9249113b89f663174a0a827"
+    },
+    {
+      "path": "tasks/IG-09C.yml",
+      "sha256": "826963c6077ad742aa56ac6e37a68fa3be20fb308276b90ede90ec610d6e713d"
+    },
+    {
+      "path": "tasks/IG-10.yml",
+      "sha256": "db620f3a1a7cc88514b7b1dd14eeb7a1c3d10a6ab6c7f283e1fdfcb24d6138ca"
+    },
+    {
+      "path": "tasks/IG-11A.yml",
+      "sha256": "0c1a5539a739268ead66907b33f8d870e426c0e37439afefcf8656b41ad2edab"
+    },
+    {
+      "path": "tasks/IG-11B.yml",
+      "sha256": "e24971994c7d64e82f0f96786f9ab7d3f48a7b7916ca38eb5fc63634f88ea3bc"
+    },
+    {
+      "path": "tasks/IG-11C.yml",
+      "sha256": "a77b18f0a1290fcb8bf5cd844ccf0b21c223eca074f12391d5cacabf2113bfb6"
+    },
+    {
+      "path": "tasks/IG-12A.yml",
+      "sha256": "324395c6c35d7b118297a6b995a46c10bfac97716a4b251cfe1fafdc65b3ca9d"
+    },
+    {
+      "path": "tasks/IG-12B.yml",
+      "sha256": "1a08875aa7bdcda7b523533f32ac92247cee8481130a22f5bf8ce8223bc082b6"
+    },
+    {
+      "path": "tasks/IG-13A.yml",
+      "sha256": "31a12f1da91ef05d5a0b902a24f057eea2dc658c4be32c5a231366a20c63c471"
+    },
+    {
+      "path": "tasks/IG-13B.yml",
+      "sha256": "f03ba590c24483a25b943be01d9f3c46b02b97ddcb64c7dcb52a1691c24f8fed"
+    },
+    {
+      "path": "tasks/IG-13C.yml",
+      "sha256": "2de45ee1c00a8198b2dcfd570c57b60c344753f1e12b4b6e8da0a69c67553736"
+    },
+    {
+      "path": "tasks/IG-14A.yml",
+      "sha256": "77e25940a1cce35db2f4569178c4b168bc7797923a7667b608cc674cff3e3f75"
+    },
+    {
+      "path": "tasks/IG-14B.yml",
+      "sha256": "5426d10809b0554226adae6c719c03dded26e5159d3d42daa9ea041be6d7f690"
+    },
+    {
+      "path": "tasks/IG-14C.yml",
+      "sha256": "381551756439f618be75b3a9fe951e8f08dd0d57ea2189129931e2134f313ea3"
+    },
+    {
+      "path": "tasks/IG-14D.yml",
+      "sha256": "8084454299d9c7d3f23285baa3f392f290a9b2f2cab2444de4bb711bcd487184"
+    },
+    {
+      "path": "tasks/IG-14E.yml",
+      "sha256": "52c36fe56b6c6d2c58ad30ab7f71e4d4ea30fa43e8853c7db97d5f9655bd2927"
+    },
+    {
+      "path": "tasks/IG-15A.yml",
+      "sha256": "90b499300c58869afa4186ad583d3a51c9115653a269ac498f47bf2df7f0859c"
+    },
+    {
+      "path": "tasks/IG-15B.yml",
+      "sha256": "9771849945bffdfaf0e7b7de4e745893ef651c2102580ad84a89725e39f41f08"
+    },
+    {
+      "path": "tasks/IG-15C1.yml",
+      "sha256": "80104a2574d9b2ff25f7d0cf6ca9ca5fbaec400f677a68002bce51a8c909cf81"
+    },
+    {
+      "path": "tasks/IG-15C2.yml",
+      "sha256": "c212e6b2159fed6a26159c3c0b43976647b89690e91fa33b3309d59550bcaf4d"
+    },
+    {
+      "path": "tasks/IG-15C3.yml",
+      "sha256": "f562df41bbe45ab997cd95b2ca5d11b69f35e6d8b387a9b17ae8e3300a8595f1"
+    },
+    {
+      "path": "tasks/IG-15D.yml",
+      "sha256": "7f5659c212f4f978d644276f08796730c2098845788c78ca2e64275211015d00"
+    },
+    {
+      "path": "tasks/IG-16A.yml",
+      "sha256": "c4127397c06d042f153e57b1210cfc5a7e8c9a75dc863458d4e47399abb07541"
+    },
+    {
+      "path": "tasks/IG-16B.yml",
+      "sha256": "efe99205f7bedca716a359b9b8dec9791fca4e11365b02b0aa7130de9a7e5260"
+    },
+    {
+      "path": "tasks/IG-16C.yml",
+      "sha256": "7ac1b1ab42b057eec8076c14449506d214c87189088e7fbabd5e5377659d79fc"
+    },
+    {
+      "path": "tasks/IG-17.yml",
+      "sha256": "2be24c6694533832e8ddb0806bdea867438316fe8ba13b30a0242279c903a21e"
+    },
+    {
+      "path": "tasks/IG-17F.yml",
+      "sha256": "d3d640956a33373bedfe779932f69d773baeb62b875fadb55d028e648068926c"
+    },
+    {
+      "path": "tasks/IG-18A1.yml",
+      "sha256": "cf11ca20299b032743932377697e3631da3b31dc7f97bd79bb538ace33c8171c"
+    },
+    {
+      "path": "tasks/IG-18A2.yml",
+      "sha256": "59d5aa28bb3d6259ff4d1c4105cefe853cf44ed765f008d841679a25a84101d7"
+    },
+    {
+      "path": "tasks/IG-18A3.yml",
+      "sha256": "6932bb25cefc2e0115d9165be529ee9d2df05449189433ab9472837924847080"
+    },
+    {
+      "path": "tasks/IG-18B.yml",
+      "sha256": "0e9ae6113f95a36afe269083d0711600ba63c8c28c16e1dff157ac39cd5e048b"
+    },
+    {
+      "path": "tasks/IG-18C.yml",
+      "sha256": "979a4ed77f38302f0485dca510267ebd532c75b7174eaeb9057860520b09ae16"
+    },
+    {
+      "path": "tasks/IG-19A.yml",
+      "sha256": "00455366e7dc55c22702b54bb6ee7d11a9f01ff3b7d499f929ac420c93cbce9a"
+    },
+    {
+      "path": "tasks/IG-19B.yml",
+      "sha256": "79f592a7fa94eb9ba8dcca91676e5d0495e899d9e5190f2aad6400997052d1c6"
+    },
+    {
+      "path": "tasks/IG-19C.yml",
+      "sha256": "3a000a1a5fb944a1bc4610e3e55960310408cb3857b7660ed73f8646b4d0bbab"
+    },
+    {
+      "path": "tasks/IG-19D-1.yml",
+      "sha256": "783dabbc62bda4bf39241a840a28462999f7e77749562d20036e9271dd2215da"
+    },
+    {
+      "path": "tasks/IG-19D-2.yml",
+      "sha256": "5c9985957048aca90a1ec688c88ac81b0ef1085aed38c58caf9834da81490793"
+    },
+    {
+      "path": "tasks/IG-19D-3.yml",
+      "sha256": "a49dc3d102ef332678395f37c44e334684fa03e770cc88cca24e284ac140fbad"
+    },
+    {
+      "path": "tasks/IG-19D.yml",
+      "sha256": "32b2d81fa274b924732725b275b86bbe285b602ecb4bb76c3d50159b006ae519"
+    },
+    {
+      "path": "tasks/IG-19E-F1.yml",
+      "sha256": "7ffef8f2ea761ae10e73d9a96a454dd03eb7c887e11c202b4d25552f2b7f35e2"
+    },
+    {
+      "path": "tasks/IG-19E-F2.yml",
+      "sha256": "383b846455a12bd24090717069f9592473ee4b7f9d9f8c066ada322d5ce1deef"
+    },
+    {
+      "path": "tasks/IG-19E-F3.yml",
+      "sha256": "6363d11e312d5fdc3cf2f1389d04fd42aacfbe9329a1bccc277ffe161f936233"
+    },
+    {
+      "path": "tasks/IG-19E.yml",
+      "sha256": "0733c7d4b7461df890061de26f60e91b1b072bdab64f17c5a7a54bf89fed9af3"
+    },
+    {
+      "path": "tasks/IG-19F.yml",
+      "sha256": "fe4fe5c7d589ba65415862144a7cc9da1785781ab0746e8b5e17fff3fb29053b"
+    },
+    {
+      "path": "tasks/NC-01.yml",
+      "sha256": "82407f98f64cf2fc20133e8df90f6a9c9433b60b5c8f61679585e0338b52670c"
+    },
+    {
+      "path": "tasks/NC-02A.yml",
+      "sha256": "40d31dadf05e17a5879548b81a6368dce0f58a5543518b178a0ff3f0b9438e99"
+    },
+    {
+      "path": "tasks/NC-02B.yml",
+      "sha256": "faf8a89cb6aac47c2ae0c153c4927ae30bb17b6b7fbee00c226b5ef6d37f78e7"
+    },
+    {
+      "path": "tasks/NC-02C.yml",
+      "sha256": "6fff8ce7808fcf3c6a58aab55bd269cdc4c5053081059f008afb2a1032cafc5b"
+    },
+    {
+      "path": "tasks/NC-02D.yml",
+      "sha256": "0fd9f16ff60a087851e40620766539b931d5ef9d1ee3abd99d648eafb9799db8"
+    },
+    {
+      "path": "tasks/TST-01.yml",
+      "sha256": "ea63c6dc987dba6d04a87cb182185d9bde2fb918526eac28eacf7d5a31466e73"
+    },
+    {
+      "path": "tasks/TST-02.yml",
+      "sha256": "2e3e4d2f0a22251a38e0b95d93194f36977358cee82b44ab9a43f93b9cd09a3d"
+    },
+    {
+      "path": "tasks/TST-03.yml",
+      "sha256": "20d8fa4ae27e453a8abd9ff1dea08cdaa0bc227117866e2ec02577db7a9f4ce1"
+    },
+    {
+      "path": "tasks/TST-04.yml",
+      "sha256": "d92db601f69e1457063a24e0187a5c433f160557531d167c171410c65e912da4"
+    },
+    {
+      "path": "tasks/TST-05A.yml",
+      "sha256": "282ab391d1073c19718f86ce36c1e140f017fbc6b56ea6cb05ea370dbe08d112"
+    },
+    {
+      "path": "tasks/TST-05B.yml",
+      "sha256": "37b6cec6647ad10248f8885c6f8b26ea17aaa7a7d28e1b714cdfd1df3db62e9c"
+    },
+    {
+      "path": "tasks/TST-06A.yml",
+      "sha256": "ba3cd73205201f0e0f86b3e4f967046a9fd7abffad9dff91aeba5a1f3d36ce8c"
+    },
+    {
+      "path": "tasks/TST-06B.yml",
+      "sha256": "5b07031d6fc85392c6564d5b19113fa1c880b248b8061b9a0194d9ba77648a80"
+    },
+    {
+      "path": "tasks/TST-07.yml",
+      "sha256": "742355779ab41fa9ad74d974aba4ca61fdd5c4fba67c6627ebba9fcf4d83f47e"
+    },
+    {
+      "path": "tasks/TST-08.yml",
+      "sha256": "e8f6bf9c7229a9cb0949dc449d4d3d70601fbbedc8699954a29bcca05d7c7e4f"
+    },
+    {
+      "path": "tasks/TST-09.yml",
+      "sha256": "10907aea2336468fb80ca297daf4f7432493986e1e68efe225c787b3540e431a"
+    },
+    {
+      "path": "tasks/TST-10.yml",
+      "sha256": "1fc1908ed66d5dc36ec9f9251ee06743c6ea698ed66be84f277b375968f9f9b3"
+    },
+    {
+      "path": "tasks/TST-11.yml",
+      "sha256": "6d74f3d008d806dc03658993cf6841e90ee9f358e0e73a5fe889001931c98704"
+    },
+    {
+      "path": "tasks/TST-12.yml",
+      "sha256": "3be8b66eb8b685a9e37f8ed520cee25851ea5179f4df9bfd562afb05437e0165"
+    },
+    {
+      "path": "tasks/TST-13.yml",
+      "sha256": "4d0495c443e40639ac48f0d81e822badedb7c5afcd20c3029992779861fce663"
+    }
+  ]
+}

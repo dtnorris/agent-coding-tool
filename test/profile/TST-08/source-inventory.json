@@ -1,0 +1,2442 @@
+[
+  {
+    "path": "test/cli_test.rb",
+    "sha256": "4b5c049ae4319868865e86a1cfb109188bdc6e93fcd586762b6b5bad00ad1188",
+    "default": true,
+    "classes": [
+      "CLITest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_prepare_prints_worker_recommendation_once_after_complete_prompt_and_keeps_prompt_file_clean",
+        "line": 18
+      },
+      {
+        "method": "test_prepare_prints_astra_recommendation_at_bottom",
+        "line": 46
+      },
+      {
+        "method": "test_prepare_without_worker_recommendation_preserves_existing_output",
+        "line": 62
+      },
+      {
+        "method": "test_prepare_writes_and_prints_one_documentation_section_for_spec_and_source_only_tasks",
+        "line": 77
+      },
+      {
+        "method": "test_start_command_and_status",
+        "line": 126
+      },
+      {
+        "method": "test_start_command_errors",
+        "line": 148
+      },
+      {
+        "method": "test_help_lists_start",
+        "line": 162
+      },
+      {
+        "method": "test_received_records_candidate_with_metadata_and_preserves_staleness",
+        "line": 169
+      },
+      {
+        "method": "test_finish_records_complete_with_metadata_snapshot_and_unblocks_dependents",
+        "line": 200
+      },
+      {
+        "method": "test_received_and_finish_require_exactly_one_task",
+        "line": 235
+      },
+      {
+        "method": "test_record_remains_backward_compatible_for_every_outcome",
+        "line": 250
+      },
+      {
+        "method": "test_record_persists_next_action_and_rejects_it_for_successful_outcomes",
+        "line": 271
+      },
+      {
+        "method": "test_help_documents_received_finish_and_generic_record",
+        "line": 294
+      },
+      {
+        "method": "test_status_completion_filters_and_explicit_lookup",
+        "line": 306
+      },
+      {
+        "method": "test_status_orders_for_scanability_and_formats_dependency_reasons",
+        "line": 330
+      },
+      {
+        "method": "test_candidate_moves_above_in_flight_and_multiple_ready_tasks",
+        "line": 374
+      },
+      {
+        "method": "test_status_truncates_dashboard_headlines_and_wraps_reasons_with_deliberate_indentation",
+        "line": 403
+      },
+      {
+        "method": "test_status_wraps_colored_output_by_visible_width",
+        "line": 439
+      },
+      {
+        "method": "test_every_broad_status_uses_the_same_single_line_headline_rule",
+        "line": 460
+      },
+      {
+        "method": "test_headline_truncation_adapts_to_three_terminal_widths_and_preserves_fitting_titles",
+        "line": 498
+      },
+      {
+        "method": "test_headline_truncation_handles_ansi_wide_unicode_and_combining_graphemes",
+        "line": 528
+      },
+      {
+        "method": "test_explicit_status_preserves_full_title_and_diagnostic",
+        "line": 556
+      },
+      {
+        "method": "test_status_compacts_needs_judgment_handoff_at_dynamic_widths",
+        "line": 569
+      },
+      {
+        "method": "test_status_keeps_fitting_needs_judgment_reason_and_omits_missing_next_action",
+        "line": 602
+      },
+      {
+        "method": "test_status_bounds_needs_judgment_details_for_extreme_widths_and_ansi_unicode",
+        "line": 619
+      },
+      {
+        "method": "test_needs_judgment_broad_status_truncates_but_explicit_status_preserves_full_details",
+        "line": 654
+      },
+      {
+        "method": "test_dependency_only_blocked_status_does_not_show_retry_guidance",
+        "line": 686
+      },
+      {
+        "method": "test_status_truncates_colored_in_flight_title_at_same_visible_location_as_plain_output",
+        "line": 700
+      },
+      {
+        "method": "test_status_preserves_in_flight_prefix_when_terminal_is_too_narrow_for_a_title",
+        "line": 724
+      },
+      {
+        "method": "test_status_uses_columns_for_non_tty_output_and_honors_no_color",
+        "line": 736
+      },
+      {
+        "method": "test_status_ranks_ready_tasks_by_downstream_depth_then_distinct_count_then_natural_id",
+        "line": 761
+      },
+      {
+        "method": "test_status_displays_completion_metrics_for_fresh_candidates_without_reordering_them",
+        "line": 809
+      },
+      {
+        "method": "test_status_ranks_ready_tasks_by_parallel_width_then_unlock_count_before_downstream_metrics",
+        "line": 845
+      },
+      {
+        "method": "test_status_displays_retained_completions_oldest_to_newest_after_unrankable_rows",
+        "line": 881
+      },
+      {
+        "method": "test_status_orders_five_or_fewer_timestamped_completions_oldest_to_newest",
+        "line": 911
+      },
+      {
+        "method": "test_status_formats_broad_in_flight_tasks_and_compacts_read_only_freshness",
+        "line": 926
+      },
+      {
+        "method": "test_status_preserves_full_in_flight_freshness_reason_for_explicit_lookup",
+        "line": 948
+      },
+      {
+        "method": "test_status_limits_blocked_tasks_to_three_ranked_by_incomplete_dependency_count",
+        "line": 963
+      },
+      {
+        "method": "test_status_all_keeps_every_blocked_task",
+        "line": 1013
+      },
+      {
+        "method": "test_status_preserves_single_task_lookup_without_dashboard_spacing",
+        "line": 1034
+      },
+      {
+        "method": "test_status_dashboards_show_live_blocker_without_treating_prepared_tasks_as_blockers",
+        "line": 1051
+      },
+      {
+        "method": "test_collision_reason_is_width_bounded_and_unicode_and_ansi_aware",
+        "line": 1072
+      },
+      {
+        "method": "test_multiple_blockers_are_counted_in_broad_status_and_complete_in_explicit_status",
+        "line": 1101
+      },
+      {
+        "method": "test_read_only_refresh_and_collision_are_distinct_dashboard_diagnostics",
+        "line": 1130
+      },
+      {
+        "method": "test_status_rejects_conflicting_completion_filters",
+        "line": 1148
+      },
+      {
+        "method": "test_help_documents_status_completion_filters",
+        "line": 1160
+      },
+      {
+        "method": "test_default_data_root_is_sibling_named_after_tool_checkout",
+        "line": 1166
+      },
+      {
+        "method": "test_data_root_environment_override_wins",
+        "line": 1172
+      },
+      {
+        "method": "test_cli_fails_closed_when_data_directory_is_missing",
+        "line": 1179
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/coding_skill_support.rb",
+    "sha256": "3a0a8bbe96ff9f5a3d7958bcc3bfeedff4c01e03f215966d0f27fa3e13ef01c3",
+    "default": false,
+    "classes": [],
+    "test_methods": [],
+    "boundary_source_lines": [
+      {
+        "line": 28,
+        "text": "_out, error, status = Open3.capture3(\"git\", \"-C\", root, *args)"
+      },
+      {
+        "line": 31,
+        "text": "revision, error, status = Open3.capture3(\"git\", \"-C\", root, \"rev-parse\", \"HEAD\")"
+      }
+    ]
+  },
+  {
+    "path": "test/coding_skill_test.rb",
+    "sha256": "cb3124c2afd43638ced7768bde1f0607cfe5898dae77edd064f95978422b4991",
+    "default": true,
+    "classes": [
+      "CodingSkillTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_complete_skill_once_with_identity_and_only_offline_git_reads",
+        "line": 18
+      },
+      {
+        "method": "test_every_worker_prompt_includes_skill_regardless_of_checkpoint_or_access",
+        "line": 37
+      },
+      {
+        "method": "test_missing_source_incorrect_revision_and_integrity_mismatch_fail_explicitly",
+        "line": 48
+      },
+      {
+        "method": "test_malformed_metadata_is_rejected_even_with_matching_fingerprint",
+        "line": 63
+      },
+      {
+        "method": "test_source_failures_do_not_partially_prepare_or_erase_prior_evidence",
+        "line": 79
+      },
+      {
+        "method": "test_branch_movement_and_dirty_source_do_not_change_prepare_or_cold_launch",
+        "line": 107
+      },
+      {
+        "method": "test_pin_changes_block_reprepare_and_launch_while_legacy_can_explicitly_prepare",
+        "line": 129
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 20,
+        "text": "capture = Open3.method(:capture3)"
+      },
+      {
+        "line": 22,
+        "text": "prompt = Open3.stub(:capture3, lambda { |*args|"
+      },
+      {
+        "line": 173,
+        "text": "_out, error, status = Open3.capture3(\"git\", \"clone\", \"--no-hardlinks\", AgentCodingTool::PromptRenderer::SKILL_ROOT, root)"
+      },
+      {
+        "line": 177,
+        "text": "revision, error, status = Open3.capture3(\"git\", \"-C\", root, \"rev-parse\", \"HEAD\")"
+      },
+      {
+        "line": 186,
+        "text": "_out, error, status = Open3.capture3(\"git\", \"-C\", root, *args)"
+      }
+    ]
+  },
+  {
+    "path": "test/config_test.rb",
+    "sha256": "d0ff2f1a604c8499206a81166db40514762e8201eff3758a6db73665c822647d",
+    "default": true,
+    "classes": [
+      "ConfigTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_missing_config_uses_data_directory_parent_as_repo_root",
+        "line": 6
+      },
+      {
+        "method": "test_relative_repo_root_is_resolved_from_data_directory",
+        "line": 18
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/coordinator_test.rb",
+    "sha256": "182179ab1aae95d5dfa5e6ec759e5f220ef6a452c36013a2e8d3cbb0f03c17bc",
+    "default": true,
+    "classes": [
+      "CoordinatorTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_start_preserves_preparation_and_rejects_double_start",
+        "line": 44
+      },
+      {
+        "method": "test_start_requires_existing_prepared_task",
+        "line": 63
+      },
+      {
+        "method": "test_every_result_ends_in_flight_and_prevents_start",
+        "line": 74
+      },
+      {
+        "method": "test_fresh_preparation_clears_in_flight_with_or_without_retry",
+        "line": 92
+      },
+      {
+        "method": "test_retry_clears_result_and_any_retained_in_flight_marker",
+        "line": 106
+      },
+      {
+        "method": "test_reset_clears_in_flight",
+        "line": 125
+      },
+      {
+        "method": "test_in_flight_preserves_read_only_reconciliation_and_writable_staleness",
+        "line": 137
+      },
+      {
+        "method": "test_incomplete_dependencies_take_precedence_over_in_flight",
+        "line": 162
+      },
+      {
+        "method": "test_new_task_is_ready",
+        "line": 176
+      },
+      {
+        "method": "test_dependency_must_be_complete_before_prepare",
+        "line": 185
+      },
+      {
+        "method": "test_ig_13a_shaped_preparation_hands_off_both_dependencies_and_read_authority",
+        "line": 200
+      },
+      {
+        "method": "test_missing_dependency_completion_snapshot_is_explicitly_unverified",
+        "line": 234
+      },
+      {
+        "method": "test_incomplete_completion_provenance_is_not_presented_as_a_verified_head",
+        "line": 249
+      },
+      {
+        "method": "test_incomplete_dependency_does_not_emit_prompt_or_snapshot",
+        "line": 266
+      },
+      {
+        "method": "test_prepare_renders_exact_pushed_heads_and_scope",
+        "line": 279
+      },
+      {
+        "method": "test_prepared_task_becomes_stale_when_pushed_main_moves",
+        "line": 308
+      },
+      {
+        "method": "test_candidate_can_be_recorded_and_staleness_remains_fail_closed",
+        "line": 331
+      },
+      {
+        "method": "test_needs_judgment_is_a_first_class_status",
+        "line": 359
+      },
+      {
+        "method": "test_retryable_outcomes_preserve_explicit_next_action_and_legacy_results_remain_valid",
+        "line": 373
+      },
+      {
+        "method": "test_next_action_is_rejected_for_successful_outcomes",
+        "line": 400
+      },
+      {
+        "method": "test_read_only_movement_requires_reconciliation_without_invalidating_prepared_or_candidate_tasks",
+        "line": 417
+      },
+      {
+        "method": "test_mixed_movement_is_hard_stale_because_of_writable_repository",
+        "line": 448
+      },
+      {
+        "method": "test_explicit_outcomes_keep_precedence_over_head_movement",
+        "line": 467
+      },
+      {
+        "method": "test_missing_read_only_preparation_snapshot_still_fails_closed",
+        "line": 492
+      },
+      {
+        "method": "test_retry_is_explicit_after_non_complete_result",
+        "line": 506
+      },
+      {
+        "method": "test_broad_status_batches_freshness_without_full_repository_snapshots",
+        "line": 521
+      },
+      {
+        "method": "test_single_task_status_uses_optimized_freshness_path",
+        "line": 547
+      },
+      {
+        "method": "test_terminal_ready_and_dependency_blocked_tasks_skip_freshness_work",
+        "line": 562
+      },
+      {
+        "method": "test_recent_completion_filter_keeps_five_newest_in_task_store_order",
+        "line": 593
+      },
+      {
+        "method": "test_recent_completion_filter_keeps_all_when_five_or_fewer_are_complete",
+        "line": 616
+      },
+      {
+        "method": "test_recent_completion_filter_keeps_unrankable_completions_visible",
+        "line": 629
+      },
+      {
+        "method": "test_all_and_active_completion_filters_preserve_selected_order",
+        "line": 647
+      },
+      {
+        "method": "test_hidden_complete_dependency_still_unblocks_visible_task",
+        "line": 660
+      },
+      {
+        "method": "test_recent_filter_does_not_add_freshness_work_for_hidden_completions",
+        "line": 676
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/family_status_test.rb",
+    "sha256": "bb8b7cdf230bd17c45f61aeb5e3e61b8f2b96c126d21326e2c2480fa835eb3b0",
+    "default": true,
+    "classes": [
+      "FamilyStatusTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_zero_one_six_and_seven_ready",
+        "line": 69
+      },
+      {
+        "method": "test_four_families_and_act_preference_have_exact_summaries",
+        "line": 86
+      },
+      {
+        "method": "test_one_two_and_three_family_allocations",
+        "line": 106
+      },
+      {
+        "method": "test_reserved_leaders_cannot_hide_global_next_for_four_or_fewer_families",
+        "line": 120
+      },
+      {
+        "method": "test_status_next_and_json_share_priority_and_cross_family_reservations",
+        "line": 148
+      },
+      {
+        "method": "test_all_four_metrics_natural_ties_and_non_ready_order",
+        "line": 172
+      },
+      {
+        "method": "test_family_filter_completion_window_and_blocked_limit",
+        "line": 194
+      },
+      {
+        "method": "test_invalid_selectors_and_unsupported_options",
+        "line": 217
+      },
+      {
+        "method": "test_narrow_width_color_no_color_and_shell_escaped_fallback",
+        "line": 232
+      },
+      {
+        "method": "test_act14_is_not_hardcoded_and_stale_inspection_fails_closed",
+        "line": 261
+      },
+      {
+        "method": "test_batch39_cleanup_priority_across_public_views",
+        "line": 283
+      },
+      {
+        "method": "test_batch39_exception_preserves_unrelated_positions_and_metrics",
+        "line": 317
+      },
+      {
+        "method": "test_batch39_missing_non_ready_and_similar_ids_receive_no_exception",
+        "line": 331
+      },
+      {
+        "method": "test_batch39_priority_does_not_bypass_reservations_staleness_or_dependencies",
+        "line": 347
+      },
+      {
+        "method": "test_batch39_exception_adds_no_status_probes",
+        "line": 382
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/integration/attempt_retry_git_integration.rb",
+    "sha256": "238d3db9b523f443516404e5b236b0aca988dd0fd1b00c88d8580fead701920f",
+    "default": false,
+    "classes": [
+      "AttemptRecoveryTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_public_exit_zero_closeout_fresh_retry_preserves_both_attempts",
+        "line": 158
+      },
+      {
+        "method": "test_partial_creation_before_and_after_native_add_is_preserved",
+        "line": 211
+      },
+      {
+        "method": "test_missing_ownership_after_native_mutation_refuses_without_changes",
+        "line": 233
+      },
+      {
+        "method": "test_legacy_fixed_path_mixed_history_is_accurately_classified",
+        "line": 253
+      },
+      {
+        "method": "test_dirty_resources_refuse_before_any_closeout_or_retry_mutation",
+        "line": 285
+      },
+      {
+        "method": "test_tampered_artifacts_and_closeout_refuse_without_mutation",
+        "line": 315
+      },
+      {
+        "method": "test_unsuccessful_execution_statuses_can_close_and_retry",
+        "line": 345
+      },
+      {
+        "method": "test_child_start_failure_is_preserved_and_can_retry",
+        "line": 363
+      },
+      {
+        "method": "test_already_attempted_preparation_cannot_be_reused",
+        "line": 381
+      },
+      {
+        "method": "test_closeout_lock_race_and_cold_repeat_after_publication_interruption",
+        "line": 399
+      },
+      {
+        "method": "test_interrupted_evidence_publication_remains_precisely_blocked",
+        "line": 428
+      },
+      {
+        "method": "test_historical_checkpoint_uses_original_preparation_after_retry",
+        "line": 450
+      },
+      {
+        "method": "test_sibling_terminal_review_is_independent_in_both_orders",
+        "line": 494
+      },
+      {
+        "method": "test_ownership_delivery_candidate_and_changed_state_refusals",
+        "line": 518
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 15,
+        "text": "def fixture(readers: 0)"
+      },
+      {
+        "line": 87,
+        "text": "output, error, status = Open3.capture3(\"git\", *args, chdir: directory)"
+      },
+      {
+        "line": 132,
+        "text": "output, error, status = Open3.capture3(environment, RbConfig.ruby, \"-I#{File.join(Dir.pwd, 'lib')}\","
+      },
+      {
+        "line": 160,
+        "text": "fixture(readers: outcome == \"blocked\" ? 7 : 0) do"
+      },
+      {
+        "line": 254,
+        "text": "fixture(readers: 7) do"
+      },
+      {
+        "line": 433,
+        "text": "File.stub(:rename, ->(*) { raise IOError, \"injected rename failure\" }) do"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/checkpoint_git_integration.rb",
+    "sha256": "1825110f4888bcb4c65527a5108b57cac1998d67e883199d0855819a6b0463e9",
+    "default": false,
+    "classes": [
+      "CheckpointTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace",
+        "line": 69
+      },
+      {
+        "method": "test_incomplete_and_symlinked_artifacts_cannot_replace_good_checkpoint",
+        "line": 100
+      },
+      {
+        "method": "test_stale_checkpoint_blocks_expensive_command_then_refreshes",
+        "line": 123
+      },
+      {
+        "method": "test_wrong_baseline_and_foreign_or_symlinked_evidence_fail_closed",
+        "line": 156
+      },
+      {
+        "method": "test_multiple_writers_fail_closed",
+        "line": 173
+      },
+      {
+        "method": "test_launch_attempt_rejects_foreign_workspace_and_partial_run_evidence",
+        "line": 193
+      },
+      {
+        "method": "test_exemption_and_old_task_default",
+        "line": 211
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 15,
+        "text": "_out, err, status = Open3.capture3(\"git\", \"init\", \"--initial-branch=main\", ordinary)"
+      },
+      {
+        "line": 18,
+        "text": "_out, err, status = Open3.capture3(\"git\", \"config\", key, value, chdir: ordinary)"
+      },
+      {
+        "line": 25,
+        "text": "_out, err, status = Open3.capture3(\"git\", *args, chdir: ordinary)"
+      },
+      {
+        "line": 28,
+        "text": "_out, err, status = Open3.capture3(\"git\", \"clone\", \"--bare\", ordinary, remote)"
+      },
+      {
+        "line": 34,
+        "text": "out, err, status = Open3.capture3(\"git\", *args, **(chdir ? { chdir: chdir } : {}))"
+      },
+      {
+        "line": 57,
+        "text": "File.rename(File.join(workspace, \"renamed.txt\"), File.join(workspace, \"moved.txt\"))"
+      },
+      {
+        "line": 109,
+        "text": "File.binwrite(tracked_only, Open3.capture3(\"git\", \"diff\", \"--binary\", \"HEAD\", chdir: workspace).first)"
+      },
+      {
+        "line": 139,
+        "text": "checkpoint.stub(:verify_patch!, ->(*) { raise AgentCodingTool::InvalidState, \"injected verification interruption\" }) do"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/delivery_manager_git_integration.rb",
+    "sha256": "79f57f93d5324f5c9ab6df2602a46fca767619d59ef884d43b44a2e40ef4b615",
+    "default": false,
+    "classes": [
+      "DeliveryManagerTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_validates_exact_bytes_then_commits_pushes_once_and_opens_draft",
+        "line": 132
+      },
+      {
+        "method": "test_symlinked_temporary_root_matches_launcher_path_contract",
+        "line": 153
+      },
+      {
+        "method": "test_fails_closed_on_skipped_or_missing_evidence_and_unauthorized_paths",
+        "line": 173
+      },
+      {
+        "method": "test_crash_after_remote_push_or_pr_recovers_without_duplicates",
+        "line": 186
+      },
+      {
+        "method": "test_private_output_blocks_publication_but_retains_local_commit_and_logs",
+        "line": 199
+      },
+      {
+        "method": "test_tampering_with_log_or_source_blocks_recovery",
+        "line": 208
+      },
+      {
+        "method": "test_stale_main_competing_feature_ref_and_forged_worker_artifact_block",
+        "line": 223
+      },
+      {
+        "method": "test_coverage_floor_is_host_enforced",
+        "line": 241
+      },
+      {
+        "method": "test_live_git_push_adapter_creates_only_absent_feature_ref",
+        "line": 252
+      },
+      {
+        "method": "test_live_guard_rejects_unbounded_or_unclassified_publication",
+        "line": 268
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 64,
+        "text": "def fixture(output: \"2 tests, 3 assertions, 0 failures, 0 errors, 0 skips\", allowed: [\"file.txt\"])"
+      },
+      {
+        "line": 122,
+        "text": "provider: provider, guard: guard)"
+      },
+      {
+        "line": 128,
+        "text": "out, err, status = Open3.capture3(\"git\", *args, chdir: path)"
+      },
+      {
+        "line": 176,
+        "text": "fixture(output: output) do |manager, provider, _guard, _coordinator, _workspace, run_dir, _data|"
+      },
+      {
+        "line": 181,
+        "text": "fixture(allowed: [\"different.txt\"]) do |manager, provider, _guard, _coordinator, _workspace, run_dir, _data|"
+      },
+      {
+        "line": 201,
+        "text": "fixture(output: \"token ghp_secret 2 tests, 3 assertions, 0 failures, 0 errors, 0 skips\") do |manager, provider, _guard, _coordinator, workspace, run_dir, _data|"
+      },
+      {
+        "line": 243,
+        "text": "fixture(output: \"2 tests, 3 assertions, 0 failures, 0 errors, 0 skips; Coverage: 89.9%\") do |manager, provider, _guard, _coordinator, _workspace, run_dir, data|"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/manual_parallel_native_sandbox.rb",
+    "sha256": "13f312b8613f1aa2866873170e607fdd77de4d33c17435c64fc4f3b357f5fc4a",
+    "default": false,
+    "classes": [
+      "ManualParallelNativeSandboxTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_native_new_worker_boundary",
+        "line": 15
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 19,
+        "text": "version, error, status = Open3.capture3(codex, \"--version\")"
+      },
+      {
+        "line": 22,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 50,
+        "text": "child = Process.spawn(RbConfig.ruby, \"-e\","
+      },
+      {
+        "line": 51,
+        "text": "'File.write(ARGV[1], \"ready\"); 200.times { File.write(ARGV[0], \"active\"); sleep 0.025 }',"
+      },
+      {
+        "line": 54,
+        "text": "Timeout.timeout(5) { sleep 0.01 until File.file?(ready) }"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/multi_delivery_git_integration.rb",
+    "sha256": "8cf07e33a6f480889326de250933cf7c0ee90000a4a0f4d31980a32d0563b399",
+    "default": false,
+    "classes": [
+      "MultiDeliveryGitIntegration"
+    ],
+    "test_methods": [
+      {
+        "method": "test_two_writers_validate_publish_cross_link_and_resume",
+        "line": 149
+      },
+      {
+        "method": "test_second_validation_failure_publishes_nothing",
+        "line": 181
+      },
+      {
+        "method": "test_unchanged_writer_requires_no_pr_and_can_be_cleaned",
+        "line": 189
+      },
+      {
+        "method": "test_lost_push_response_recovers_without_duplicate_push",
+        "line": 212
+      },
+      {
+        "method": "test_moved_authority_and_competing_feature_ref_block_publication",
+        "line": 224
+      },
+      {
+        "method": "test_squash_integration_cleanup_refusals_and_interrupted_resume",
+        "line": 242
+      },
+      {
+        "method": "test_cleanup_refuses_unmerged_unsynchronized_unknown_and_foreign",
+        "line": 294
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 19,
+        "text": "remote, _err, status = Open3.capture3(\"git\", \"remote\", \"get-url\", remote_name, chdir: workspace)"
+      },
+      {
+        "line": 69,
+        "text": "output, err, status = Open3.capture3(\"git\", *args, chdir: directory)"
+      },
+      {
+        "line": 74,
+        "text": "def fixture(fail_second: false, change_beta: true)"
+      },
+      {
+        "line": 145,
+        "text": "coordinator: Coordinator.new(data, snapshot), provider: provider, guard: guard)"
+      },
+      {
+        "line": 183,
+        "text": "fixture(fail_second: true) do |manager, provider, _data, run, _paths, _snapshot|"
+      },
+      {
+        "line": 191,
+        "text": "fixture(change_beta: false) do |manager, provider, data, run, paths, snapshot|"
+      },
+      {
+        "line": 206,
+        "text": "handler = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider, liveness: ClearLiveness.new)"
+      },
+      {
+        "line": 259,
+        "text": "handler = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider, liveness: ClearLiveness.new)"
+      },
+      {
+        "line": 277,
+        "text": "interrupted = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider,"
+      },
+      {
+        "line": 302,
+        "text": "handler = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider, liveness: ClearLiveness.new)"
+      },
+      {
+        "line": 320,
+        "text": "unknown = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider,"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/publisher_git_integration.rb",
+    "sha256": "3d573e3bab58a130638fbc65926026577283865b84bdad642a2e1426f9a80db4",
+    "default": false,
+    "classes": [
+      "PublisherTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_default_publishes_only_lifecycle_files_and_preserves_other_index_content",
+        "line": 57
+      },
+      {
+        "method": "test_task_scope_and_invalid_arguments",
+        "line": 77
+      },
+      {
+        "method": "test_all_sweeps_tracked_untracked_staged_and_deletions_but_not_ignored",
+        "line": 98
+      },
+      {
+        "method": "test_all_three_dry_runs_are_read_only",
+        "line": 114
+      },
+      {
+        "method": "test_partial_staging_of_selected_file_blocks_narrow_publication",
+        "line": 134
+      },
+      {
+        "method": "test_identity_branch_divergence_and_unpublished_history_fail_closed",
+        "line": 147
+      },
+      {
+        "method": "test_push_failure_preserves_commit_and_retry_is_idempotent",
+        "line": 168
+      },
+      {
+        "method": "test_interruption_after_commit_can_retry_without_new_commit",
+        "line": 188
+      },
+      {
+        "method": "test_default_includes_deletion_and_preserves_unrelated_staging",
+        "line": 205
+      },
+      {
+        "method": "test_commit_failure_does_not_claim_publication",
+        "line": 221
+      },
+      {
+        "method": "test_detached_missing_remote_and_dry_run_blocker",
+        "line": 236
+      },
+      {
+        "method": "test_all_rejects_untracked_nested_git_checkout",
+        "line": 248
+      },
+      {
+        "method": "test_lifecycle_command_remains_local_until_explicit_publish",
+        "line": 260
+      },
+      {
+        "method": "test_parallel_publish_calls_serialize_and_do_not_duplicate_commit",
+        "line": 274
+      },
+      {
+        "method": "test_cli_dry_run_all_reports_scope_without_publication",
+        "line": 292
+      },
+      {
+        "method": "test_ssh_https_identity_normalization_and_unsupported_remote",
+        "line": 309
+      },
+      {
+        "method": "test_unexpected_push_destination_fails_before_git_mutation",
+        "line": 321
+      },
+      {
+        "method": "test_rename_crossing_narrow_scope_blocks_but_all_accepts",
+        "line": 335
+      },
+      {
+        "method": "test_status_is_read_only_and_repository_operation_blocks_publish",
+        "line": 346
+      },
+      {
+        "method": "test_remote_push_race_preserves_local_commit_without_reconciliation",
+        "line": 365
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 44,
+        "text": "out, err, status = Open3.capture3(\"git\", *args, chdir: root)"
+      }
+    ]
+  },
+  {
+    "path": "test/integration/terminal_attempt_reproduction.rb",
+    "sha256": "0c2651bc9f599d15a106ac8fd27cde9068b7ac6c6209422c9ddc922ea18aaf25",
+    "default": false,
+    "classes": [
+      "TerminalAttemptReproduction"
+    ],
+    "test_methods": [
+      {
+        "method": "test_terminal_worker_then_retry_collides_before_inventory_and_wedges_inspection",
+        "line": 146
+      },
+      {
+        "method": "test_terminal_report_does_not_prove_descendant_termination",
+        "line": 198
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 16,
+        "text": "output, error, status = Open3.capture3(\"git\", *arguments, chdir: directory)"
+      },
+      {
+        "line": 24,
+        "text": "def fixture(readers: 0)"
+      },
+      {
+        "line": 96,
+        "text": "pid = Process.spawn(RbConfig.ruby, \"-e\", \"sleep 10\", pgroup: true,"
+      },
+      {
+        "line": 132,
+        "text": "# Advances only the preparation clock to avoid a sleep and timestamp reuse."
+      },
+      {
+        "line": 147,
+        "text": "fixture(readers: 7) do"
+      }
+    ]
+  },
+  {
+    "path": "test/launcher_support.rb",
+    "sha256": "9c1fb23f27215483ee208c0295fb3fead23f27a05f67a95b1b1569709aded2f3",
+    "default": false,
+    "classes": [],
+    "test_methods": [],
+    "boundary_source_lines": [
+      {
+        "line": 139,
+        "text": "sleep 30 if mode == 'sleep'"
+      },
+      {
+        "line": 163,
+        "text": "stdout, stderr, status = Open3.capture3('git', *args, **(chdir ? { chdir: chdir } : {}))"
+      },
+      {
+        "line": 168,
+        "text": "def fixture(git: false, process: false, mutable_remote: false)"
+      },
+      {
+        "line": 207,
+        "text": "@skill_capture = Open3.method(:capture3)"
+      },
+      {
+        "line": 208,
+        "text": "AgentCodingTool::RepoInspector.stub(:new, @inspector) do"
+      },
+      {
+        "line": 209,
+        "text": "AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do"
+      },
+      {
+        "line": 210,
+        "text": "Open3.stub(:capture3, method(:unit_capture)) { yield }"
+      }
+    ]
+  },
+  {
+    "path": "test/launcher_test.rb",
+    "sha256": "d6c6b9325d49c5c28bcf523cd6a76159e66c0caee5e5e28553ad9f6cfc960430",
+    "default": true,
+    "classes": [
+      "LauncherTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout",
+        "line": 31
+      },
+      {
+        "method": "test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory",
+        "line": 80
+      },
+      {
+        "method": "test_unavailable_coding_skill_refuses_launch_before_reservation_or_handoff",
+        "line": 102
+      },
+      {
+        "method": "test_dependency_blockers_and_previous_outcomes_do_not_get_erased",
+        "line": 118
+      },
+      {
+        "method": "test_dependencies_are_rechecked_after_preparation",
+        "line": 135
+      },
+      {
+        "method": "test_stale_input_and_changed_remote_authority_fail_closed",
+        "line": 146
+      },
+      {
+        "method": "test_collision_is_not_implicitly_overridden",
+        "line": 163
+      },
+      {
+        "method": "test_stale_manual_in_flight_reservation_requires_judgment",
+        "line": 173
+      },
+      {
+        "method": "test_missing_binary_auth_and_unsupported_help_fail_without_preparation",
+        "line": 186
+      },
+      {
+        "method": "test_unsupported_sandbox_version_and_legacy_help_refuse_worker_launch",
+        "line": 205
+      },
+      {
+        "method": "test_zero_writers_malformed_task_and_unsupported_branch",
+        "line": 220
+      },
+      {
+        "method": "test_prompt_tampering_and_missing_freshness",
+        "line": 240
+      },
+      {
+        "method": "test_foreign_dirty_partial_or_symlinked_evidence_is_never_repaired",
+        "line": 253
+      },
+      {
+        "method": "test_private_checkpoint_evidence_coexists_with_worker_reports",
+        "line": 269
+      },
+      {
+        "method": "test_regular_finder_metadata_coexists_with_valid_worker_evidence",
+        "line": 288
+      },
+      {
+        "method": "test_finder_metadata_does_not_hide_unknown_worker_liveness",
+        "line": 309
+      },
+      {
+        "method": "test_only_regular_top_level_finder_metadata_is_ignored",
+        "line": 328
+      },
+      {
+        "method": "test_replaced_or_nonprivate_checkpoint_namespace_fails_closed",
+        "line": 347
+      },
+      {
+        "method": "test_unexpected_directory_and_malformed_worker_report_still_fail_closed",
+        "line": 365
+      },
+      {
+        "method": "test_process_failure_and_invalid_final_preserve_real_exit_and_reservation",
+        "line": 381
+      },
+      {
+        "method": "test_child_start_failure_retains_recoverable_evidence",
+        "line": 395
+      },
+      {
+        "method": "test_ctrl_c_targets_child_group_preserves_status_and_does_not_orphan",
+        "line": 407
+      },
+      {
+        "method": "test_simulated_host_crash_blocks_relaunch_even_after_manual_prepare_erases_marker",
+        "line": 423
+      },
+      {
+        "method": "test_cli_requires_opt_in_and_rejects_provider_sandbox_and_collision_overrides",
+        "line": 441
+      },
+      {
+        "method": "test_exit_provenance_exposes_midflight_head_movement_without_rewriting_preparation",
+        "line": 454
+      },
+      {
+        "method": "test_exit_freshness_unavailable_is_reported_without_losing_worker_status",
+        "line": 476
+      },
+      {
+        "method": "test_read_only_movement_preserves_original_snapshot_and_discloses_refreshed_heads",
+        "line": 490
+      },
+      {
+        "method": "test_start_gate_failure_never_delivers_prompt_or_starts_child",
+        "line": 512
+      },
+      {
+        "method": "test_incompatible_snapshot_and_foreign_project_configuration_block_worker",
+        "line": 522
+      },
+      {
+        "method": "test_cli_returns_real_nonzero_worker_code_using_fake_path",
+        "line": 541
+      },
+      {
+        "method": "test_launch_fails_before_reservation_if_sandbox_can_write_private_evidence",
+        "line": 556
+      },
+      {
+        "method": "test_sandbox_probe_uses_private_config_home_and_supported_root_flags",
+        "line": 568
+      },
+      {
+        "method": "test_launch_handoff_pins_read_only_dependency_and_probes_its_boundary",
+        "line": 586
+      },
+      {
+        "method": "test_two_writable_worktrees_keep_separate_prepared_authorities",
+        "line": 612
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 18,
+        "text": "stdout, stderr, status = Open3.capture3(\"git\", *args, **(chdir ? { chdir: chdir } : {}))"
+      },
+      {
+        "line": 33,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 148,
+        "text": "fixture(git: true, mutable_remote: true) do"
+      },
+      {
+        "line": 155,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 384,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 397,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 409,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 412,
+        "text": "Timeout.timeout(5) { sleep 0.01 until File.exist?(File.join(@root, 'stdin')) }"
+      },
+      {
+        "line": 425,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 456,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 461,
+        "text": "pid = Process.spawn(*args, **options)"
+      },
+      {
+        "line": 478,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 480,
+        "text": "pid = Process.spawn(*args, **options)"
+      },
+      {
+        "line": 492,
+        "text": "fixture(process: true) do"
+      },
+      {
+        "line": 531,
+        "text": "fixture(git: true, mutable_remote: true) do"
+      },
+      {
+        "line": 543,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 545,
+        "text": "stdout, stderr, status = Open3.capture3("
+      },
+      {
+        "line": 614,
+        "text": "fixture(git: true) do"
+      }
+    ]
+  },
+  {
+    "path": "test/live_write_collision_status_test.rb",
+    "sha256": "5c6383d1da0e38b9d2cae012518dacb687ecfe6c51aeef69354af671949cc05a",
+    "default": true,
+    "classes": [
+      "LiveWriteCollisionStatusTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_three_task_status_reports_only_the_in_flight_writer_as_a_blocker",
+        "line": 7
+      },
+      {
+        "method": "test_candidate_writer_blocks_and_terminal_outcomes_clear_the_diagnostic",
+        "line": 26
+      },
+      {
+        "method": "test_stale_in_flight_and_stale_candidate_writers_do_not_block",
+        "line": 45
+      },
+      {
+        "method": "test_prepared_distinct_and_read_only_tasks_do_not_block",
+        "line": 64
+      },
+      {
+        "method": "test_aliases_collide_by_remote_and_branch_and_report_the_target_repository_name",
+        "line": 80
+      },
+      {
+        "method": "test_same_remote_on_distinct_branches_does_not_block",
+        "line": 100
+      },
+      {
+        "method": "test_multiple_blockers_and_repository_overlaps_are_deterministic",
+        "line": 117
+      },
+      {
+        "method": "test_stale_target_keeps_freshness_reason_instead_of_prepared_collision",
+        "line": 138
+      },
+      {
+        "method": "test_read_only_refresh_warning_survives_alongside_collision",
+        "line": 157
+      },
+      {
+        "method": "test_status_batches_freshness_and_does_not_mutate_runtime_state",
+        "line": 179
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/manual_parallel_launch_test.rb",
+    "sha256": "48b1c55d49dd33838848c862ca2fdd8386cc2520b55e5e9a6cbf19a77e885c53",
+    "default": true,
+    "classes": [
+      "ManualParallelLaunchTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
+        "line": 78
+      },
+      {
+        "method": "test_public_cli_without_override_refuses_before_worker_handoff",
+        "line": 126
+      },
+      {
+        "method": "test_new_worktree_cannot_be_nested_inside_external_checkout",
+        "line": 141
+      },
+      {
+        "method": "test_refusal_matrix_preserves_manual_candidate",
+        "line": 156
+      },
+      {
+        "method": "test_each_forbidden_sandbox_write_refuses",
+        "line": 203
+      },
+      {
+        "method": "test_preflight_races_refuse_before_reservation",
+        "line": 250
+      },
+      {
+        "method": "test_automatic_and_explicit_delivery_remain_disabled",
+        "line": 278
+      },
+      {
+        "method": "test_manual_candidate_refuses_and_terminal_non_candidate_remains_nonblocking",
+        "line": 306
+      },
+      {
+        "method": "test_manual_overlap_retains_candidate_when_source_moves_during_execution",
+        "line": 324
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 17,
+        "text": "Open3.capture3({ \"PATH\" => \"#{@root}:#{ENV.fetch('PATH')}\", \"AGENT_CODING_TOOL_DATA_DIR\" => @data },"
+      },
+      {
+        "line": 80,
+        "text": "fixture(git: true, process: true, mutable_remote: true) do"
+      },
+      {
+        "line": 86,
+        "text": "script = 'File.write(ARGV[1], \"ready\"); 200.times { File.write(ARGV[0], \"external work\"); sleep 0.025 }'"
+      },
+      {
+        "line": 87,
+        "text": "child = Process.spawn(RbConfig.ruby, \"-e\", script, File.join(@external, \"active.txt\"), ready)"
+      },
+      {
+        "line": 88,
+        "text": "Timeout.timeout(5) { sleep 0.01 until File.file?(ready) && File.file?(File.join(@external, \"active.txt\")) }"
+      },
+      {
+        "line": 127,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 142,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 158,
+        "text": "fixture(git: true, process: true, mutable_remote: true) do"
+      },
+      {
+        "line": 205,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 218,
+        "text": "original = Open3.method(:capture3)"
+      },
+      {
+        "line": 238,
+        "text": "error = Open3.stub(:capture3, capture) do"
+      },
+      {
+        "line": 252,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 264,
+        "text": "when \"authority\" then Open3.capture3(\"git\", \"remote\", \"set-url\", \"origin\", File.join(data, \"other.git\"), chdir: ordinary)"
+      },
+      {
+        "line": 279,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 308,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 325,
+        "text": "fixture(git: true, process: true, mutable_remote: true) do"
+      },
+      {
+        "line": 330,
+        "text": "child = Process.spawn(*args, **options)"
+      }
+    ]
+  },
+  {
+    "path": "test/next_test.rb",
+    "sha256": "c4f1156d42a9df0bd75fb4572e79db45378c083b3f523f9988c8e3d173f71418",
+    "default": true,
+    "classes": [
+      "NextTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_ready_parallel_set_and_priority_over_maximum_cardinality",
+        "line": 34
+      },
+      {
+        "method": "test_fresh_prepared_and_occupied_writers_leave_only_safe_starts",
+        "line": 65
+      },
+      {
+        "method": "test_stale_and_terminal_writers_do_not_reserve_and_outcomes_keep_recorded_actions",
+        "line": 104
+      },
+      {
+        "method": "test_distinct_branches_and_read_only_overlap_are_independent",
+        "line": 135
+      },
+      {
+        "method": "test_stale_prepared_is_diagnostic_and_blocked_outcome_keeps_its_next_action",
+        "line": 148
+      },
+      {
+        "method": "test_missing_or_malformed_remote_freshness_fails_closed_in_one_batch",
+        "line": 172
+      },
+      {
+        "method": "test_missing_preparation_provenance_fails_before_remote_lookup",
+        "line": 196
+      },
+      {
+        "method": "test_no_state_directory_is_created_by_read_only_next",
+        "line": 218
+      },
+      {
+        "method": "test_json_empty_plan_and_stable_priority_match_human_next",
+        "line": 235
+      },
+      {
+        "method": "test_json_separates_reservations_candidate_review_and_interventions",
+        "line": 276
+      },
+      {
+        "method": "test_json_freshness_failure_and_bad_arguments_leave_stdout_empty",
+        "line": 310
+      },
+      {
+        "method": "test_json_stale_work_is_intervention_without_start_authority",
+        "line": 333
+      },
+      {
+        "method": "test_next_rejects_arguments_without_reading_or_changing_state",
+        "line": 356
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/parallel_delivery_test.rb",
+    "sha256": "139a6a207181b7114edc5a5c270ee27bd583d7caed7dc6202daa974ae3b032a5",
+    "default": true,
+    "classes": [
+      "ParallelDeliveryTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_both_delivery_orders_preserve_independent_candidates_and_recover",
+        "line": 109
+      },
+      {
+        "method": "test_unknown_manual_sibling_and_unavailable_publication_guard_fail_closed",
+        "line": 163
+      },
+      {
+        "method": "test_tampered_advanced_sibling_validation_blocks_delivery",
+        "line": 188
+      },
+      {
+        "method": "test_automatic_then_explicit_cli_delivery_keep_separate_task_candidates",
+        "line": 203
+      },
+      {
+        "method": "test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate",
+        "line": 227
+      },
+      {
+        "method": "test_reservation_race_and_held_lock_refuse_before_publication",
+        "line": 259
+      },
+      {
+        "method": "test_automatic_delivery_while_verified_sibling_remains_running",
+        "line": 286
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 68,
+        "text": "def delivery_fixture(**options)"
+      },
+      {
+        "line": 69,
+        "text": "fixture(git: true, process: true, **options) do"
+      },
+      {
+        "line": 71,
+        "text": "AgentCodingTool::CleanupLiveness.stub(:new, @terminal_liveness) { yield }"
+      },
+      {
+        "line": 111,
+        "text": "delivery_fixture(mutable_remote: true) do"
+      },
+      {
+        "line": 117,
+        "text": "manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)"
+      },
+      {
+        "line": 169,
+        "text": "manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)"
+      },
+      {
+        "line": 191,
+        "text": "manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)"
+      },
+      {
+        "line": 211,
+        "text": "factory = ->(**options) { constructor.call(**options, provider:, guard:) }"
+      },
+      {
+        "line": 212,
+        "text": "AgentCodingTool::DeliveryManager.stub(:new, factory) do"
+      },
+      {
+        "line": 230,
+        "text": "manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)"
+      },
+      {
+        "line": 262,
+        "text": "manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)"
+      },
+      {
+        "line": 291,
+        "text": "host = Process.spawn({ \"PATH\" => \"#{@root}:#{ENV.fetch('PATH')}\", \"AGENT_CODING_TOOL_DATA_DIR\" => @data },"
+      },
+      {
+        "line": 301,
+        "text": "sleep 0.01"
+      },
+      {
+        "line": 310,
+        "text": "factory = ->(**options) { constructor.call(**options, provider:, guard:) }"
+      },
+      {
+        "line": 311,
+        "text": "AgentCodingTool::DeliveryManager.stub(:new, factory) do"
+      }
+    ]
+  },
+  {
+    "path": "test/parallel_launch_test.rb",
+    "sha256": "bc9e56cbcb5e3b78eee00122545bbebf2acbb5ad5fcadc297b8ecbe9e59f581f",
+    "default": true,
+    "classes": [
+      "ParallelLaunchTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
+        "line": 54
+      },
+      {
+        "method": "test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
+        "line": 111
+      },
+      {
+        "method": "test_advanced_main_makes_parallel_prepared_baselines_incompatible",
+        "line": 137
+      },
+      {
+        "method": "test_manual_in_flight_worker_remains_unverified_with_launch_flag",
+        "line": 164
+      },
+      {
+        "method": "test_manual_start_waits_for_launch_reservation_boundary",
+        "line": 178
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 17,
+        "text": "output, error, status = Open3.capture3(\"git\", *args, chdir: chdir)"
+      },
+      {
+        "line": 28,
+        "text": "sleep 0.01"
+      },
+      {
+        "line": 36,
+        "text": "Process.spawn("
+      },
+      {
+        "line": 56,
+        "text": "fixture(git: true, process: true, mutable_remote: true) do"
+      },
+      {
+        "line": 113,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 139,
+        "text": "fixture(git: true, process: true, mutable_remote: true) do"
+      },
+      {
+        "line": 165,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 180,
+        "text": "fixture(git: true) do"
+      }
+    ]
+  },
+  {
+    "path": "test/planning_guidance_test.rb",
+    "sha256": "881609b62a0a25c741f29e0b749fbecb2511addfb0e9b677e9d872a7ff651562",
+    "default": true,
+    "classes": [
+      "PlanningGuidanceTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_public_prepare_to_cold_regeneration_and_fake_worker_handoff",
+        "line": 15
+      },
+      {
+        "method": "test_manual_consumption_and_checkpoint_access_independence",
+        "line": 58
+      },
+      {
+        "method": "test_strict_designation_validation_before_public_prepare_writes",
+        "line": 84
+      },
+      {
+        "method": "test_ordinary_controls_ignore_missing_or_corrupt_planning_source",
+        "line": 106
+      },
+      {
+        "method": "test_designation_and_pin_drift_require_evidence_preserving_reset_reprepare",
+        "line": 166
+      },
+      {
+        "method": "test_invalid_material_preserves_initial_retry_and_consumption_evidence",
+        "line": 205
+      },
+      {
+        "method": "test_integrity_and_metadata_refusal_matrix",
+        "line": 247
+      },
+      {
+        "method": "test_offline_object_reads_and_cold_regeneration_ignore_branch_and_worktree",
+        "line": 277
+      },
+      {
+        "method": "test_status_does_not_retrieve_skills_or_write",
+        "line": 305
+      },
+      {
+        "method": "test_launcher_refuses_planning_drift_before_handoff",
+        "line": 322
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 16,
+        "text": "fixture(git: true, process: true) do"
+      },
+      {
+        "line": 114,
+        "text": "capture = Open3.method(:capture3)"
+      },
+      {
+        "line": 130,
+        "text": "prepared = Open3.stub(:capture3, lambda { |*args|"
+      },
+      {
+        "line": 150,
+        "text": "revision, error, status = Open3.capture3(\"git\", \"-C\", root, \"rev-parse\", \"HEAD\")"
+      },
+      {
+        "line": 198,
+        "text": "Time.stub(:now, Time.now + 2) { coordinator.prepare(\"T\", retry_result: true) }"
+      },
+      {
+        "line": 218,
+        "text": "blob, error, status = Open3.capture3(\"git\", \"-C\", root, \"rev-parse\","
+      },
+      {
+        "line": 283,
+        "text": "capture, calls = Open3.method(:capture3), []"
+      },
+      {
+        "line": 284,
+        "text": "prepared = Open3.stub(:capture3, lambda { |*args|"
+      },
+      {
+        "line": 313,
+        "text": "Open3.stub(:capture3, ->(*) { flunk \"status retrieved a skill\" }) do"
+      },
+      {
+        "line": 409,
+        "text": "Open3.capture3(RbConfig.ruby, \"-Ilib\", \"-e\", script, dir, root, JSON.generate(pin))"
+      },
+      {
+        "line": 440,
+        "text": "revision, error, status = Open3.capture3(\"git\", \"-C\", root, \"rev-parse\", \"HEAD\")"
+      },
+      {
+        "line": 450,
+        "text": "_out, error, status = Open3.capture3(\"git\", \"-C\", root, *args)"
+      }
+    ]
+  },
+  {
+    "path": "test/preflight_recovery_test.rb",
+    "sha256": "17ad652b0ef52d2532a0a8c7244162fe60723f435cb6c846b5f0f69c0e746899",
+    "default": true,
+    "classes": [
+      "PreflightRecoveryTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_explicit_abandonment_removes_only_clean_owned_worktrees_and_preserves_evidence",
+        "line": 27
+      },
+      {
+        "method": "test_recovery_resumes_after_one_native_removal_without_erasing_evidence",
+        "line": 57
+      },
+      {
+        "method": "test_second_failed_preflight_can_be_abandoned_after_fresh_preparation",
+        "line": 77
+      },
+      {
+        "method": "test_dirty_foreign_changed_active_and_worker_started_attempts_refuse_removal",
+        "line": 88
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 12,
+        "text": "stdout, stderr, status = Open3.capture3(\"git\", *args, chdir: chdir)"
+      },
+      {
+        "line": 29,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 47,
+        "text": "Time.stub(:now, Time.now + 2) { @coordinator.prepare(\"T\", retry_result: true) }"
+      },
+      {
+        "line": 59,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 79,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 82,
+        "text": "Time.stub(:now, Time.now + 2) { @coordinator.prepare(\"T\", retry_result: true) }"
+      },
+      {
+        "line": 90,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 104,
+        "text": "fixture(git: true) do"
+      },
+      {
+        "line": 110,
+        "text": "fixture(git: true) do"
+      }
+    ]
+  },
+  {
+    "path": "test/prompt_renderer_test.rb",
+    "sha256": "16ec26b2b3bf066c2dfeb6ac777039b0bd0dea5d614b36b882280815381113b7",
+    "default": true,
+    "classes": [
+      "PromptRendererTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_performance_scope_uses_access_and_checkpoint_policy_not_titles",
+        "line": 7
+      },
+      {
+        "method": "test_preparation_and_launch_share_performance_policy_and_preserve_task_rules",
+        "line": 33
+      },
+      {
+        "method": "test_checkpoint_instruction_is_one_section_and_exemption_is_reviewable",
+        "line": 63
+      },
+      {
+        "method": "test_logical_checkout_key_uses_recorded_remote_and_branch",
+        "line": 80
+      },
+      {
+        "method": "test_documentation_guidance_is_static_for_explicit_specification_and_source_only_tasks",
+        "line": 147
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/publisher_test.rb",
+    "sha256": "f7575ece5d8ee48446ead12606c1131b2c3fee505808c0b7bcb1df4fc833c332",
+    "default": true,
+    "classes": [
+      "PublisherTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_default_selects_lifecycle_state_and_prompts_only",
+        "line": 123
+      },
+      {
+        "method": "test_task_scope_selects_own_state_and_timestamped_prompts",
+        "line": 139
+      },
+      {
+        "method": "test_task_scope_validates_task_ids_and_cli_arguments",
+        "line": 151
+      },
+      {
+        "method": "test_all_sweeps_tracked_staged_deleted_and_untracked_paths",
+        "line": 161
+      },
+      {
+        "method": "test_dry_run_uses_same_selection_and_does_not_mutate",
+        "line": 173
+      },
+      {
+        "method": "test_selected_partially_staged_file_blocks_narrow_publication",
+        "line": 188
+      },
+      {
+        "method": "test_unexpected_identity_or_push_destination_fails_before_mutation",
+        "line": 196
+      },
+      {
+        "method": "test_detached_wrong_branch_and_wrong_checkout_fail_closed",
+        "line": 207
+      },
+      {
+        "method": "test_unpublished_or_diverged_history_requires_operator_review",
+        "line": 219
+      },
+      {
+        "method": "test_push_failure_preserves_commit_and_retry_does_not_recommit",
+        "line": 227
+      },
+      {
+        "method": "test_intervening_remote_push_preserves_local_commit",
+        "line": 241
+      },
+      {
+        "method": "test_commit_failure_does_not_claim_remote_publication",
+        "line": 251
+      },
+      {
+        "method": "test_rename_crossing_scope_blocks_narrow_mode_but_all_accepts",
+        "line": 261
+      },
+      {
+        "method": "test_nested_checkout_and_in_progress_merge_block_publication",
+        "line": 267
+      },
+      {
+        "method": "test_cli_outputs_verified_publication_and_dry_run",
+        "line": 276
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 121,
+        "text": "runner: @git)"
+      }
+    ]
+  },
+  {
+    "path": "test/rakefile_test.rb",
+    "sha256": "ba7d098b9f287ff1494431e0e470312fb2bc86dd37d487ce7acc201722364bad",
+    "default": true,
+    "classes": [
+      "RakefileTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_validation_accepts_managed_yaml_ignores_other_files_and_is_read_only",
+        "line": 14
+      },
+      {
+        "method": "test_validation_reports_each_malformed_managed_surface",
+        "line": 38
+      },
+      {
+        "method": "test_validation_is_a_clean_skip_when_selected_data_directory_is_absent",
+        "line": 54
+      },
+      {
+        "method": "test_environment_override_selects_the_alternate_data_directory",
+        "line": 67
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 103,
+        "text": "Open3.capture3("
+      }
+    ]
+  },
+  {
+    "path": "test/ready_unlock_metrics_test.rb",
+    "sha256": "dd9e4630849be429a7a2d30a9e8e5383f9b48eba88c7097d3ca9239301ce3da2",
+    "default": true,
+    "classes": [
+      "ReadyUnlockMetricsTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_immediate_unlocks_require_the_ready_task_to_be_the_final_missing_dependency",
+        "line": 7
+      },
+      {
+        "method": "test_parallel_width_uses_exact_remote_and_branch_write_authorities",
+        "line": 65
+      },
+      {
+        "method": "test_parallel_width_respects_fresh_in_flight_and_candidate_reservations",
+        "line": 107
+      },
+      {
+        "method": "test_stale_and_terminal_work_do_not_reserve_writable_capacity",
+        "line": 138
+      },
+      {
+        "method": "test_exact_search_finds_maximum_compatible_subset_instead_of_greedy_result",
+        "line": 165
+      },
+      {
+        "method": "test_candidate_completion_unlocks_tasks_without_reserving_its_own_authority",
+        "line": 193
+      },
+      {
+        "method": "test_candidate_completion_keeps_other_fresh_writer_reservations",
+        "line": 224
+      },
+      {
+        "method": "test_candidate_completion_uses_exact_maximum_compatible_subset",
+        "line": 260
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/repo_inspector_test.rb",
+    "sha256": "48339a1b901689da397f3a49481db713b8993d3a22af6866e1895cfea9d812cd",
+    "default": true,
+    "classes": [
+      "RepoInspectorTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_pushed_main_is_authoritative_and_local_state_is_only_observed",
+        "line": 70
+      },
+      {
+        "method": "test_missing_pushed_main_fails_closed",
+        "line": 93
+      },
+      {
+        "method": "test_repository_authority_resolves_remote_url_and_branch_without_remote_fetch",
+        "line": 107
+      },
+      {
+        "method": "test_status_head_resolution_deduplicates_remote_and_branch_without_local_probes",
+        "line": 130
+      },
+      {
+        "method": "test_status_head_resolution_respects_bounded_concurrency",
+        "line": 156
+      },
+      {
+        "method": "test_status_head_resolution_failure_is_explicit_and_does_not_fall_back",
+        "line": 182
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 85,
+        "text": "snapshot = AgentCodingTool::RepoInspector.new(config, runner:).snapshot(\"repo\", \"access\" => \"write\")"
+      },
+      {
+        "line": 103,
+        "text": "AgentCodingTool::RepoInspector.new(config, runner: Runner.new(responses)).snapshot(\"repo\", \"access\" => \"write\")"
+      },
+      {
+        "line": 117,
+        "text": "inspector = AgentCodingTool::RepoInspector.new(config, runner:)"
+      },
+      {
+        "line": 142,
+        "text": "inspector = AgentCodingTool::RepoInspector.new(config, runner:, remote_concurrency: 2)"
+      },
+      {
+        "line": 160,
+        "text": "inspector = AgentCodingTool::RepoInspector.new(config, runner:, remote_concurrency: 2)"
+      },
+      {
+        "line": 188,
+        "text": "inspector = AgentCodingTool::RepoInspector.new(config, runner:)"
+      }
+    ]
+  },
+  {
+    "path": "test/retry_liveness_test.rb",
+    "sha256": "3105f26dd5f30d1b2a8988c2b09218bd3e84610785ba5f3465d9c85091d9dc0e",
+    "default": true,
+    "classes": [
+      "RetryLivenessTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_negative_host_pid_group_heartbeat_and_tool_matrix",
+        "line": 40
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 29,
+        "text": "AgentCodingTool::RetryLiveness.stub(:host_identity, @identity) do"
+      },
+      {
+        "line": 30,
+        "text": "Process.stub(:kill, signal) do"
+      },
+      {
+        "line": 31,
+        "text": "Open3.stub(:capture3, ->(*) { tool.is_a?(Exception) ? raise(tool) : tool }) do"
+      }
+    ]
+  },
+  {
+    "path": "test/state_store_test.rb",
+    "sha256": "d7121f153ba2e1eb5baf130d7d75b12ff1ca02755d1759646d057ebd1931d8e3",
+    "default": true,
+    "classes": [
+      "StateStoreTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_missing_and_legacy_mappings",
+        "line": 12
+      },
+      {
+        "method": "test_damaged_documents_are_rejected",
+        "line": 25
+      },
+      {
+        "method": "test_serialization_failure_preserves_previous_bytes",
+        "line": 38
+      },
+      {
+        "method": "test_temporary_file_failures_preserve_old_state_and_cleanup",
+        "line": 51
+      },
+      {
+        "method": "test_failed_initial_creation_is_not_published",
+        "line": 68
+      },
+      {
+        "method": "test_rename_failure_preserves_state_and_cleans_temporary",
+        "line": 81
+      },
+      {
+        "method": "test_directory_sync_failure_truthfully_reports_published_state",
+        "line": 108
+      },
+      {
+        "method": "test_short_write_is_rejected_and_cleaned_up",
+        "line": 137
+      },
+      {
+        "method": "test_existing_write_access_is_checked_without_truncation",
+        "line": 156
+      },
+      {
+        "method": "test_cold_readers_at_controlled_publication_boundaries",
+        "line": 173
+      },
+      {
+        "method": "test_permissions_and_ownership",
+        "line": 206
+      },
+      {
+        "method": "test_symlink_targets_are_replaced_without_removing_the_link",
+        "line": 226
+      },
+      {
+        "method": "test_dangling_link_is_rejected_on_load",
+        "line": 241
+      },
+      {
+        "method": "test_corrupt_state_refuses_coordinator_and_cli_operations",
+        "line": 250
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 42,
+        "text": "YAML.stub(:dump, ->(_state) { raise TypeError, \"synthetic serialization failure\" }) do"
+      },
+      {
+        "line": 52,
+        "text": "%i[write flush fsync close].each do |operation|"
+      },
+      {
+        "line": 69,
+        "text": "%i[write flush fsync close].each do |operation|"
+      },
+      {
+        "line": 88,
+        "text": "File.stub(:rename, lambda { |temporary, destination|"
+      },
+      {
+        "line": 114,
+        "text": "File.stub(:open, lambda { |path, *args, **options, &block|"
+      },
+      {
+        "line": 119,
+        "text": "file.stub(:fsync, -> { raise failure, \"synthetic directory sync failure\" }) { block.call(file) }"
+      },
+      {
+        "line": 142,
+        "text": "Tempfile.stub(:create, lambda { |*args, **options, &block|"
+      },
+      {
+        "line": 145,
+        "text": "temporary.stub(:write, ->(bytes) { write.call(bytes.byteslice(0, 5)) }) { block.call(temporary) }"
+      },
+      {
+        "line": 162,
+        "text": "File.stub(:open, lambda { |filename, *args, **options, &block|"
+      },
+      {
+        "line": 179,
+        "text": "Tempfile.stub(:create, lambda { |*args, **options, &block|"
+      },
+      {
+        "line": 182,
+        "text": "temporary.stub(:write, lambda { |bytes|"
+      },
+      {
+        "line": 193,
+        "text": "File.stub(:rename, lambda { |source, destination|"
+      },
+      {
+        "line": 285,
+        "text": "Tempfile.stub(:create, lambda { |*args, **options, &block|"
+      },
+      {
+        "line": 288,
+        "text": "temporary.stub(operation, lambda { |*values|"
+      },
+      {
+        "line": 299,
+        "text": "output, error, status = Open3.capture3(RbConfig.ruby, \"-I\", File.expand_path(\"../lib\", __dir__), \"-e\", script, root)"
+      }
+    ]
+  },
+  {
+    "path": "test/status_next_summary_test.rb",
+    "sha256": "8cba3ae5fa9c44cb29955335f6d70092d9e3f31a42956a722f8a50b16d184a33",
+    "default": true,
+    "classes": [
+      "StatusNextSummaryTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_status_and_next_select_same_priority_preserving_parallel_set_without_extra_probes",
+        "line": 37
+      },
+      {
+        "method": "test_prepared_task_gets_start_action_without_reprepare",
+        "line": 71
+      },
+      {
+        "method": "test_candidate_review_and_occupied_capacity_are_not_presented_as_completion",
+        "line": 83
+      },
+      {
+        "method": "test_running_writer_and_judgment_each_explain_no_available_start",
+        "line": 102
+      },
+      {
+        "method": "test_stale_preparation_and_dependency_wait_are_truthful",
+        "line": 128
+      },
+      {
+        "method": "test_width_color_no_color_and_explicit_status_behavior",
+        "line": 149
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/task_store_test.rb",
+    "sha256": "503d5c93d87162d98d380a8b1e573a3ac36a30dfc174730448aba5ea905e92b4",
+    "default": true,
+    "classes": [
+      "TaskStoreTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_checkpoint_defaults_to_required_and_exemptions_are_explicit",
+        "line": 7
+      },
+      {
+        "method": "test_worker_recommendation_accepts_generic_nonempty_strings",
+        "line": 26
+      },
+      {
+        "method": "test_worker_recommendation_validation",
+        "line": 39
+      }
+    ],
+    "boundary_source_lines": []
+  },
+  {
+    "path": "test/test_helper.rb",
+    "sha256": "d46e4e25164f1ecfdb9a232ba7a2ee65023d09c3ea7f2a55d2a5d74c51b07219",
+    "default": false,
+    "classes": [],
+    "test_methods": [],
+    "boundary_source_lines": [
+      {
+        "line": 17,
+        "text": "_out, err, status = Open3.capture3(\"git\", *args, **(chdir ? { chdir: chdir } : {}))"
+      },
+      {
+        "line": 28,
+        "text": "base, err, status = Open3.capture3(\"git\", \"rev-parse\", \"HEAD\", chdir: ordinary)"
+      }
+    ]
+  },
+  {
+    "path": "test/worktree_manager_test.rb",
+    "sha256": "4637f3e61bcf2576e545627ec2a51868d32d1b8d0272bf5fe4c5c71c29e98420",
+    "default": true,
+    "classes": [
+      "WorktreeManagerTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_visible_branch_exact_base_and_dirty_divergent_ordinary_checkout",
+        "line": 49
+      },
+      {
+        "method": "test_pinned_detached_reader_and_cleanup_blocker",
+        "line": 77
+      },
+      {
+        "method": "test_foreign_paths_partial_metadata_missing_object_and_changed_branch_fail_closed",
+        "line": 95
+      },
+      {
+        "method": "test_symlinked_root_and_interrupted_add_preserve_evidence",
+        "line": 119
+      },
+      {
+        "method": "test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate",
+        "line": 145
+      },
+      {
+        "method": "test_attempt_container_cannot_reuse_an_existing_resource",
+        "line": 183
+      },
+      {
+        "method": "test_native_backpointer_mismatch_preserves_the_resource",
+        "line": 200
+      }
+    ],
+    "boundary_source_lines": [
+      {
+        "line": 8,
+        "text": "stdout, stderr, status = Open3.capture3(\"git\", *args, **(chdir ? { chdir: chdir } : {}))"
+      },
+      {
+        "line": 13,
+        "text": "def fixture(git: true)"
+      },
+      {
+        "line": 89,
+        "text": "_stdout, _stderr, status = Open3.capture3(\"git\", \"symbolic-ref\", \"-q\", \"HEAD\", chdir: dep.fetch(\"path\"))"
+      },
+      {
+        "line": 121,
+        "text": "fixture(git: false) do"
+      },
+      {
+        "line": 184,
+        "text": "fixture(git: false) do"
+      }
+    ]
+  },
+  {
+    "path": "test/write_collision_test.rb",
+    "sha256": "88dae041b9ca56f15107257062383727d9e266f198798993546677667b461c39",
+    "default": true,
+    "classes": [
+      "WriteCollisionTest"
+    ],
+    "test_methods": [
+      {
+        "method": "test_cli_overlap_warnings_bind_each_conflict_to_its_own_authority",
+        "line": 10
+      },
+      {
+        "method": "test_ordinary_cli_start_warns_and_records_unverified_overlap",
+        "line": 32
+      },
+      {
+        "method": "test_manual_start_rechecks_dependencies_freshness_and_preparation_without_partial_writes",
+        "line": 50
+      },
+      {
+        "method": "test_manual_overlap_starts_independently_without_mutating_sibling_or_prompt",
+        "line": 76
+      },
+      {
+        "method": "test_explicit_override_starts_and_records_collision",
+        "line": 100
+      },
+      {
+        "method": "test_prepare_remains_allowed_and_cli_warns_about_in_flight_writer",
+        "line": 120
+      },
+      {
+        "method": "test_different_writable_repositories_can_run_together",
+        "line": 139
+      },
+      {
+        "method": "test_writer_and_reader_can_run_together",
+        "line": 154
+      },
+      {
+        "method": "test_two_readers_can_run_together",
+        "line": 170
+      },
+      {
+        "method": "test_stale_in_flight_task_does_not_reserve_repository",
+        "line": 186
+      },
+      {
+        "method": "test_terminal_non_candidate_states_do_not_block",
+        "line": 203
+      },
+      {
+        "method": "test_fresh_candidate_warns_and_stale_candidate_remains_recoverable",
+        "line": 220
+      },
+      {
+        "method": "test_prepared_tasks_warn_but_do_not_block_first_start",
+        "line": 242
+      },
+      {
+        "method": "test_repository_aliases_collide_by_snapshot_remote_and_branch",
+        "line": 258
+      },
+      {
+        "method": "test_cli_override_flag_allows_collision",
+        "line": 284
+      }
+    ],
+    "boundary_source_lines": []
+  }
+]

@@ -1,0 +1,587 @@
+{
+  "main_process_uncompressed_sha256": "72bded63611a7b4b87771308bf4f9a72a8fbcadeff403c3bfd1bbf73ac374662",
+  "child_followup_uncompressed_sha256": "afba7258205515463ce05cb6cb21726501c91e17da75d770aab8cb348e941e76",
+  "sum_test_seconds": 154.93282100005308,
+  "classes": {
+    "manual_parallel_launch_test.rb": {
+      "seconds": 66.29074399988167,
+      "tests": 9,
+      "assertions": 360,
+      "failed_or_errored": 0
+    },
+    "parallel_delivery_test.rb": {
+      "seconds": 46.880363999982364,
+      "tests": 7,
+      "assertions": 125,
+      "failed_or_errored": 1
+    },
+    "preflight_recovery_test.rb": {
+      "seconds": 10.653197999985423,
+      "tests": 4,
+      "assertions": 55,
+      "failed_or_errored": 0
+    },
+    "launcher_test.rb": {
+      "seconds": 8.257240999839269,
+      "tests": 34,
+      "assertions": 387,
+      "failed_or_errored": 0
+    },
+    "parallel_launch_test.rb": {
+      "seconds": 6.107465000008233,
+      "tests": 5,
+      "assertions": 25,
+      "failed_or_errored": 1
+    },
+    "planning_guidance_test.rb": {
+      "seconds": 4.181214999931399,
+      "tests": 10,
+      "assertions": 271,
+      "failed_or_errored": 0
+    },
+    "worktree_manager_test.rb": {
+      "seconds": 2.1305380000849254,
+      "tests": 7,
+      "assertions": 43,
+      "failed_or_errored": 0
+    },
+    "coordinator_test.rb": {
+      "seconds": 1.838107000105083,
+      "tests": 34,
+      "assertions": 231,
+      "failed_or_errored": 0
+    },
+    "write_collision_test.rb": {
+      "seconds": 1.3680529998382553,
+      "tests": 15,
+      "assertions": 74,
+      "failed_or_errored": 0
+    },
+    "cli_test.rb": {
+      "seconds": 1.3593170001986437,
+      "tests": 49,
+      "assertions": 567,
+      "failed_or_errored": 0
+    },
+    "live_write_collision_status_test.rb": {
+      "seconds": 1.2048849999555387,
+      "tests": 10,
+      "assertions": 39,
+      "failed_or_errored": 0
+    },
+    "coding_skill_test.rb": {
+      "seconds": 0.9014679999672808,
+      "tests": 7,
+      "assertions": 59,
+      "failed_or_errored": 0
+    },
+    "next_test.rb": {
+      "seconds": 0.8532250000862405,
+      "tests": 13,
+      "assertions": 195,
+      "failed_or_errored": 0
+    },
+    "rakefile_test.rb": {
+      "seconds": 0.7452460000640713,
+      "tests": 4,
+      "assertions": 31,
+      "failed_or_errored": 0
+    },
+    "ready_unlock_metrics_test.rb": {
+      "seconds": 0.554450000054203,
+      "tests": 8,
+      "assertions": 16,
+      "failed_or_errored": 0
+    },
+    "state_store_test.rb": {
+      "seconds": 0.51310000004014,
+      "tests": 14,
+      "assertions": 192,
+      "failed_or_errored": 0
+    },
+    "family_status_test.rb": {
+      "seconds": 0.37921199994161725,
+      "tests": 15,
+      "assertions": 479,
+      "failed_or_errored": 0
+    },
+    "status_next_summary_test.rb": {
+      "seconds": 0.3286709999665618,
+      "tests": 6,
+      "assertions": 122,
+      "failed_or_errored": 0
+    },
+    "prompt_renderer_test.rb": {
+      "seconds": 0.2683559999568388,
+      "tests": 5,
+      "assertions": 155,
+      "failed_or_errored": 0
+    },
+    "publisher_test.rb": {
+      "seconds": 0.06547000003047287,
+      "tests": 15,
+      "assertions": 91,
+      "failed_or_errored": 0
+    },
+    "task_store_test.rb": {
+      "seconds": 0.03931299998657778,
+      "tests": 3,
+      "assertions": 23,
+      "failed_or_errored": 0
+    },
+    "retry_liveness_test.rb": {
+      "seconds": 0.009639000054448843,
+      "tests": 1,
+      "assertions": 16,
+      "failed_or_errored": 0
+    },
+    "config_test.rb": {
+      "seconds": 0.0019730000058189034,
+      "tests": 2,
+      "assertions": 4,
+      "failed_or_errored": 0
+    },
+    "repo_inspector_test.rb": {
+      "seconds": 0.001571000088006258,
+      "tests": 6,
+      "assertions": 24,
+      "failed_or_errored": 0
+    }
+  },
+  "operations": {
+    "capture.open3.ruby": {
+      "calls": 175,
+      "inclusive_seconds": 47.77479799982393,
+      "same_thread_self_seconds": 47.39108400035184,
+      "raises_within": 0
+    },
+    "capture.open3.git.rev-parse": {
+      "calls": 1464,
+      "inclusive_seconds": 20.563838998612482,
+      "same_thread_self_seconds": 17.900224996497855,
+      "raises_within": 0
+    },
+    "process.spawn": {
+      "calls": 5132,
+      "inclusive_seconds": 9.353494000446517,
+      "same_thread_self_seconds": 9.353494000446517,
+      "raises_within": 2
+    },
+    "capture.open3.git.remote": {
+      "calls": 603,
+      "inclusive_seconds": 8.396689000539482,
+      "same_thread_self_seconds": 7.307043000648264,
+      "raises_within": 0
+    },
+    "capture.open3.codex": {
+      "calls": 234,
+      "inclusive_seconds": 8.092451000353321,
+      "same_thread_self_seconds": 7.63368500029901,
+      "raises_within": 0
+    },
+    "capture.open3.git.worktree": {
+      "calls": 427,
+      "inclusive_seconds": 7.670556000142824,
+      "same_thread_self_seconds": 6.911443000019062,
+      "raises_within": 0
+    },
+    "capture.open3.git.ls-remote": {
+      "calls": 290,
+      "inclusive_seconds": 7.601633999380283,
+      "same_thread_self_seconds": 7.057755997229833,
+      "raises_within": 0
+    },
+    "process.waitpid": {
+      "calls": 31,
+      "inclusive_seconds": 6.792401999991853,
+      "same_thread_self_seconds": 6.792401999991853,
+      "raises_within": 25
+    },
+    "capture.open3.git.cat-file.coding_blob": {
+      "calls": 428,
+      "inclusive_seconds": 6.751861999451648,
+      "same_thread_self_seconds": 5.925291997613385,
+      "raises_within": 0
+    },
+    "thread.join": {
+      "calls": 5390,
+      "inclusive_seconds": 6.191132001928054,
+      "same_thread_self_seconds": 6.191132001928054,
+      "raises_within": 0
+    },
+    "capture.open3.git.cat-file": {
+      "calls": 403,
+      "inclusive_seconds": 5.6093719999771565,
+      "same_thread_self_seconds": 4.895004000456538,
+      "raises_within": 0
+    },
+    "kernel.sleep": {
+      "calls": 400,
+      "inclusive_seconds": 5.5150989996036515,
+      "same_thread_self_seconds": 5.5150989996036515,
+      "raises_within": 0
+    },
+    "capture.open3.git.status": {
+      "calls": 225,
+      "inclusive_seconds": 3.3618700000224635,
+      "same_thread_self_seconds": 2.9801530002150685,
+      "raises_within": 0
+    },
+    "capture.open3.git.diff": {
+      "calls": 180,
+      "inclusive_seconds": 2.6671320001478307,
+      "same_thread_self_seconds": 2.365413000807166,
+      "raises_within": 0
+    },
+    "capture.open3.git.other": {
+      "calls": 183,
+      "inclusive_seconds": 2.6333690004539676,
+      "same_thread_self_seconds": 2.33053600077983,
+      "raises_within": 0
+    },
+    "capture.open3.git.show": {
+      "calls": 157,
+      "inclusive_seconds": 2.369738000445068,
+      "same_thread_self_seconds": 2.099808001134079,
+      "raises_within": 0
+    },
+    "capture.stub.git.rev-parse": {
+      "calls": 116,
+      "inclusive_seconds": 1.4565899996669032,
+      "same_thread_self_seconds": 0.002098000084515661,
+      "raises_within": 0
+    },
+    "capture.stub.git.cat-file.coding_blob": {
+      "calls": 76,
+      "inclusive_seconds": 1.2177239999291487,
+      "same_thread_self_seconds": 0.0012680002837441862,
+      "raises_within": 0
+    },
+    "capture.open3.git.add": {
+      "calls": 75,
+      "inclusive_seconds": 1.153796000231523,
+      "same_thread_self_seconds": 1.0013910001143813,
+      "raises_within": 0
+    },
+    "files.remove_entry": {
+      "calls": 372,
+      "inclusive_seconds": 1.1529530001571402,
+      "same_thread_self_seconds": 1.1529530001571402,
+      "raises_within": 0
+    },
+    "capture.stub.codex": {
+      "calls": 172,
+      "inclusive_seconds": 1.1013440003735013,
+      "same_thread_self_seconds": 0.011212000390514731,
+      "raises_within": 0
+    },
+    "capture.open3.git.commit": {
+      "calls": 40,
+      "inclusive_seconds": 0.9836810000706464,
+      "same_thread_self_seconds": 0.9127320002880879,
+      "raises_within": 0
+    },
+    "capture.open3.git.clone": {
+      "calls": 23,
+      "inclusive_seconds": 0.8533429999370128,
+      "same_thread_self_seconds": 0.8088579996838234,
+      "raises_within": 0
+    },
+    "files.cp_r": {
+      "calls": 103,
+      "inclusive_seconds": 0.750714999914635,
+      "same_thread_self_seconds": 0.750714999914635,
+      "raises_within": 12
+    },
+    "capture.stub.git.remote": {
+      "calls": 62,
+      "inclusive_seconds": 0.6930919997394085,
+      "same_thread_self_seconds": 0.001079999899957329,
+      "raises_within": 0
+    },
+    "capture.stub.git.worktree": {
+      "calls": 30,
+      "inclusive_seconds": 0.6365129997720942,
+      "same_thread_self_seconds": 0.00041199958650395274,
+      "raises_within": 0
+    },
+    "capture.open3.git.push": {
+      "calls": 9,
+      "inclusive_seconds": 0.6016020001261495,
+      "same_thread_self_seconds": 0.5838840000797063,
+      "raises_within": 0
+    },
+    "capture.stub.git.ls-remote": {
+      "calls": 20,
+      "inclusive_seconds": 0.6001010001054965,
+      "same_thread_self_seconds": 0.00048800016520544887,
+      "raises_within": 0
+    },
+    "capture.open3.git.symbolic-ref": {
+      "calls": 38,
+      "inclusive_seconds": 0.4988029998494312,
+      "same_thread_self_seconds": 0.42786200006958097,
+      "raises_within": 0
+    },
+    "capture.stub.git.cat-file": {
+      "calls": 30,
+      "inclusive_seconds": 0.48249399987980723,
+      "same_thread_self_seconds": 0.0005069999024271965,
+      "raises_within": 0
+    },
+    "capture.open3.git.cat-file.planning_blob": {
+      "calls": 29,
+      "inclusive_seconds": 0.4302469998365268,
+      "same_thread_self_seconds": 0.38020599994342774,
+      "raises_within": 0
+    },
+    "file.rename": {
+      "calls": 1166,
+      "inclusive_seconds": 0.3252000003121793,
+      "same_thread_self_seconds": 0.09444600035203621,
+      "raises_within": 2
+    },
+    "capture.open3.git.read-tree": {
+      "calls": 16,
+      "inclusive_seconds": 0.24355899984948337,
+      "same_thread_self_seconds": 0.2157040000311099,
+      "raises_within": 0
+    },
+    "capture.open3.git.apply": {
+      "calls": 16,
+      "inclusive_seconds": 0.23191899998346344,
+      "same_thread_self_seconds": 0.20409000013023615,
+      "raises_within": 0
+    },
+    "capture.open3.git.ls-files": {
+      "calls": 13,
+      "inclusive_seconds": 0.1969900001422502,
+      "same_thread_self_seconds": 0.17309300019405782,
+      "raises_within": 0
+    },
+    "capture.open3.git.branch": {
+      "calls": 13,
+      "inclusive_seconds": 0.18884400016395375,
+      "same_thread_self_seconds": 0.16123600030550733,
+      "raises_within": 0
+    },
+    "capture.open3.sysctl": {
+      "calls": 36,
+      "inclusive_seconds": 0.16381800000090152,
+      "same_thread_self_seconds": 0.09813999984180555,
+      "raises_within": 0
+    },
+    "capture.open3.git.checkout": {
+      "calls": 8,
+      "inclusive_seconds": 0.1407919999328442,
+      "same_thread_self_seconds": 0.12119600002188236,
+      "raises_within": 0
+    },
+    "io.fsync.native": {
+      "calls": 1851,
+      "inclusive_seconds": 0.08740700111957267,
+      "same_thread_self_seconds": 0.08740700111957267,
+      "raises_within": 0
+    },
+    "capture.stub.git.status": {
+      "calls": 22,
+      "inclusive_seconds": 0.08680699992692098,
+      "same_thread_self_seconds": 0.0003440000000409782,
+      "raises_within": 0
+    },
+    "capture.stub.git.symbolic-ref": {
+      "calls": 22,
+      "inclusive_seconds": 0.07471399998757988,
+      "same_thread_self_seconds": 0.000375000003259629,
+      "raises_within": 0
+    },
+    "capture.stub.git.other": {
+      "calls": 5,
+      "inclusive_seconds": 0.07425900001544505,
+      "same_thread_self_seconds": 0.00010400009341537952,
+      "raises_within": 0
+    },
+    "capture.open3.git.init": {
+      "calls": 2,
+      "inclusive_seconds": 0.036471999948844314,
+      "same_thread_self_seconds": 0.03364599996712059,
+      "raises_within": 0
+    },
+    "phase.setup": {
+      "calls": 283,
+      "inclusive_seconds": 0.03543200029525906,
+      "same_thread_self_seconds": 0.03543200029525906,
+      "raises_within": 0
+    },
+    "capture.stub.git.cat-file.planning_blob": {
+      "calls": 2,
+      "inclusive_seconds": 0.028858000063337386,
+      "same_thread_self_seconds": 3.800011472776532e-05,
+      "raises_within": 0
+    },
+    "capture.stub.sysctl": {
+      "calls": 22,
+      "inclusive_seconds": 0.02851299982285127,
+      "same_thread_self_seconds": 0.0002259998582303524,
+      "raises_within": 0
+    },
+    "capture.open3.git.config": {
+      "calls": 2,
+      "inclusive_seconds": 0.025350000069011003,
+      "same_thread_self_seconds": 0.02267200010828674,
+      "raises_within": 0
+    },
+    "capture.open3.git.switch": {
+      "calls": 1,
+      "inclusive_seconds": 0.014377999992575496,
+      "same_thread_self_seconds": 0.013027000008150935,
+      "raises_within": 0
+    },
+    "phase.teardown": {
+      "calls": 283,
+      "inclusive_seconds": 0.010325999814085662,
+      "same_thread_self_seconds": 0.0001979998778551817,
+      "raises_within": 0
+    },
+    "capture.open3.ps": {
+      "calls": 2,
+      "inclusive_seconds": 0.003644999989774078,
+      "same_thread_self_seconds": 9.599991608411074e-05,
+      "raises_within": 0
+    },
+    "files.cp": {
+      "calls": 18,
+      "inclusive_seconds": 0.002991999906953424,
+      "same_thread_self_seconds": 0.002991999906953424,
+      "raises_within": 0
+    },
+    "process.waitpid2": {
+      "calls": 82,
+      "inclusive_seconds": 0.0003330001491121948,
+      "same_thread_self_seconds": 0.0003330001491121948,
+      "raises_within": 0
+    },
+    "phase.before_teardown": {
+      "calls": 283,
+      "inclusive_seconds": 0.000221999769564718,
+      "same_thread_self_seconds": 0.000221999769564718,
+      "raises_within": 0
+    },
+    "phase.before_setup": {
+      "calls": 283,
+      "inclusive_seconds": 0.0001930000726133585,
+      "same_thread_self_seconds": 0.0001930000726133585,
+      "raises_within": 0
+    },
+    "phase.after_teardown": {
+      "calls": 283,
+      "inclusive_seconds": 0.0001669999328441918,
+      "same_thread_self_seconds": 0.0001669999328441918,
+      "raises_within": 0
+    },
+    "phase.after_setup": {
+      "calls": 283,
+      "inclusive_seconds": 0.00016200041864067316,
+      "same_thread_self_seconds": 0.00016200041864067316,
+      "raises_within": 0
+    },
+    "io.fsync.ruby": {
+      "calls": 6,
+      "inclusive_seconds": 5.900004180148244e-05,
+      "same_thread_self_seconds": 5.900004180148244e-05,
+      "raises_within": 6
+    },
+    "capture.stub.lsof": {
+      "calls": 5,
+      "inclusive_seconds": 2.0000035874545574e-05,
+      "same_thread_self_seconds": 2.0000035874545574e-05,
+      "raises_within": 1
+    }
+  },
+  "ten_slowest_tests": [
+    {
+      "test": "ParallelDeliveryTest#test_both_delivery_orders_preserve_independent_candidates_and_recover",
+      "file": "parallel_delivery_test.rb",
+      "seconds": 24.413957000011578,
+      "assertions": 66,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ManualParallelLaunchTest#test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
+      "file": "manual_parallel_launch_test.rb",
+      "seconds": 22.987003999995068,
+      "assertions": 134,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ManualParallelLaunchTest#test_refusal_matrix_preserves_manual_candidate",
+      "file": "manual_parallel_launch_test.rb",
+      "seconds": 14.061155000003055,
+      "assertions": 88,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ManualParallelLaunchTest#test_each_forbidden_sandbox_write_refuses",
+      "file": "manual_parallel_launch_test.rb",
+      "seconds": 11.774314999987837,
+      "assertions": 45,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ParallelDeliveryTest#test_automatic_then_explicit_cli_delivery_keep_separate_task_candidates",
+      "file": "parallel_delivery_test.rb",
+      "seconds": 7.487996000039857,
+      "assertions": 8,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ManualParallelLaunchTest#test_preflight_races_refuse_before_reservation",
+      "file": "manual_parallel_launch_test.rb",
+      "seconds": 6.800328999990597,
+      "assertions": 28,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ParallelDeliveryTest#test_tampered_advanced_sibling_validation_blocks_delivery",
+      "file": "parallel_delivery_test.rb",
+      "seconds": 4.699945000000298,
+      "assertions": 6,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ParallelDeliveryTest#test_reservation_race_and_held_lock_refuse_before_publication",
+      "file": "parallel_delivery_test.rb",
+      "seconds": 3.5046049999655224,
+      "assertions": 9,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ManualParallelLaunchTest#test_manual_candidate_refuses_and_terminal_non_candidate_remains_nonblocking",
+      "file": "manual_parallel_launch_test.rb",
+      "seconds": 3.498358999961056,
+      "assertions": 12,
+      "failures": 0,
+      "skipped": null
+    },
+    {
+      "test": "ParallelDeliveryTest#test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate",
+      "file": "parallel_delivery_test.rb",
+      "seconds": 3.30769099999452,
+      "assertions": 25,
+      "failures": 0,
+      "skipped": null
+    }
+  ],
+  "diagnostic_source_sha256": {
+    "test/profile_suite.rb": "e29bde53afaaaf47945fa89b6ff7af55b09b30bb8f864c49c6f998ea66a7c6c2",
+    "test/profile_observer_smoke.rb": "17654609c7460748d373d78a0ba75fc332feb4e398e14f5f35792918db6c51ff"
+  }
+}

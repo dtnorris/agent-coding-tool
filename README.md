@@ -332,17 +332,29 @@ work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
 Launch uses a collision override only for this invocation when
-`--allow-write-collision` is present and every conflicting writer has verified
-ACT-owned task/attempt evidence, a distinct worktree at the same prepared
-writable baseline, and known process state. The second worker's sandbox probe
-also denies writes to the first worker's worktrees. Ordinary launch still
+`--allow-write-collision` is present. Managed siblings still require verified
+ACT-owned task/attempt evidence, distinct worktrees at the same prepared
+writable baseline, and known process state. A manual `IN_FLIGHT` reservation
+without managed run evidence may overlap even when its activity is unknown or
+active, or its historical preparation differs. The new task must be fresh and
+pass every normal native worktree, Git identity, prompt and sandbox check.
+The second worker's sandbox probe also denies writes to verified managed
+sibling worktrees. Ordinary launch still
 rejects a write/write collision; read-only overlap does not require the flag.
 The override records task, attempt, invocation, conflicts, authorities and
-verified sibling ownership in private handoff evidence and lifecycle state.
+verified sibling ownership separately from unverified manual reservations in
+private handoff evidence and lifecycle state. Manual-overlap diagnostics say
+`operator_authorized_manual_overlap`; they never certify the external worker.
 It expires with that attempt. Manual `start --allow-write-collision` retains
 its human assertion contract and cannot be used to bypass launch checks.
 Launch never uses `prepare --retry`. Without an installed
-validation contract it retains the NC-02A handoff behavior. With a contract,
+validation contract it retains the NC-02A handoff behavior. **Every attempt
+admitted alongside an unverified manual reservation disables managed delivery,
+including explicit `act deliver`, even after that reservation ends.** Preserve
+the candidate with the existing checkpoint/patch workflow for separate operator
+review and integration. No integration, commit, push, PR, task completion,
+production or paid-resource authority follows from the flag. Other launches
+retain their existing delivery behavior. With a contract,
 successful worker exit continues to host validation and draft delivery. The
 delivery path can record CANDIDATE only after independently verified publication;
 it never records COMPLETE. Existing manual lifecycle commands retain their
@@ -366,15 +378,17 @@ and submodules require operator judgment and are not
 supported in V1. Read-only snapshots may move and are disclosed in launch/exit
 provenance for reconciliation; writable movement before spawn blocks launch.
 Required external freshness failures block prompt handoff.
-Launch rejects overlapping manual IN_FLIGHT work even with the new flag: a
-manual start record does not identify a separately sandboxed workspace or
-prove worker activity. This includes an AFTEST-01 launch while IG-18C is
-manual IN_FLIGHT. Supporting that case would require a private host attestation
-bound to the exact manual task/preparation, writable authority, separate Git
-worktree inventory, enforced sandbox roots and observed worker process state;
-no such import/attestation command exists. Stale manual reservations, foreign
-or partial records and unknown liveness still require operator judgment.
-This additional guard does not change the manual `start` collision contract.
+For example, `act launch FO-25 --codex --allow-write-collision --reasoning high`
+can develop independently alongside a manually started `IG-19E-F2`. The older
+task's lifecycle, prompt, unfinished files, branch and evidence are untouched.
+ACT verifies only its new managed worker's boundary. An external process may
+have broader filesystem access; ACT cannot retroactively sandbox it, establish
+its liveness, or prevent it independently accessing the new workspace. No
+quiescence approval or lifecycle update is required. Partial, damaged, ambiguous
+or unresolved managed evidence still refuses; it is never imported as manual
+work. Manual candidate reservations do not gain this exception. New worktrees
+nested inside any existing Git checkout refuse. This does not change the
+manual `start` collision contract or authorize automatic integration/publication.
 
 Install Codex and authenticate locally with `codex login` using a ChatGPT
 account. Launch accepts the verified Codex CLI 0.162.1 sandbox interface, checks
@@ -1018,11 +1032,26 @@ worktrees at one pinned commit. A fake Codex worker stays active while the
 second launches with the explicit flag. The test checks the collision record,
 distinct branches/results, denied sibling and ordinary-checkout writes,
 independent process-group cancellation, checkpoint identity and stale status
-after a local main push. It also checks that a manual IG-18C reservation cannot
-authorize an AFTEST-01 launch. The worker has a 30-second sleep ceiling, the
+after a local main push. It also checks that a manual IG-18C reservation remains
+unverified during an explicitly authorized AFTEST-01 launch. The worker has a 30-second sleep ceiling, the
 second launch is limited to 20 seconds, and no LLM inference, network, GitHub
 mutation or paid resource is involved. This pilot does not validate a real Mac
 Codex sandbox; that separate host check remains required before operational use.
+
+`ruby -Ilib:test test/manual_parallel_launch_test.rb` exercises cold public CLI
+prepare/start/launch/checkpoint/delivery, active external work, different historical
+pins, byte preservation, negative controls and preflight races using finite fake
+Codex processes and native temporary Git. Sandbox results are simulated there.
+For non-inference native macOS acceptance, use the installed Codex 0.162.1:
+
+```sh
+ACT_NATIVE_CODEX="$(command -v codex)" ruby -Ilib:test test/integration/manual_parallel_native_sandbox.rb
+```
+
+This runs the production sandbox write/deny probe against disposable writer,
+reader, ordinary checkout, private evidence, shared Git administration and a
+known active external workspace. It launches no model or implementation worker
+and contacts no inference service. Unsupported hosts fail rather than skip.
 
 Run `rake` for the full test suite. Tests use explicit temporary data
 directories and do not depend on personal task data. The publisher tests in

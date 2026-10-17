@@ -272,17 +272,22 @@ module AgentCodingTool
       if expected_collisions && collisions != expected_collisions
         raise InvalidState, "#{id}: write reservations changed during launch; inspect and retry"
       end
-      if launch_authorization && (!allow_write_collision || collisions.empty? ||
+      manual_conflicts = launch_authorization&.fetch("unverified_manual_conflicts", []) || []
+      if launch_authorization && (!allow_write_collision || (collisions.empty? && manual_conflicts.empty?) ||
                                   launch_authorization["task_id"] != id ||
                                   launch_authorization["conflicts"] != collisions)
         raise InvalidState, "#{id}: invalid launch collision authorization"
       end
+      collisions = (collisions + manual_conflicts.map { |row|
+        row.slice("task_id", "status").merge("repositories" => row.fetch("repositories").dup)
+      }).uniq { |row| row.fetch("task_id") }
       started_at = Time.now.utc.iso8601
       state["started_at"] = started_at
       unless collisions.empty?
         state["write_overlap"] = {
           "observed_at" => started_at,
-          "basis" => launch_authorization ? "verified_launch_at_start" : "manual_unverified",
+          "basis" => manual_conflicts.any? ? "operator_authorized_manual_overlap" :
+            launch_authorization ? "verified_launch_at_start" : "manual_unverified",
           "conflicts" => collisions.map { |row| row.merge("repositories" => row.fetch("repositories").dup) },
           "authorities" => collisions.flat_map { |row| row.fetch("repositories") }.uniq.sort.map { |name|
             state.fetch("snapshot").fetch(name).slice("remote_url", "branch") }

@@ -160,18 +160,18 @@ class ParallelLaunchTest < Minitest::Test
     end
   end
 
-  def test_manual_in_flight_worker_cannot_be_claimed_as_isolated_by_launch_flag
-    fixture(git: true) do
+  # A manual reservation permits isolated development, never verified siblings.
+  def test_manual_in_flight_worker_remains_unverified_with_launch_flag
+    fixture(git: true, process: true) do
       write_task(@data, id: "IG-18C", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       write_task(@data, id: "AFTEST-01", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       @coordinator.prepare("IG-18C")
       @coordinator.start("IG-18C", allow_write_collision: true)
       @coordinator.prepare("AFTEST-01")
-      error = assert_raises(AgentCodingTool::InvalidState) do
-        launcher.launch("AFTEST-01", allow_write_collision: true)
-      end
-      assert_match(/manual worker isolation and activity are unverified/, error.message)
-      assert_nil @store.load("AFTEST-01")["started_at"]
+      assert_equal 0, launcher(real_sandbox_probe: true).launch("AFTEST-01", allow_write_collision: true)
+      assert_empty handoff("AFTEST-01").fetch("collision_authorization").fetch("verified_conflicts")
+      assert_equal ["IG-18C"], handoff("AFTEST-01").fetch("collision_authorization").fetch("unverified_manual_conflicts").map { |row| row.fetch("task_id") }
+      assert @store.load("AFTEST-01")["started_at"]
       assert @store.load("IG-18C")["started_at"]
     end
   end

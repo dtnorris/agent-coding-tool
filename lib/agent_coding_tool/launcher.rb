@@ -23,6 +23,7 @@ module AgentCodingTool
 
     def launch(id, model: nil, reasoning: nil, allow_write_collision: false)
       raise InvalidTask, "launch: unsafe task ID" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      @manual_conflicts = []
       safe_root!
       raise InvalidState, "launch: foreign/symlinked lock" if File.symlink?(File.join(@run_root, "launch.lock"))
       File.open(File.join(@run_root, "launch.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
@@ -47,6 +48,10 @@ module AgentCodingTool
       bases = task.fetch("repositories").filter_map { |name, spec|
         state.fetch("snapshot").fetch(name) if spec.fetch("access") == "write" }
       @report = JSON.parse(File.binread(File.join(run_dir, "handoff.json")))
+      if @report.dig("collision_authorization", "unverified_manual_conflicts") ||
+         state.dig("write_collision_override", "launch", "unverified_manual_conflicts")
+        raise InvalidState, "delivery: unverified manual overlap at launch; managed delivery disabled for this attempt; preserve the patch for separate operator review"
+      end
       @collisions = TaskStore.new(File.join(@data_root, "tasks")).all.filter_map do |other|
         next if other.fetch("id") == id
         other_state = store.load(other.fetch("id"))
@@ -129,7 +134,8 @@ module AgentCodingTool
       bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
       verified_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision)
+                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+      manual_conflicts = @manual_conflicts
       config = Config.load(File.join(@data_root, "config.yml"))
       root = WorktreeManager.canonical_system_path(config.worktree_root)
       [@source_root, @data_root, @run_root].map { |path| WorktreeManager.canonical_system_path(path) }.each do |protected|
@@ -190,9 +196,9 @@ module AgentCodingTool
         changed_write!(task, state, @report.fetch("launch_heads"))
         manager.inspect!
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision)
+                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
         identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees") } }
-        unless identity.call(current_conflicts) == identity.call(verified_conflicts)
+        unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
         end
         verified_conflicts = current_conflicts
@@ -202,8 +208,8 @@ module AgentCodingTool
         heads = checked_status!(id, allow_write_collision: allow_write_collision)
         changed_write!(task, state, heads)
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision)
-        unless identity.call(current_conflicts) == identity.call(verified_conflicts)
+                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+        unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during sandbox probe; inspect and retry"
         end
         verified_conflicts = current_conflicts
@@ -213,17 +219,29 @@ module AgentCodingTool
         File.binwrite(@report.fetch("stdin_path"), prompt + envelope)
         command = codex_command(workspace, model, reasoning, extra_roots: workspaces.values.drop(1))
         @report["argv"] = command
-        if @collisions.any?
+        if @collisions.any? || manual_conflicts.any?
           @report["collision_authorization"] = {
             "task_id" => id, "attempt" => attempt, "invocation_id" => @report.fetch("invocation_id"),
             "prepared_at" => state.fetch("prepared_at"), "conflicts" => @collisions,
             "authorities" => @report.fetch("writable_authorities"),
             "verified_conflicts" => verified_conflicts
           }
+          if manual_conflicts.any?
+            @report["collision_authorization"]["unverified_manual_conflicts"] = manual_conflicts
+            @err.puts "PARALLEL DEVELOPMENT: operator authorized; new worker isolation verified by worktree/sandbox checks; external worker isolation and activity are unverified; managed delivery disabled."
+          end
         end
         AttemptRecovery.new(data_root: @data_root).retry_ready!(id, current_run: run_dir) if attempt > 1
         raise InvalidState, "launch: task/preparation changed before reservation" unless
-          state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task
+          state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task &&
+          File.binread(state.fetch("prompt_path")) == prompt && @coordinator.launch_prompt(id).b == prompt
+        validate_authorities!(task, state)
+        manager.inspect!
+        final_conflicts = reject_unknown_reservations!(id, bases,
+          allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+        unless identity.call(final_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
+          raise InvalidState, "launch: parallel worker set changed before reservation; inspect and retry"
+        end
         @report["status"] = "reserving"
         save_report
         @coordinator.start(id, allow_write_collision: allow_write_collision,
@@ -235,7 +253,9 @@ module AgentCodingTool
         result = execute(command, lock)
         if result == 0 && @report["status"] == "exited"
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
-          if delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
+          if manual_conflicts.any?
+            @err.puts "DELIVERY DEFERRED: unverified manual overlap; managed delivery disabled for this attempt; preserve candidate for operator review"
+          elsif delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
             @err.puts "DELIVERY DEFERRED: another launch holds the reservation lock; review separately"
           elsif delivery.configured?(id)
             begin
@@ -407,15 +427,17 @@ module AgentCodingTool
       end
     end
 
-    # Returns verified overlapping host attempts for the target's pinned bases.
-    # Opt-in alone is insufficient: unknown ownership or liveness raises InvalidState.
-    def reject_unknown_reservations!(id, bases, allow_write_collision:)
+    # Returns verified managed siblings and separately records manual reservations.
+    # Launch may admit a no-run IN_FLIGHT reservation with explicit permission;
+    # delivery never may. Damaged/partial managed evidence still raises InvalidState.
+    def reject_unknown_reservations!(id, bases, allow_write_collision:, allow_manual_overlap: false)
       # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
-      # pass also sees stale manual starts and orphaned host evidence, neither of
-      # which becomes safe merely because its old pushed head moved.
+      # pass also sees stale manual starts and orphaned host evidence. Historical
+      # source movement never erases a reservation or repairs managed evidence.
       store = StateStore.new(File.join(@data_root, "state"))
       all_reports = reports
       verified = []
+      @manual_conflicts = []
       TaskStore.new(File.join(@data_root, "tasks")).all.each do |other|
         other_id = other.fetch("id")
         next if other_id == id
@@ -424,6 +446,24 @@ module AgentCodingTool
         shared = shared_writers(other, other_state.fetch("snapshot"), bases)
         next if shared.empty?
         next unless other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete"
+
+        if allow_manual_overlap && allow_write_collision && other_state["started_at"] && !other_state["result"] &&
+           all_reports.none? { |report| report["task_id"] == other_id } &&
+           !File.exist?(File.join(@run_root, other_id)) && !File.symlink?(File.join(@run_root, other_id)) &&
+           !other_state.dig("write_collision_override", "launch")
+          target = store.load(id).fetch("snapshot")
+          repositories = target.keys.select { |name| bases.include?(target.fetch(name)) &&
+            shared.any? { |key| other_state.fetch("snapshot").fetch(key).values_at("remote_url", "branch") ==
+              target.fetch(name).values_at("remote_url", "branch") } }.sort
+          @manual_conflicts << {
+            "task_id" => other_id, "status" => shared.all? { |name| bases.any? { |base|
+              base.values_at("remote_url", "branch", "pushed_sha") == other_state.fetch("snapshot").fetch(name).values_at("remote_url", "branch", "pushed_sha") } } ? "IN_FLIGHT" : "STALE",
+            "repositories" => repositories,
+            "task_sha256" => Digest::SHA256.hexdigest(JSON.generate(other)),
+            "state_sha256" => Digest::SHA256.hexdigest(JSON.generate(other_state))
+          }
+          next
+        end
 
         if allow_write_collision && shared.any? { |name|
           previous = other_state.fetch("snapshot").fetch(name)
@@ -633,10 +673,12 @@ module AgentCodingTool
     end
 
     def execution_envelope(workspaces, heads)
+      notice = @manual_conflicts&.any? ? "Parallel development is operator-authorized. Older external isolation/activity are unverified; ACT cannot confine an external process. Managed delivery is disabled for this attempt.\n" : ""
       "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n" \
         "The exact ACT prompt above retains task authority. Writable worktrees: #{JSON.generate(workspaces)}. Original paths are observations, not writable roots.\n" \
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Concurrent ACT worktrees are outside this worker's writable sandbox: #{JSON.generate(@parallel_roots || [])}. Collision permission grants no integration authority.\n" \
+        "#{notice}" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
         "If required external reads, prerequisites or final freshness cannot be established, stop and report that limitation. Do not claim refreshed GitHub refs.\n" \
@@ -654,9 +696,14 @@ module AgentCodingTool
         !help.include?("--full-auto")
       marker = "ACT sandbox probe #{SecureRandom.hex(12)}"
       targets = [[File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
+      targets << [File.join(@data_root, ".act-probe-#{SecureRandom.hex(6)}"), false] if @manual_conflicts&.any?
       inventory.fetch("entries").each do |entry|
         targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
         targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
+        if @manual_conflicts&.any?
+          admin = git!("rev-parse", "--absolute-git-dir", chdir: entry.fetch("path"))
+          targets << [File.join(admin, "act-probe-#{SecureRandom.hex(6)}"), false]
+        end
       end
       (@parallel_roots || []).each do |path|
         targets << [File.join(path, ".act-probe-#{SecureRandom.hex(6)}"), false]

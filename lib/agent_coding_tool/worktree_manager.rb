@@ -82,6 +82,14 @@ module AgentCodingTool
         raise InvalidState, "worktrees: root overlaps an ordinary checkout or canonical component root"
       end
       entries.each do |entry|
+        # A separate worktree nested inside another checkout still shares its
+        # candidate filesystem. Inspect only each new path's nearest existing
+        # ancestor, not an inventory of external workers or their activity.
+        ancestor = File.dirname(entry.fetch("path"))
+        ancestor = File.dirname(ancestor) until File.exist?(ancestor)
+        if git(ancestor, "rev-parse", "--show-toplevel").last
+          raise InvalidState, "worktrees: target overlaps an existing Git checkout"
+        end
         if entry["branch"] && git(entry.fetch("parent"), "show-ref", "--verify", "--quiet", "refs/heads/#{entry['branch']}", allow_failure: true).last
           raise InvalidState, "worktrees: conflicting branch #{entry['branch']}"
         end

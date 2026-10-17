@@ -236,7 +236,7 @@ module AgentCodingTool
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
-        opts.on("--allow-write-collision", "authorize this launch against verified isolated ACT workers") { options[:allow_write_collision] = true }
+        opts.on("--allow-write-collision", "authorize isolated development, including unverified manual reservations") { options[:allow_write_collision] = true }
         opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
         opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
       end
@@ -918,7 +918,11 @@ module AgentCodingTool
       end
       return unless override.is_a?(Hash) && override["conflicts"].is_a?(Array) && !override["conflicts"].empty?
 
-      kind = override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
+      kind = if override.dig("launch", "unverified_manual_conflicts")
+               "operator-authorized development; new worker checked at launch; external isolation/liveness unverified; managed delivery disabled"
+             else
+               override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
+             end
       others = override.fetch("conflicts").map { |row| row.fetch("task_id") }.join(", ")
       detail.call("parallel", "#{kind} with #{others}; integration remains separate")
     end

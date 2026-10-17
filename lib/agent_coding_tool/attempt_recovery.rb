@@ -435,11 +435,36 @@ module AgentCodingTool
       nil
     end
 
+    # Hostname may change within one boot; only a complete boot UUID and UID
+    # match permits that exception. Exact historical matches remain supported.
+    def self.same_boot_and_user?(recorded, current)
+      keys = %w[boot hostname uid]
+      return false unless recorded.is_a?(Hash) && current.is_a?(Hash) &&
+        recorded.keys.sort == keys && current.keys.sort == keys
+      return false unless [recorded, current].all? { |value|
+        value["hostname"].is_a?(String) && !value["hostname"].empty? &&
+          value["boot"].is_a?(String) &&
+          value["boot"].match?(/\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z/) &&
+          value["uid"].is_a?(Integer) && value["uid"] >= 0
+      }
+      recorded.values_at("boot", "uid") == current.values_at("boot", "uid")
+    end
+
+    # Only the exact three-line warning for a separate macOS Time Machine SMB
+    # volume is ignorable. A warning about the inspected volume still refuses.
+    def unrelated_time_machine_warning?(error, path)
+      pattern = %r{\Alsof: WARNING: can't stat\(\) smbfs file system /Volumes/\.timemachine/[^/\r\n]+/[0-9a-fA-F-]{36}/[^/\r\n]+\n {6}Output information may be incomplete\.\n {6}assuming "dev=[0-9a-fA-F]+" from mount table\n?\z}
+      return false unless error.match?(pattern)
+      actual = File.realpath(path)
+      actual != "/Volumes/.timemachine" && !actual.start_with?("/Volumes/.timemachine/")
+    end
+
     # Refuses active/reused PIDs, groups, contradictory evidence and unavailable
     # tools. :clear means these bounded observations passed, not containment.
     def check(report, inventory)
       identity = self.class.host_identity
-      return :unknown unless identity && report["host_identity"] == identity
+      return :unknown unless identity && (report["host_identity"] == identity ||
+        self.class.same_boot_and_user?(report["host_identity"], identity))
       return :unknown unless AttemptRecovery::STATUSES.include?(report["status"]) && report["host_pid"].is_a?(Integer) && report["host_pid"].positive?
       child = report["child_pid"]
       if child
@@ -468,7 +493,10 @@ module AgentCodingTool
         next unless File.directory?(entry.fetch("path"))
         output, error, status = Open3.capture3("lsof", "-n", "-P", "+D", entry.fetch("path"))
         return :active if status.exitstatus == 0 && !output.strip.empty?
-        return :unknown unless status.exitstatus == 1 && output.empty? && error.empty?
+        return :unknown unless status.exitstatus == 1 && output.empty?
+        next if error.empty?
+        return :unknown unless unrelated_time_machine_warning?(error, entry.fetch("path"))
+        warn "act liveness: unrelated Time Machine SMB warning for #{entry.fetch('path')}:\n#{error}"
       end
       :clear
     rescue SystemCallError, IOError, KeyError, TypeError, ArgumentError

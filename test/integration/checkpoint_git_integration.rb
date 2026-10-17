@@ -1,10 +1,14 @@
 # frozen_string_literal: true
 
 require_relative "../test_helper"
+require_relative "../recovery_observations"
 require "minitest/mock"
 
+# Native preservation/reconstruction and strict launch-binding refusal decisions.
+# All repositories, evidence, processes and candidate files are fixture-owned.
 class CheckpointTest < Minitest::Test
   include TestHelpers
+  include RecoveryObservations
 
   def self.seed
     return @seed if @seed
@@ -36,7 +40,11 @@ class CheckpointTest < Minitest::Test
     out.strip
   end
 
-  def fixture
+  # Yields disposable task/state, candidate files and baseline identity. Native
+  # mode creates real local repositories; refusal-only mode declares Git reads
+  # at the call site and never claims to prove native ownership. Setup errors
+  # propagate and all fixture files are removed afterward.
+  def fixture(native: true)
     Dir.mktmpdir("act-checkpoint-test-") do |root|
       root = File.realpath(root)
       ordinary = File.join(root, "ordinary")
@@ -44,13 +52,20 @@ class CheckpointTest < Minitest::Test
       workspace = File.join(root, "workspace")
       data = File.join(root, "data")
       FileUtils.mkdir_p(File.join(data, "tasks"))
-      FileUtils.cp_r(self.class.seed.fetch(:ordinary), ordinary)
-      FileUtils.cp_r(self.class.seed.fetch(:remote), remote)
-      base = git("rev-parse", "HEAD", chdir: ordinary)
-      git("remote", "add", "origin", remote, chdir: ordinary)
-      git("clone", ordinary, workspace)
-      git("remote", "set-url", "origin", remote, chdir: workspace)
-      git("checkout", "--detach", base, chdir: workspace)
+      if native
+        FileUtils.cp_r(self.class.seed.fetch(:ordinary), ordinary)
+        FileUtils.cp_r(self.class.seed.fetch(:remote), remote)
+        base = git("rev-parse", "HEAD", chdir: ordinary)
+        git("remote", "add", "origin", remote, chdir: ordinary)
+        git("clone", ordinary, workspace)
+        git("remote", "set-url", "origin", remote, chdir: workspace)
+        git("checkout", "--detach", base, chdir: workspace)
+      else
+        base = "a" * 40
+        FileUtils.mkdir_p([ordinary, workspace])
+        File.write(File.join(workspace, "removed.txt"), "remove\n")
+        File.write(File.join(workspace, "renamed.txt"), "rename\n")
+      end
       File.write(File.join(workspace, "changed.txt"), "updated\n")
       File.write(File.join(workspace, "new.txt"), "untracked\n")
       File.unlink(File.join(workspace, "removed.txt"))
@@ -67,6 +82,25 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Supplies only the two exact workspace identity reads before launch binding.
+  # Returns the block's result, verifies empty production environment overrides,
+  # and fails on any extra/missing command. Files and production checks stay real.
+  def with_workspace_identity(workspace, base, remote)
+    replay = GitContract::Replay.new([
+      recovery_observation(workspace, "git", "rev-parse", "HEAD", stdout: "#{base}\n".b),
+      recovery_observation(workspace, "git", "remote", "get-url", "origin", stdout: "#{remote}\n".b)
+    ])
+    capture = lambda do |environment, *argv, **options|
+      assert_equal({}, environment)
+      replay.capture3(*argv, **options)
+    end
+    result = Open3.stub(:capture3, capture) { yield }
+    assert replay.verify!
+    result
+  end
+
+  # Preserves all candidate change kinds, deletes the workspace and reconstructs
+  # its exact files in a bounded fresh Ruby process using production recovery.
   def test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace
     fixture do |root, data, _ordinary, workspace, base|
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
@@ -90,7 +124,16 @@ class CheckpointTest < Minitest::Test
       fresh = AgentCodingTool::Checkpoint.new(data_root: data)
       assert_raises(AgentCodingTool::InvalidState) { fresh.recover("T", destination: destination) }
       refute File.exist?(destination)
-      assert_equal "reconstructed", fresh.recover("T", destination: destination, confirm_disconnected: true).fetch("status")
+      reconstruction = <<~'RUBY'
+        puts JSON.generate(AgentCodingTool::Checkpoint.new(data_root: ARGV.fetch(0)).recover(
+          "T", destination: ARGV.fetch(1), confirm_disconnected: true))
+      RUBY
+      stdout, stderr, status = GitContract::Native.new.capture3(
+        RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), "-ragent_coding_tool",
+        "-e", reconstruction, data, destination
+      )
+      assert status.success?, stderr
+      assert_equal "reconstructed", JSON.parse(stdout).fetch("status")
       assert_equal "updated\n", File.read(File.join(destination, "changed.txt"))
       assert_equal "untracked\n", File.read(File.join(destination, "new.txt"))
       assert_equal "rename\n", File.read(File.join(destination, "moved.txt"))
@@ -98,10 +141,15 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Refuses incomplete/foreign artifacts without changing good evidence; restores
+  # the corrupted patch and reruns the native completeness verification.
   def test_incomplete_and_symlinked_artifacts_cannot_replace_good_checkpoint
     fixture do |root, data, _ordinary, workspace, _base|
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
       old = checkpoint.record("T", workspace: workspace)
+      original_patch = File.binread(old.fetch("path"))
+      directory = File.dirname(old.fetch("path"))
+      original_evidence = Dir.children(directory).to_h { |name| [name, File.binread(File.join(directory, name))] }
       truncated = File.join(root, "truncated.patch")
       File.binwrite(truncated, File.binread(old.fetch("path"))[0, 20])
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: truncated) }
@@ -114,10 +162,19 @@ class CheckpointTest < Minitest::Test
       link = File.join(root, "link.patch")
       File.symlink(old.fetch("path"), link)
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: link) }
+      assert_equal original_evidence, Dir.children(directory).to_h { |name| [name, File.binread(File.join(directory, name))] }
       state = AgentCodingTool::StateStore.new(File.join(data, "state")).load("T")
       assert_equal "verified", state.dig("checkpoint", "status")
-      File.binwrite(old.fetch("path"), "corrupt")
-      assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T") }
+      begin
+        File.binwrite(old.fetch("path"), "corrupt")
+        error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T") }
+        assert_includes error.message, "checksum/length mismatch"
+        assert_equal "corrupt", File.binread(old.fetch("path"))
+      ensure
+        File.binwrite(old.fetch("path"), original_patch)
+      end
+      assert_equal old.fetch("sha256"), checkpoint.verify("T", workspace: workspace).fetch("record").fetch("sha256")
+      assert_equal original_evidence, Dir.children(directory).to_h { |name| [name, File.binread(File.join(directory, name))] }
     end
   end
 
@@ -154,8 +211,22 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Keeps the missing prepared-object native destination alongside checkpoint
+  # baseline/evidence refusal. Every failed operation preserves fixture resources.
   def test_wrong_baseline_and_foreign_or_symlinked_evidence_fail_closed
-    fixture do |root, data, _ordinary, workspace, _base|
+    fixture do |root, data, ordinary, workspace, _base|
+      ownership = File.join(root, "missing-object.json")
+      visible = File.join(root, "worktrees")
+      error = assert_raises(AgentCodingTool::InvalidState) do
+        AgentCodingTool::WorktreeManager.new(root: visible, record_path: ownership).create(
+          task_id: "M", attempt: 1, task: { "repositories" => { "repo" => { "access" => "write" } } },
+          snapshot: { "repo" => { "path" => ordinary, "remote" => "origin",
+            "remote_url" => File.join(root, "remote.git"), "branch" => "main", "pushed_sha" => "f" * 40 } }
+        )
+      end
+      assert_includes error.message, "prepared object missing"
+      refute File.exist?(ownership)
+      refute File.exist?(File.join(visible, "M", "repo"))
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
       record = checkpoint.record("T", workspace: workspace)
       git("add", "-A", chdir: workspace)
@@ -191,12 +262,18 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Declares workspace Git identity while production rejects partial/foreign
+  # launch evidence, preserving the candidate, task state and refused report.
   def test_launch_attempt_rejects_foreign_workspace_and_partial_run_evidence
-    fixture do |root, data, _ordinary, workspace, _base|
+    fixture(native: false) do |root, data, _ordinary, workspace, base|
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
       run_dir = File.join("#{data}-runs", "T", "run")
       FileUtils.mkdir_p(run_dir)
-      assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
+      candidate = Dir.children(workspace).to_h { |name| [name, File.binread(File.join(workspace, name))] }
+      with_workspace_identity(workspace, base, File.join(root, "remote.git")) do
+        error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
+        assert_includes error.message, "missing/symlinked evidence"
+      end
       state = AgentCodingTool::StateStore.new(File.join(data, "state")).load("T")
       File.write(File.join(run_dir, "handoff.json"), JSON.generate(
         "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "T",
@@ -204,8 +281,16 @@ class CheckpointTest < Minitest::Test
         "writable_repository" => "repo", "writable_authority" => state.fetch("snapshot").fetch("repo").slice("remote_url", "branch", "pushed_sha"),
         "invocation_id" => "foreign", "worktrees_path" => File.join(run_dir, "worktrees.json")
       ))
-      error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
-      assert_includes error.message, "launch ownership"
+      report_path = File.join(run_dir, "handoff.json")
+      before = File.binread(report_path)
+      with_workspace_identity(workspace, base, File.join(root, "remote.git")) do
+        error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
+        assert_includes error.message, "launch ownership"
+      end
+      assert_equal before, File.binread(report_path)
+      assert_equal state, AgentCodingTool::StateStore.new(File.join(data, "state")).load("T")
+      assert_equal candidate, Dir.children(workspace).to_h { |name| [name, File.binread(File.join(workspace, name))] }
+      refute File.exist?(File.join("#{data}-runs", "checkpoints"))
     end
   end
 

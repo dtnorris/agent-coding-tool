@@ -2,6 +2,10 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## ACTFAST cleanup — 2026-10-18
+
+The operator-authorized cleanup removes all 11 `RakefileTest` self-tests and their required-case entry without replacements. The current inventory is 265 default cases across 21 files, 73 native integration cases and eight Git contracts (346 aggregate). Rakefile coverage rows, source hashes, migration obligations and execution results below describe their historical baselines; they do not require retaining the deleted self-tests. Runtime suite enforcement and ACTD YAML validation remain unchanged.
+
 ## G/TST-20 continuous public CLI journey correction — 2026-10-18
 
 The follow-up mission on fixed HEAD `c105a62551cf72dd140462d162f36105e50ec715` strengthens the existing required `AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry` in [attempt_retry_git_integration.rb](../integration/attempt_retry_git_integration.rb). Both complete local canonical coding/planning skills were read at skills checkout HEAD `041adf148c08990e8585cb75aa70db411c310198`. The existing candidate is preserved; no production, helper, manifest, runner or Rakefile changes are part of this correction. All 14 retry test identities and their existing assertions remain. The earlier review and TST-16 inventory below are historical context.

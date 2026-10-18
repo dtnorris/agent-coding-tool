@@ -1114,9 +1114,9 @@ fake worker/sandbox/host-tool boundaries do not establish macOS host acceptance.
 The deterministic retry-liveness matrix runs in the normal suite.
 
 `test/required_cases.json` freezes the default and native file/case obligations
-inspected at ACT `198aaee6f70d953a3858dfaf61c7a377567e66d2`, plus the new
-entry-point regression cases. It is an acceptance inventory, not generated
-discovery output. The verified tasks reject a missing or unexpected suite file,
+retained after the ACTFAST migrations and removal of `RakefileTest`
+self-tests. It is an acceptance inventory, not generated discovery output.
+The verified tasks reject a missing or unexpected suite file,
 an empty inventory, omitted or unregistered case, duplicate execution, failed process,
 missing/malformed summary or case evidence, inconsistent counts, zero assertions,
 and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
@@ -1164,10 +1164,10 @@ existing fixed inventory, with no runner registration extension:
    or evidence must fail. Workers may run their own files directly for focused
    development; that is not verified aggregate acceptance. Preserve sibling
    candidates and reconcile the manifest serially after each integration.
-4. Run the inexpensive `bundle exec ruby -Ilib:test test/rakefile_test.rb`
-   fixture gate first. Full native and aggregate acceptance belongs to the
-   operator on the composed candidate. Refresh baseline and preparation when
-   integration advances main; this procedure grants no publication authority.
+4. Run the documented suite commands on the composed candidate. Full native
+   and aggregate acceptance belongs to the operator. Refresh baseline and
+   preparation when integration advances main; this procedure grants no
+   publication authority.
 
 The offline gate does not invoke `manual_parallel_native_sandbox.rb`. Its
 separately authorized real-macOS/installed-Codex qualification above remains

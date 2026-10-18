@@ -181,6 +181,115 @@ revalidate. It does not grant authority, launch a worker, or resolve a stale
 candidate or human judgment. Malformed or unavailable pushed-head evidence
 produces no partial JSON, an error on stderr, and a nonzero exit.
 
+### Reporting external agent activity
+
+Use these commands to report work already occurring outside ACT. Reporting is
+visibility only: ACT has neither verified nor authorized that execution.
+
+```sh
+bin/agent-coding-tool external report TASK --reporter 'operator' --kind 'codex' \
+  --identifier 'reported-session-id'
+bin/agent-coding-tool external show TASK
+bin/agent-coding-tool status TASK
+bin/agent-coding-tool status
+bin/agent-coding-tool next --json
+bin/agent-coding-tool external end TASK OBSERVATION_ID --disposition ended
+```
+
+Report works for a registered non-complete task without preparation, a generated
+prompt, managed invocation, resolved historical attempts or legacy host evidence.
+It never prepares or starts the task. Task detail and the normal dashboard show
+`EXTERNAL WORK REPORTED` alongside the original lifecycle and blocker, including
+STALE. Open observations survive READY compression, blocked limits and completed
+task filters. A separately recorded COMPLETE remains authoritative but displays
+an inconsistency until the observation is explicitly ended. Fresh declarations
+on COMPLETE refuse.
+
+The reporter, kind and optional identifier are supplied facts. The observation
+UUID identifies ACT's record, not an invocation, process or session. ACT records
+local observation time and the observed local UID separately. Isolation and
+containment remain unverified; liveness is always unknown. The last-reported
+timestamp is not a heartbeat. Observations never expire: process exit, source
+movement, old timestamps, reset, result recording and assumed success cannot
+close them or release their conflicts. Declaration may report an overlap with
+an already managed worker, including the same task; both identities remain and
+the dashboard reports the conflict.
+
+Writable scope defaults to **unknown**, blocking potential new writers across
+repositories while unrelated read-only tasks remain usable. If the operator
+explicitly reports a complete bounded writable repository set, use:
+
+```sh
+bin/agent-coding-tool external report TASK --reporter 'operator' --kind 'codex' \
+  --scope-complete --write-repository 'git@github.com:example/additional.git,main'
+```
+
+`--write-repository REMOTE,BRANCH` is repeatable and adds supplied authorities.
+The floor includes registered writers and retained preparation writers; supplied
+scope cannot remove them. Supported Git remote spellings use ACT's publication
+identity resolution, so aliases and different branches reserve the entire same
+repository. This completeness is an operator report, never host attestation or
+permission to write. Bounded reports permit provably disjoint configured writers;
+preparations without retained access labels conservatively reserve every prepared
+repository, including references, because current labels cannot prove old scope.
+unresolved identities or changed declarations/authority make scope unknown while
+retaining the original envelope. Missing preparation alone is valid. Reconcile by
+explicitly ending the old observation and making a new report; status reads do
+not rewrite it. A read-only label or supplied directory does not prove containment.
+
+Manual `start`, managed launch and delivery share this external conflict check.
+`--allow-write-collision` and ACT-owned parallel isolation exceptions cannot
+override it. Ordinary ACT-15 manual collision warnings remain advisory when no
+external observation conflicts. Preparation can still take a snapshot, with a
+conflict warning; it grants no execution eligibility. `next` excludes externally
+blocked starts and offers no `manual_parallel` escape for them. JSON retains
+`agent-coding-tool-next/v0.1`, original status/reason/freshness meanings and the
+existing no-observation field order. With observations it adds task
+`external_activity`/`external_conflicts`, `facts.external_reservations` and
+`recommendations.external_waits`; unknown scope is explicit. These fields are
+separate from managed `execution_evidence`. Conditional parallel unlock width
+also respects the external envelopes.
+
+Only one observation can be active per task. An exact repeat with the same
+supplied identifier and payload returns the retained observation without changing
+timestamps/history. Changed payloads, competing identifiers, a repeated report
+without an identifier, and reuse across tasks refuse while retained. End requires
+the observation UUID and `--disposition ended`, `failed` or `lost-contact`.
+Repeating the same retained end is a no-op and cannot end a newer observation.
+Unknown/evicted IDs and changed dispositions refuse. Retention is bounded to one
+active observation and the last eight closed observations per task, plus an
+omitted-older count; identity deduplication ends when a record is evicted. This
+is not indefinite audit storage.
+
+Optional `--note TEXT` and `--reference TEXT` are concise private inert text.
+References are never opened or imported. UTF-8 byte limits are: reporter 128,
+kind 64, identifier 256, note 512, reference 512. Empty/invalid text, control
+characters and excess bytes refuse without echoing the payload. Additional
+authority reports are limited to 128 remote/branch pairs (1024 bytes per value).
+Do not supply prompts, logs, credentials or environment dumps.
+
+Records live only in the private operator-owned
+`<canonical-data-directory>-runs/.external-activity/TASK.yml` namespace, outside
+ACTD. `show` exposes bounded private history; broad JSON omits supplied identifiers,
+notes and references. No observation fields or pointers enter lifecycle YAML,
+generated prompts or automatic delivery material, so default, task and `--all`
+publication selections cannot sweep these records. Unsafe owners, symlinks,
+foreign entries, damaged YAML and incompatible schemas refuse rather than become
+inactivity. Inspection is lock-free and read-only. Report/end and execution
+eligibility checks use the existing launch/delivery/recovery reservation lock,
+including tasks without managed run directories; busy locks require retry.
+Atomic replacement exposes complete old/new documents. A directory-sync error
+after rename reports that replacement occurred; inspect/repeat the command
+instead of assuming rollback.
+
+Ending is an operator-reported disposition, not proof of termination or candidate
+quality. It calls no managed lifecycle, retry, checkpoint, delivery, integration
+or publication operation. Preserve and separately review any external result.
+Use existing explicitly authorized `received`/`finish` or other result handoff
+only in an eligible context; ending cannot resolve STALE preparation, legacy
+liveness uncertainty or historical closeout blockers. David retains integration
+and final acceptance authority.
+
 `bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active]`
 
 Shows effective task state. The default dashboard includes active work with

@@ -636,4 +636,59 @@ class LauncherTest < Minitest::Test
       assert_equal "origin", git("remote", chdir: other)
     end
   end
+  # External observations reserve whole repositories, have no managed parallel
+  # exception, and cannot allocate a managed attempt before explicit closeout.
+  def test_external_conflicts_refuse_launch_even_with_override_and_namespace_is_strict
+    fixture do
+      write_task(@data, id: "OTHER", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+      @coordinator.prepare("T")
+      activity = @coordinator.external_activity
+      document = activity.report("OTHER", reporter: "operator", kind: "fake", scope_complete: true)
+      state = @store.load("T")
+      error = assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T", allow_write_collision: true) }
+      assert_includes error.message, "external activity conflict"
+      assert_equal state, @store.load("T")
+      refute File.exist?(File.join("#{@data}-runs", "T"))
+      activity.end_activity("OTHER", document.fetch("active").fetch("observation_id"), disposition: "ended")
+      assert_equal 0, launcher.launch("T")
+      # Recognition is precise: adding a foreign entry still blocks reports.
+      path = File.join("#{@data}-runs", AgentCodingTool::ExternalActivity::NAMESPACE, "foreign")
+      File.write(path, "private sentinel")
+      File.chmod(0o600, path)
+      assert_raises(AgentCodingTool::InvalidState) { launcher.send(:reports) }
+    end
+  end
+
+  # Models the real worker's lock release and a report before automatic delivery.
+  # The shared delivery gate refuses before validating/publishing a fake result;
+  # manual multi-delivery also enters that gate before creating candidate records.
+  def test_external_report_after_worker_handoff_blocks_automatic_and_multi_delivery
+    fixture do
+      validation = "#{@data}-validation"
+      FileUtils.mkdir_p(validation)
+      File.write(File.join(validation, "T.yml"), "---\n")
+      worker = launcher
+      execute = worker.method(:execute)
+      activity = @coordinator.external_activity
+      worker.define_singleton_method(:execute) do |command, lock|
+        result = execute.call(command, lock)
+        lock.flock(File::LOCK_UN)
+        activity.report("T", reporter: "operator", kind: "external-fake")
+        result
+      end
+      assert_equal 2, worker.launch("T")
+      assert_includes @err.string, "external activity conflict"
+      assert_equal "exited", report.fetch("status")
+      assert @store.load("T")["started_at"]
+      refute @store.load("T")["result"]
+      assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
+      run_dir = File.dirname(Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0))
+      error = assert_raises(AgentCodingTool::InvalidState) do
+        AgentCodingTool::MultiDeliveryManager.new(data_root: @data, coordinator: @coordinator)
+          .deliver_multi_locked("T", run_dir, report)
+      end
+      assert_includes error.message, "external activity conflict"
+      refute File.exist?(File.join(run_dir, "repositories"))
+    end
+  end
 end

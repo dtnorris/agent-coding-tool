@@ -151,6 +151,35 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Fresh and resumed deliveries recheck the same external envelope before any
+  # candidate/state/ref mutation; independently recorded reality remains visible.
+  def test_external_observation_blocks_fresh_and_resumed_delivery
+    [false, true].each do |resumed|
+      fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, data|
+        if resumed
+          provider.fail_after_push = true
+          assert_raises(AgentCodingTool::RepositoryError) { manager.deliver("TASK", run_dir: run_dir) }
+          provider.fail_after_push = false
+        end
+        activity = AgentCodingTool::ExternalActivity.new(data_root: data,
+          task_store: AgentCodingTool::TaskStore.new(File.join(data, "tasks")),
+          state_store: AgentCodingTool::StateStore.new(File.join(data, "state")),
+          repo_inspector: AgentCodingTool::RepoInspector.new(AgentCodingTool::Config.load(File.join(data, "config.yml"))))
+        document = activity.report("TASK", reporter: "operator", kind: "external-fake")
+        before = Dir.glob(File.join(File.dirname(data), "**", "*"), File::FNM_DOTMATCH)
+                    .select { |path| File.file?(path) }.to_h { |path| [path, File.binread(path)] }
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+        assert_includes error.message, "external activity conflict"
+        output, diagnostic = StringIO.new, StringIO.new
+        assert_equal 2, AgentCodingTool::CLI.run(["deliver", "TASK"], root: Dir.pwd, data_root: data, out: output, err: diagnostic)
+        assert_includes diagnostic.string, "external activity conflict"
+        assert_equal before, before.keys.to_h { |path| [path, File.binread(path)] }
+        assert_equal(resumed ? 1 : 0, provider.pushes.length)
+        assert_equal document.fetch("active").fetch("observation_id"), activity.show("TASK").fetch("active").fetch("observation_id")
+      end
+    end
+  end
+
   def test_symlinked_temporary_root_matches_launcher_path_contract
     Dir.mktmpdir("act-delivery-alias-") do |temporary_root|
       real = File.join(File.realpath(temporary_root), "real")

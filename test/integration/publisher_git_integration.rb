@@ -132,6 +132,41 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Public publish selections never see external records in their private sibling.
+  # Sentinels remain absent from selected bytes/prompts/state; dry runs preserve
+  # the real disposable index, HEAD, refs, files and observation timestamps.
+  def test_external_observations_are_structurally_outside_all_public_selections
+    with_repo do |root, _bare|
+      File.unlink(File.join(root, "state", "T1.yml"))
+      config = AgentCodingTool::Config.load(File.join(root, "config.yml"))
+      activity = AgentCodingTool::ExternalActivity.new(data_root: root,
+        task_store: AgentCodingTool::TaskStore.new(File.join(root, "tasks")),
+        state_store: AgentCodingTool::StateStore.new(File.join(root, "state")),
+        repo_inspector: TestHelpers::FakeInspector.new(heads: { "alpha" => "a" * 40 }))
+      document = activity.report("T1", reporter: "operator", kind: "fake",
+        identifier: "SECRET-IDENTIFIER", note: "SECRET-NOTE", reference: "/private/SECRET-PATH", scope_complete: true)
+      id = document.fetch("active").fetch("observation_id")
+      [false, true].each do |ended|
+        activity.end_activity("T1", id, disposition: "ended") if ended
+        before = Dir.glob(File.join(File.dirname(root), "**", "*"), File::FNM_DOTMATCH)
+                    .select { |path| File.file?(path) }.to_h { |path| [path, [Digest::SHA256.file(path).hexdigest, File.mtime(path)]] }
+        [[], ["T1"], ["--all"]].each do |arguments|
+          output, error = StringIO.new, StringIO.new
+          assert_equal 0, AgentCodingTool::CLI.run(["publish", *arguments, "--dry-run"], root: root, data_root: root, out: output, err: error), error.string
+          %w[SECRET-IDENTIFIER SECRET-NOTE /private/SECRET-PATH external-activity].each { |sentinel| refute_includes output.string, sentinel }
+          selection = publisher(root).publish(mode: arguments == ["--all"] ? :all : arguments.empty? ? :default : :task,
+                                              task_id: arguments == ["T1"] ? "T1" : nil, dry_run: true)
+          selection.fetch(:files).each do |path|
+            next unless File.file?(File.join(root, path))
+            %w[SECRET-IDENTIFIER SECRET-NOTE /private/SECRET-PATH].each { |sentinel| refute_includes File.binread(File.join(root, path)), sentinel }
+          end
+        end
+        before.each { |path, value| assert_equal value, [Digest::SHA256.file(path).hexdigest, File.mtime(path)], path }
+        assert_equal document.fetch("active").fetch("observation_id"), id
+      end
+    end
+  end
+
   def test_partial_staging_of_selected_file_blocks_narrow_publication
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "staged\n")

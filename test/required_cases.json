@@ -100,6 +100,22 @@
       "CoordinatorTest#test_hidden_complete_dependency_still_unblocks_visible_task",
       "CoordinatorTest#test_recent_filter_does_not_add_freshness_work_for_hidden_completions"
     ],
+    "test/external_activity_test.rb": [
+      "ExternalActivityTest#test_exact_duplicate_and_retained_identity_horizon",
+      "ExternalActivityTest#test_text_bounds_inert_references_and_safe_errors",
+      "ExternalActivityTest#test_lifecycle_projection_matrix_and_complete_inconsistency",
+      "ExternalActivityTest#test_read_only_inspection_and_no_observation_json_compatibility",
+      "ExternalActivityTest#test_dashboard_filters_retain_open_observations",
+      "ExternalActivityTest#test_bounded_unknown_alias_and_read_only_scheduling",
+      "ExternalActivityTest#test_scope_floor_additions_and_authority_drift",
+      "ExternalActivityTest#test_execution_refusals_and_lifecycle_boundaries",
+      "ExternalActivityTest#test_lock_serialization_and_cross_task_identity_races",
+      "ExternalActivityTest#test_foreign_namespace_and_corruption_fail_closed",
+      "ExternalActivityTest#test_atomic_failure_before_and_after_rename",
+      "ExternalActivityTest#test_partial_write_cold_reader_and_post_rename_sync_failure",
+      "ExternalActivityTest#test_preparation_scope_floor_survives_read_only_relabeling",
+      "ExternalActivityTest#test_same_task_report_and_manual_start_races"
+    ],
     "test/family_status_test.rb": [
       "FamilyStatusTest#test_zero_one_six_and_seven_ready",
       "FamilyStatusTest#test_four_families_and_act_preference_have_exact_summaries",
@@ -151,7 +167,9 @@
       "LauncherTest#test_launch_fails_before_reservation_if_sandbox_can_write_private_evidence",
       "LauncherTest#test_sandbox_probe_uses_private_config_home_and_supported_root_flags",
       "LauncherTest#test_launch_handoff_pins_read_only_dependency_and_probes_its_boundary",
-      "LauncherTest#test_two_writable_worktrees_keep_separate_prepared_authorities"
+      "LauncherTest#test_two_writable_worktrees_keep_separate_prepared_authorities",
+      "LauncherTest#test_external_conflicts_refuse_launch_even_with_override_and_namespace_is_strict",
+      "LauncherTest#test_external_report_after_worker_handoff_blocks_automatic_and_multi_delivery"
     ],
     "test/live_write_collision_status_test.rb": [
       "LiveWriteCollisionStatusTest#test_three_task_status_reports_only_the_in_flight_writer_as_a_blocker",
@@ -323,7 +341,8 @@
       "AttemptRecoveryTest#test_interrupted_evidence_publication_remains_precisely_blocked",
       "AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry",
       "AttemptRecoveryTest#test_sibling_terminal_review_is_independent_in_both_orders",
-      "AttemptRecoveryTest#test_ownership_delivery_candidate_and_changed_state_refusals"
+      "AttemptRecoveryTest#test_ownership_delivery_candidate_and_changed_state_refusals",
+      "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle"
     ],
     "test/integration/checkpoint_git_integration.rb": [
       "CheckpointTest#test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace",
@@ -344,7 +363,8 @@
       "DeliveryManagerTest#test_stale_main_competing_feature_ref_and_forged_worker_artifact_block",
       "DeliveryManagerTest#test_coverage_floor_is_host_enforced",
       "DeliveryManagerTest#test_live_git_push_adapter_creates_only_absent_feature_ref",
-      "DeliveryManagerTest#test_live_guard_rejects_unbounded_or_unclassified_publication"
+      "DeliveryManagerTest#test_live_guard_rejects_unbounded_or_unclassified_publication",
+      "DeliveryManagerTest#test_external_observation_blocks_fresh_and_resumed_delivery"
     ],
     "test/integration/manual_parallel_launch_git_integration.rb": [
       "ManualParallelLaunchTest#test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
@@ -394,7 +414,8 @@
       "PublisherTest#test_unexpected_push_destination_fails_before_git_mutation",
       "PublisherTest#test_rename_crossing_narrow_scope_blocks_but_all_accepts",
       "PublisherTest#test_status_is_read_only_and_repository_operation_blocks_publish",
-      "PublisherTest#test_remote_push_race_preserves_local_commit_without_reconciliation"
+      "PublisherTest#test_remote_push_race_preserves_local_commit_without_reconciliation",
+      "PublisherTest#test_external_observations_are_structurally_outside_all_public_selections"
     ]
   }
 }

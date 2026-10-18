@@ -20,6 +20,15 @@ class FamilyStatusTest < Minitest::Test
     def load(id) = rows.fetch(id, {})
   end
 
+  # Declares an empty external-evidence boundary for this in-memory display
+  # fixture. Real persistence/projection is covered by external activity journeys.
+  class NoExternalActivity
+    # Returns no external reservations without filesystem or process access.
+    def active_snapshot = []
+    # Returns no conflicts for any task in this no-observation fixture.
+    def conflicts(*, **) = []
+  end
+
   # Counts resolution/probe calls; pushed freshness is deterministic and offline.
   class Inspector
     attr_reader :batches, :authority_calls
@@ -418,7 +427,7 @@ class FamilyStatusTest < Minitest::Test
   def build(tasks, states: {})
     inspector = Inspector.new
     coordinator = AgentCodingTool::Coordinator.new(task_store: TaskRegistry.new(tasks), state_store: States.new(states),
-      repo_inspector: inspector, prompt_renderer: nil, prompt_root: nil)
+      repo_inspector: inspector, prompt_renderer: nil, prompt_root: nil, external_activity: NoExternalActivity.new)
     [coordinator, inspector]
   end
 

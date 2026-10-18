@@ -37,9 +37,8 @@ module AgentCodingTool
       @overlap_identity = nil
       verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
       verifier.send(:safe_root!)
-      path = File.join("#{@data_root}-runs", "launch.lock")
-      raise InvalidState, "delivery: symlinked reservation lock" if File.symlink?(path)
-      owned_lock = reservation_lock || File.open(path, File::RDWR | File::CREAT, 0o600)
+      path = verifier.send(:external_activity).reservation_path
+      owned_lock = reservation_lock || File.open(path, File::RDWR | File::CREAT | File::NOFOLLOW, 0o600)
       begin
         unless owned_lock.stat.ino == File.stat(path).ino && owned_lock.stat.dev == File.stat(path).dev &&
                owned_lock.flock(File::LOCK_EX | File::LOCK_NB)

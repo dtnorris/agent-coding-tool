@@ -13,15 +13,26 @@ module AgentCodingTool
     START_COLLISION_STATES = %w[IN_FLIGHT CANDIDATE].freeze
     RECENT_COMPLETE_LIMIT = 5
 
-    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:)
+    # Binds lifecycle stores and optional observation seam; construction writes
+    # nothing. Filesystem-backed callers use the canonical private sibling root.
+    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:, external_activity: nil)
       @task_store = task_store
       @state_store = state_store
       @repo_inspector = repo_inspector
       @prompt_renderer = prompt_renderer
       @prompt_root = prompt_root
+      @external_activity = external_activity
     end
 
     def tasks = @task_store.all
+
+    # Returns the private observation seam using the existing task/state stores.
+    # No paths are created by initialization or read-only status projection.
+    def external_activity
+      @external_activity ||= ExternalActivity.new(
+        data_root: File.dirname(File.dirname(@state_store.state_path("unused"))),
+        task_store: @task_store, state_store: @state_store, repo_inspector: @repo_inspector)
+    end
 
     # Regenerates a prepared task's prompt after validating required skill pins
     # and designation; returns bytes or raises InvalidState before any writes.
@@ -48,9 +59,17 @@ module AgentCodingTool
 
     def status(id) = statuses([id]).first
 
+    # Resolves one lifecycle/freshness snapshot and overlays private observations.
+    # Open activity survives completion filtering; no records/timestamps change.
+    # Invalid lifecycle or freshness provenance retains its existing refusals.
     def statuses(ids = nil, completion_filter: :all, strict_freshness: false)
+      external_snapshot = external_activity.active_snapshot
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
-      selected_tasks = filter_completed_tasks(selected_tasks, completion_filter) unless ids
+      unless ids
+        visible = filter_completed_tasks(selected_tasks, completion_filter)
+        selected_tasks = selected_tasks.select { |task| visible.include?(task) ||
+          external_snapshot.any? { |activity| activity["task_id"] == task["id"] } }
+      end
       selected_contexts = selected_tasks.map { |task| status_context(task) }
       overlaps_by_id = {}
       blocker_ids = selected_contexts.filter_map do |context|
@@ -83,6 +102,17 @@ module AgentCodingTool
       selected_contexts.map do |context|
         id = (context["status"] || context.fetch("pending").fetch("task")).fetch("id")
         status = resolved.fetch(id)
+        unless external_snapshot.empty?
+          task = selected_tasks.find { |selected| selected["id"] == id }
+          status = status.dup
+          activity = external_snapshot.find { |row| row["task_id"] == id }
+          status["external_activity"] = activity if activity
+          conflicts = external_activity.conflicts(task, status.fetch("state"), snapshot: external_snapshot)
+          status["external_conflicts"] = conflicts unless conflicts.empty?
+          # Sanitized snapshot shared by planner/unlock metrics and printed once
+          # in JSON facts. It never enters lifecycle state or generated prompts.
+          status["external_reservations"] = external_snapshot
+        end
         next status unless status.fetch("status") == "PREPARED"
 
         collisions = collision_records(overlaps_by_id.fetch(id, {}), resolved.values,
@@ -91,6 +121,9 @@ module AgentCodingTool
       end
     end
 
+    # Returns conditional dependency unlock counts and startable parallel width
+    # for the supplied status snapshot, including its external reservations.
+    # Repository resolution failures retain the existing planner error contract.
     def completion_unlock_metrics(statuses)
       all_tasks = tasks
       tasks_by_id = all_tasks.to_h { |task| [task.fetch("id"), task] }
@@ -102,6 +135,7 @@ module AgentCodingTool
         [status.fetch("id"), writable_authorities(task, snapshot).keys]
       end.to_h
       authority_cache = {}
+      external_snapshot = statuses.first&.fetch("external_reservations", []) || []
 
       statuses.filter_map do |status|
         next unless %w[READY CANDIDATE].include?(status.fetch("status"))
@@ -113,6 +147,7 @@ module AgentCodingTool
                                             .uniq
         unlocked = immediately_unlocked_tasks(id, all_tasks)
         startable_authorities = unlocked.filter_map do |task|
+          next unless external_activity.conflicts(task, @state_store.load(task.fetch("id")), snapshot: external_snapshot).empty?
           authorities = task_writable_authorities(task, authority_cache)
           authorities unless (authorities & reserved_authorities).any?
         end
@@ -140,6 +175,7 @@ module AgentCodingTool
       reservations = occupied.dup
       starts = []
       waiting_capacity = []
+      external_waits = []
       authority_cache = {}
 
       ranked_statuses.each do |status|
@@ -147,6 +183,10 @@ module AgentCodingTool
         next unless %w[READY PREPARED].include?(label)
 
         id = status.fetch("id")
+        if status["external_conflicts"]
+          external_waits << { "id" => id, "status" => label, "conflicts" => status.fetch("external_conflicts") }
+          next
+        end
         task = by_id.fetch(id)
         authorities = if label == "PREPARED"
                         writable_authorities(task, status.fetch("state").fetch("snapshot")).keys
@@ -168,7 +208,9 @@ module AgentCodingTool
           waiting_capacity << row.merge("conflicts" => conflicts)
         end
       end
-      { "starts" => starts, "waiting_capacity" => waiting_capacity, "occupied" => occupied }
+      selection = { "starts" => starts, "waiting_capacity" => waiting_capacity, "occupied" => occupied }
+      selection["external_waits"] = external_waits unless external_waits.empty?
+      selection
     end
 
     # Snapshots a task and writes its prompt/state, clearing only attempt-local
@@ -234,6 +276,7 @@ module AgentCodingTool
     def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      external_activity.assert_clear!(id)
       raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
       unless state["result"].nil? || state["result"].is_a?(Hash)
         raise InvalidState, "#{id}: malformed result state"

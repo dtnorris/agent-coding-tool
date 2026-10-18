@@ -68,6 +68,7 @@ module AgentCodingTool
       case command
       when "status" then status_command(argv)
       when "next" then next_command(argv)
+      when "external" then external_command(argv)
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
@@ -93,6 +94,50 @@ module AgentCodingTool
     end
 
     private
+
+    # Public explicit observation commands. Show is read-only; report/end acquire
+    # the existing shared reservation lock internally and print private JSON.
+    # Invalid arguments or private evidence raise Error without payload echoes.
+    def external_command(argv)
+      action = argv.shift
+      id = argv.shift
+      raise Error, "usage: external {report|show|end} TASK ..." unless %w[report show end].include?(action) && id
+      options = {}
+      observation_id = argv.shift if action == "end"
+      parser = OptionParser.new do |opts|
+        if action == "report"
+          %w[reporter kind identifier note reference].each do |field|
+            opts.on("--#{field} TEXT") { |value| options[field.to_sym] = value }
+          end
+          opts.on("--scope-complete", "operator reports a complete writable repository set") { options[:scope_complete] = true }
+          opts.on("--write-repository REMOTE,BRANCH", "additional reported writable authority; repeatable") do |value|
+            (options[:authorities] ||= []) << value.split(",", 2)
+          end
+        elsif action == "end"
+          opts.on("--disposition VALUE", ExternalActivity::DISPOSITIONS) { |value| options[:disposition] = value }
+        end
+      end
+      begin
+        parser.parse!(argv)
+      rescue OptionParser::ParseError
+        raise Error, "external activity: invalid options (private input omitted)", cause: nil
+      end
+      raise Error, "external activity: unexpected arguments" unless argv.empty?
+      store = coordinator.external_activity
+      result = case action
+               when "show" then store.show(id)
+               when "report"
+                 raise Error, "external report requires --reporter and --kind" unless options[:reporter] && options[:kind]
+                 store.report(id, **options)
+               when "end"
+                 raise Error, "external end requires observation ID and --disposition" unless observation_id && options[:disposition]
+                 store.end_activity(id, observation_id, **options)
+               end
+      @out.puts JSON.pretty_generate(result.merge("trust" => {
+        "reporter" => "operator-reported", "execution" => "unmanaged; unauthorized by ACT",
+        "isolation" => "unverified", "containment" => "unverified", "liveness" => "unknown",
+        "closure" => "operator report; not proof of termination or candidate quality" }))
+    end
 
     def deliver_command(argv)
       id = argv.shift
@@ -435,6 +480,10 @@ module AgentCodingTool
         @out.puts "    act prepare #{row.fetch('id')}" if row.fetch("status") == "READY"
         @out.puts "    act start #{row.fetch('id')} (warns and proceeds; integration remains separate)"
       end
+      display_next_section("External activity blocks starts", selection.fetch("external_waits", [])) do |row|
+        @out.puts "  #{row.fetch('id')} (#{row.fetch('status')}): explicit external observation end required; original managed gates still apply"
+      end
+      ranked.each { |status| display_external_activity(status) if status["external_activity"] }
       display_next_section("Running lanes", selection.fetch("occupied").select { |row| row.fetch("status") == "IN_FLIGHT" }) do |row|
         @out.puts "  #{row.fetch('id')}: #{format_authorities(row.fetch('authorities'))}"
       end
@@ -491,12 +540,15 @@ module AgentCodingTool
         "facts" => {
           "tasks" => ranked.map do |status|
             id = status.fetch("id")
-            { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
+            row = { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
               "depends_on" => tasks.fetch(id).fetch("depends_on", []),
               "priority_rank" => priority.fetch(id),
               "execution_evidence" => status["execution_evidence"],
               "candidate_handoff" => status["candidate_handoff"],
               "freshness" => next_freshness(status, tasks.fetch(id)) }
+            row["external_activity"] = status["external_activity"] if status["external_activity"]
+            row["external_conflicts"] = status["external_conflicts"] if status["external_conflicts"]
+            row
           end,
           "reservations" => occupied.map { |row| next_authority_row(row) }
         },
@@ -533,7 +585,12 @@ module AgentCodingTool
             next_status_row(status, priority, metrics).merge("category" => "wait_dependencies")
           end
         }
-      }
+      }.tap do |document|
+        if ranked.any? { |status| status["external_reservations"] }
+          document.fetch("facts")["external_reservations"] = ranked.first.fetch("external_reservations", [])
+          document.fetch("recommendations")["external_waits"] = selection.fetch("external_waits", [])
+        end
+      end
     end
 
     def next_authority_row(row)
@@ -715,7 +772,7 @@ module AgentCodingTool
       summaries = families.to_h do |family, items|
         [family, [items.length, items.length - selected.fetch(family).length]]
       end
-      visible = statuses.select { |item| item.fetch("status") != "READY" || visible_ids.key?(item.fetch("id")) }
+      visible = statuses.select { |item| item.fetch("status") != "READY" || item["external_activity"] || visible_ids.key?(item.fetch("id")) }
       [visible, summaries]
     end
 
@@ -794,7 +851,7 @@ module AgentCodingTool
     def limit_blocked_statuses(statuses)
       blocked_seen = 0
       statuses.select do |item|
-        next true unless item.fetch("status") == "BLOCKED"
+        next true unless item.fetch("status") == "BLOCKED" && !item["external_activity"]
 
         blocked_seen += 1
         blocked_seen <= BLOCKED_DISPLAY_LIMIT
@@ -837,6 +894,7 @@ module AgentCodingTool
       colored_prefix = "#{id}: #{colorize_status(status)}#{next_marker} — "
       title = normalize_dashboard_text(item.fetch("title"))
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
+      display_external_activity(item)
 
       if status == "IN_FLIGHT"
         @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
@@ -871,6 +929,7 @@ module AgentCodingTool
     end
 
     def display_explicit_details(item)
+      display_external_activity(item)
       @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
       display_parallel_authorization(item)
       if recorded_retryable_outcome?(item)
@@ -883,6 +942,22 @@ module AgentCodingTool
 
       write_collisions(item).each do |collision|
         puts_full_detail("reason", write_collision_detail(collision))
+      end
+    end
+
+    # Prints reported activity without truncating trust/age qualifiers. Canonical
+    # lifecycle/reason remain on their original rows; no liveness probe occurs.
+    def display_external_activity(item)
+      if (activity = item["external_activity"])
+        @out.puts "    EXTERNAL WORK REPORTED: unmanaged; unauthorized by ACT"
+        @out.puts "    isolation unverified; containment unverified; liveness unknown"
+        @out.puts "    last reported: #{activity.fetch('recorded_at')}; observation #{activity.fetch('observation_id')}"
+        @out.puts "    scope: #{activity.fetch('envelope').fetch('scope')} (operator report); explicit end required"
+        @out.puts "    INCONSISTENCY: COMPLETE with open external activity" if item["status"] == "COMPLETE"
+        @out.puts "    CONFLICT: managed execution also recorded" if item.dig("state", "started_at")
+      end
+      if item["external_conflicts"]
+        @out.puts "    External conflict: #{item.fetch('external_conflicts').map { |row| row.fetch('task_id') }.uniq.join(', ')}; new execution blocked"
       end
     end
 
@@ -1118,6 +1193,10 @@ module AgentCodingTool
                   "#{collision.fetch('task_id')} (#{collision.fetch('status')})."
         @out.puts "Starting both concurrently is likely to make one stale when the other lands."
       end
+      conflicts = coordinator.external_activity.conflicts(prepared.fetch("task"), state)
+      unless conflicts.empty?
+        @out.puts "WARNING: external activity conflict; preparation is a snapshot only; execution remains blocked until explicit end."
+      end
       @out.puts
       prompt = prepared.fetch("prompt")
       @out.write(prompt)
@@ -1144,22 +1223,7 @@ module AgentCodingTool
         raise Error, "usage: agent-coding-tool start TASK [--allow-write-collision]"
       end
 
-      run_root = "#{File.realpath(@data_root)}-runs"
-      cursor = run_root
-      loop do
-        raise InvalidState, "start: symlinked evidence path" if File.symlink?(cursor)
-        break if cursor == File.dirname(cursor)
-        cursor = File.dirname(cursor)
-      end
-      FileUtils.mkdir_p(run_root, mode: 0o700)
-      unless File.stat(run_root).uid == Process.uid && (File.stat(run_root).mode & 0o077).zero?
-        raise InvalidState, "start: foreign evidence root"
-      end
-      lock_path = File.join(run_root, "launch.lock")
-      raise InvalidState, "start: foreign/symlinked reservation lock" if File.symlink?(lock_path)
-      state = File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
-        raise InvalidState, "start: another launch holds the reservation lock; retry after it finishes" unless
-          lock.flock(File::LOCK_EX | File::LOCK_NB)
+      state = coordinator.external_activity.with_lock do
         coordinator.start(id, allow_write_collision: allow_write_collision)
       end
       if (overlap = state["write_overlap"])
@@ -1225,24 +1289,20 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool reset TASK" unless id && argv.empty?
 
-      coordinator.reset(id)
+      coordinator.external_activity.with_lock { coordinator.reset(id) }
       @out.puts "Reset #{id} runtime state"
     end
 
     # Serializes managed-attempt preparation/outcomes with launch and closeout.
-    # Tasks without run evidence retain their manual lifecycle contract. A busy
-    # or foreign shared reservation lock refuses before prompt/state writes.
+    # Tasks without run evidence also serialize external mutations. A busy or
+    # foreign shared reservation lock refuses before prompt/state writes.
     def with_attempt_lock(id)
       raise InvalidTask, "unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
-      run_root = "#{File.realpath(@data_root)}-runs"
-      return yield unless File.exist?(File.join(run_root, id)) || File.symlink?(File.join(run_root, id))
-      AttemptRecovery.new(data_root: @data_root).inspect(id)
-      lock_path = File.join(run_root, "launch.lock")
-      raise InvalidState, "lifecycle: missing or foreign reservation lock" unless
-        File.file?(lock_path) && !File.symlink?(lock_path) && File.stat(lock_path).uid == Process.uid &&
-        (File.stat(lock_path).mode & 0o077).zero?
-      File.open(lock_path, File::RDWR) do |lock|
-        raise InvalidState, "lifecycle: launch/recovery reservation busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+      coordinator.external_activity.with_lock do
+        task_root = File.join("#{File.realpath(@data_root)}-runs", id)
+        if File.exist?(task_root) || File.symlink?(task_root)
+          AttemptRecovery.new(data_root: @data_root).inspect(id)
+        end
         yield
       end
     end
@@ -1262,6 +1322,13 @@ module AgentCodingTool
           status --fam FAMILY [--all | --active]
                               show the complete READY family; global NEXT only
           next [--json]       advise safe parallel work without changing state
+          external report TASK --reporter TEXT --kind TEXT [--identifier TEXT]
+                              [--scope-complete] [--write-repository REMOTE,BRANCH]
+                              [--note TEXT] [--reference TEXT]
+                              report unmanaged activity; grants no execution authority
+          external show TASK  inspect bounded private history (read-only)
+          external end TASK OBSERVATION_ID --disposition ended|failed|lost-contact
+                              operator closeout; proves neither exit nor result quality
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)
@@ -1312,6 +1379,19 @@ module AgentCodingTool
           guidance before plan/task-definition outputs. Omit for ordinary work.
           Designation/pin changes require evidence preservation and explicit
           operator reset/re-preparation; retry alone does not migrate pins.
+
+        External activity:
+          Reporter/process facts are operator-reported. Last-reported time is
+          not a heartbeat: liveness unknown, isolation/containment unverified.
+          Scope defaults to unknown and blocks new writers; --scope-complete
+          reserves registered/prepared writers plus reported additions, across
+          branches. Disjoint bounded writers may proceed. Overrides cannot bypass
+          external conflicts. Existing lifecycle/freshness/recovery gates apply.
+          Exact retained identifier/payload repeats are no-ops; other duplicate
+          reports refuse. Keep one active and eight closed observations per task.
+          End requires its observation ID; retained repeats are idempotent.
+          Notes/references are private inert text, never imported or published.
+          Ending changes no lifecycle or result; separately review any candidate.
       HELP
     end
   end

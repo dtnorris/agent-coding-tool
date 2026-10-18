@@ -84,9 +84,30 @@ class AttemptRecoveryTest < Minitest::Test
 
   # Runs Git in fixture repositories only; fixture setup failures are errors.
   def git(*args, directory:)
-    output, error, status = Open3.capture3("git", *args, chdir: directory)
+    output, error, status = Open3.capture3({ "PATH" => fixture_command_path }, "git", *args, chdir: directory)
     raise "fixture git failed: #{error}" unless status.success?
     output.strip
+  end
+
+  # Returns a fixture-only PATH using Apple's selected native Git directly when
+  # PATH selects /usr/bin/git, avoiding its developer-tool dispatcher per call.
+  # Other Git installations retain PATH precedence. Resolution failures raise;
+  # no Git results or ownership checks are simulated, cached or omitted.
+  def fixture_command_path
+    return @fixture_command_path if @fixture_command_path
+
+    path = ENV.fetch("PATH")
+    selected = path.split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "git") }
+                   .find { |candidate| File.file?(candidate) && File.executable?(candidate) }
+    if RbConfig::CONFIG.fetch("host_os").match?(/darwin/) && selected && File.realpath(selected) == "/usr/bin/git"
+      output, error, status = Open3.capture3("/usr/bin/xcrun", "--find", "git")
+      native = output.strip
+      raise "fixture Git resolution failed: #{error}" unless status.success? && native.start_with?("/") &&
+        File.file?(native) && File.executable?(native) && File.realpath(native) != "/usr/bin/git"
+
+      path = "#{File.dirname(File.realpath(native))}#{File::PATH_SEPARATOR}#{path}"
+    end
+    @fixture_command_path = path
   end
 
   # Simulates Codex's pinned public interface and exact probe byte contract.
@@ -134,7 +155,7 @@ class AttemptRecoveryTest < Minitest::Test
   # Uses a cold public CLI process, with only host identity/lsof/sandbox external
   # boundaries faked. The real host PID disappears before the next CLI command.
   def cli(*args, fault: nil, legacy: false, child_start_fault: false)
-    environment = { "PATH" => "#{@fixture}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
+    environment = { "PATH" => "#{@fixture}:#{fixture_command_path}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
                     "RUBYOPT" => "#{ENV['RUBYOPT']} -r#{@preload}", "ACT16_CREATION_FAULT" => fault,
                     "ACT16_LEGACY" => legacy ? "1" : nil, "ACT16_CHILD_START_FAULT" => child_start_fault ? "1" : nil }
     output, error, status = Open3.capture3(environment, RbConfig.ruby, "-I#{File.join(Dir.pwd, 'lib')}",

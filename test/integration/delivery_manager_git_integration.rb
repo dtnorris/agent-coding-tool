@@ -51,13 +51,17 @@ class DeliveryManagerTest < Minitest::Test
       { "repo" => { "remote_url" => @remote, "branch" => "main", "pushed_sha" => @head } }
     end
 
-    def record(id, outcome:, summary:, artifact:, tests:)
-      store = AgentCodingTool::StateStore.new(File.join(@data, "state"))
-      state = store.load(id)
-      state["result"] = { "outcome" => outcome, "summary" => summary,
-                          "artifact" => artifact, "tests" => tests }
-      state.delete("started_at")
-      store.write(id, state)
+    # Records synthetic candidate details using the delivery-owned reservation.
+    # Returns bytes written; invalid/busy borrowed locks raise InvalidState.
+    def record(id, outcome:, summary:, artifact:, tests:, reservation_lock:)
+      AgentCodingTool::ReservationLock.synchronize(@data, held: reservation_lock) do
+        store = AgentCodingTool::StateStore.new(File.join(@data, "state"))
+        state = store.load(id)
+        state["result"] = { "outcome" => outcome, "summary" => summary,
+                            "artifact" => artifact, "tests" => tests }
+        state.delete("started_at")
+        store.write(id, state)
+      end
     end
   end
 

@@ -7,7 +7,8 @@ module AgentCodingTool
   class MultiDeliveryManager < DeliveryManager
     # Validates/delivers a grouped host run under the inherited reservation lock.
     # Returns per-repository PRs; refusals retain truthful partial-stage evidence.
-    def deliver_multi_locked(id, run_dir, report)
+    def deliver_multi_locked(id, run_dir, report, reservation_lock: nil)
+      @reservation_lock = reservation_lock
       @run_dir = run_dir
       verify_overlap!(id)
       contract, contract_sha = multi_contract!(id, report.fetch("writable_repositories"))
@@ -86,6 +87,7 @@ module AgentCodingTool
       urls = modified.values.map { |pr| pr.fetch("url") }.sort
       if !state["result"] && state["started_at"]
         @coordinator.record(id, outcome: "candidate_complete",
+                            reservation_lock: @reservation_lock,
                             summary: "Verified draft PRs: #{urls.join(', ')}",
                             artifact: urls.join(" "),
                             tests: records.values.flat_map { |info|

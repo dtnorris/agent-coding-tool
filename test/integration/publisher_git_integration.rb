@@ -260,6 +260,10 @@ class PublisherTest < Minitest::Test
 
   def test_lifecycle_command_remains_local_until_explicit_publish
     with_repo do |root, _bare|
+      # Give reset valid state with a value to clear locally.
+      File.write(File.join(root, "state", "T1.yml"), YAML.dump({
+        "id" => "T1", "note" => "before reset"
+      }))
       old_remote = remote_head(root)
       out = StringIO.new
       err = StringIO.new

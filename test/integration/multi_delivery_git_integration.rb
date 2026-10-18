@@ -48,12 +48,16 @@ class MultiDeliveryGitIntegration < Minitest::Test
     attr_accessor :heads
     def initialize(data, snapshot) = (@data, @snapshot = data, snapshot)
     def launch_heads(_id) = heads || @snapshot.transform_values { |repo| repo.slice("remote_url", "branch", "pushed_sha") }
-    def record(id, outcome:, summary:, artifact:, tests:)
-      store = AgentCodingTool::StateStore.new(File.join(@data, "state"))
-      state = store.load(id)
-      state["result"] = { "outcome" => outcome, "summary" => summary, "artifact" => artifact, "tests" => tests }
-      state.delete("started_at")
-      store.write(id, state)
+    # Records synthetic candidate details using the delivery-owned reservation.
+    # Returns bytes written; invalid/busy borrowed locks raise InvalidState.
+    def record(id, outcome:, summary:, artifact:, tests:, reservation_lock:)
+      AgentCodingTool::ReservationLock.synchronize(@data, held: reservation_lock) do
+        store = AgentCodingTool::StateStore.new(File.join(@data, "state"))
+        state = store.load(id)
+        state["result"] = { "outcome" => outcome, "summary" => summary, "artifact" => artifact, "tests" => tests }
+        state.delete("started_at")
+        store.write(id, state)
+      end
     end
   end
 

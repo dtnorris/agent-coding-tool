@@ -1,5 +1,17 @@
 {
   "default": {
+    "test/icebox_test.rb": [
+      "IceboxTest#test_idempotency_optional_reason_and_metadata_preservation",
+      "IceboxTest#test_strict_mapping_validation_and_legacy_state",
+      "IceboxTest#test_ready_only_entry_and_conflicting_evidence",
+      "IceboxTest#test_lifecycle_entrypoints_refuse_and_reset_preserves_designation",
+      "IceboxTest#test_dependency_changes_and_unlock_metrics_remain_truthful",
+      "IceboxTest#test_pre_rename_and_post_rename_failures",
+      "IceboxTest#test_output_count_order_filters_and_recommendations",
+      "IceboxTest#test_direct_api_concurrency_and_borrowed_lock",
+      "IceboxTest#test_restoration_serializes_with_direct_start",
+      "IceboxTest#test_unsafe_reservation_locks_are_refused"
+    ],
     "test/cli_test.rb": [
       "CLITest#test_prepare_prints_worker_recommendation_once_after_complete_prompt_and_keeps_prompt_file_clean",
       "CLITest#test_prepare_prints_astra_recommendation_at_bottom",
@@ -309,6 +321,12 @@
     ]
   },
   "integration": {
+    "test/integration/icebox_git_integration.rb": [
+      "IceboxGitIntegrationTest#test_public_cli_journey",
+      "IceboxGitIntegrationTest#test_guard_removal_negative_control",
+      "IceboxGitIntegrationTest#test_process_observer_preserves_bytes_and_status",
+      "IceboxGitIntegrationTest#test_cli_preparation_and_auto_launch_races"
+    ],
     "test/integration/attempt_retry_git_integration.rb": [
       "AttemptRecoveryTest#test_public_exit_zero_closeout_fresh_retry_preserves_both_attempts",
       "AttemptRecoveryTest#test_partial_creation_before_and_after_native_add_is_preserved",

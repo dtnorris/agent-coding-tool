@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "date"
 require "tempfile"
+require "time"
 require "yaml"
 
 module AgentCodingTool
@@ -27,6 +29,7 @@ module AgentCodingTool
       end
       raise InvalidState, "#{id}: task state must contain a YAML mapping" unless state.is_a?(Hash)
 
+      validate_icebox!(id, state)
       state
     end
 
@@ -36,6 +39,7 @@ module AgentCodingTool
     # Returns bytes written; serialization and pre-rename filesystem errors propagate.
     # This is not a transaction lock or proof of physical power-loss durability.
     def write(id, state)
+      validate_icebox!(id, state)
       bytes = YAML.dump(state)
       FileUtils.mkdir_p(@root)
       # Follow existing links as File.write did; rename the target, not the link.
@@ -73,6 +77,30 @@ module AgentCodingTool
     # Returns the existing task-id-based path without accessing the filesystem.
     def state_path(id)
       File.join(@root, "#{id}.yml")
+    end
+
+    private
+
+    # Validates only the optional scheduling mapping, preserving legacy and
+    # unrelated state. Returns nil; malformed shape/types/time raise InvalidState.
+    def validate_icebox!(id, state)
+      return unless state.key?("icebox")
+
+      designation = state["icebox"]
+      unless designation.is_a?(Hash) && (designation.keys - %w[at reason]).empty? &&
+             designation["at"].is_a?(String) &&
+             (!designation.key?("reason") || designation["reason"].is_a?(String))
+        raise InvalidState, "#{id}: icebox must be a mapping with ISO 8601 string at and optional string reason"
+      end
+      begin
+        raise ArgumentError unless designation.fetch("at").match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/)
+
+        DateTime.iso8601(designation.fetch("at"))
+        Time.iso8601(designation.fetch("at"))
+      rescue ArgumentError
+        raise InvalidState, "#{id}: icebox.at must be a valid ISO 8601 timestamp"
+      end
+      nil
     end
   end
 end

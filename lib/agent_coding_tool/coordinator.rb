@@ -23,11 +23,56 @@ module AgentCodingTool
 
     def tasks = @task_store.all
 
+    # Defers an unstarted, effectively READY task under the launch reservation.
+    # Returns retained/new state; identical reasons are idempotent. Changed
+    # reasons, lifecycle/run evidence or ineligibility raise InvalidState.
+    def icebox(id, reason: nil)
+      unless reason.nil? || reason.is_a?(String)
+        raise InvalidState, "#{id}: icebox reason must be a string"
+      end
+      with_reservation_lock(id) do
+        state = @state_store.load(id)
+        if state.key?("icebox")
+          status(id)
+          if state.fetch("icebox")["reason"] != reason
+            raise InvalidState, "#{id}: Icebox reason differs; use act unicebox #{id} before changing it"
+          end
+          next state
+        end
+        if execution_evidence?(id, state)
+          raise InvalidState, "#{id}: only unstarted READY tasks may enter Icebox; execution evidence present"
+        end
+        effective = status(id)
+        unless effective.fetch("status") == "READY"
+          raise InvalidState, "#{id}: only unstarted READY tasks may enter Icebox (#{effective.fetch('status')}: #{effective['reason']})"
+        end
+
+        state["icebox"] = { "at" => Time.now.utc.iso8601 }
+        state.fetch("icebox")["reason"] = reason unless reason.nil?
+        @state_store.write(id, state)
+        state
+      end
+    end
+
+    # Removes only Icebox under the launch reservation, returning retained state.
+    # An absent designation is a no-op; invalid state/identity/locks raise.
+    def unicebox(id)
+      with_reservation_lock(id) do
+        state = @state_store.load(id)
+        next state unless state.key?("icebox")
+
+        state.delete("icebox")
+        @state_store.write(id, state)
+        state
+      end
+    end
+
     # Regenerates a prepared task's prompt after validating required skill pins
     # and designation; returns bytes or raises InvalidState before any writes.
     def launch_prompt(id)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      refuse_icebox!(id, state)
       validate_skill_identity!(id, state, required: true)
       validate_planning_guidance!(task, state)
       @prompt_renderer.render(task, state.fetch("snapshot"), dependencies: preparation_dependencies(task))
@@ -174,9 +219,15 @@ module AgentCodingTool
     # Snapshots a task and writes its prompt/state, clearing only attempt-local
     # overlap/checkpoint pointers. Invalid prerequisites, skill material, pins or
     # changed planning designation raise before any prompt/state writes.
-    def prepare(id, retry_result: false)
+    def prepare(id, retry_result: false, reservation_lock: nil)
+      with_reservation_lock(id, held: reservation_lock) { prepare_locked(id, retry_result: retry_result) }
+    end
+
+    # Prepares within the caller's reservation; inputs/return/errors match prepare.
+    def prepare_locked(id, retry_result: false)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      refuse_icebox!(id, state)
       dependencies = preparation_dependencies(task)
       incomplete = dependencies.filter_map { |dependency| dependency.fetch("id") unless dependency.fetch("outcome") == "complete" }
       unless incomplete.empty?
@@ -226,14 +277,24 @@ module AgentCodingTool
 
       { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
     end
+    private :prepare_locked
 
     # Reserves a prepared task after dependency/freshness checks; returns its state.
     # Manual overlaps are advisory, never verified isolation. Invalid input raises
-    # InvalidState/RepositoryError before any state write; CLI owns the shared lock.
+    # InvalidState/RepositoryError before any state write; all callers share a lock.
     # Opted-in planning verifies full skill material and saved prompt bytes first.
-    def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
+    def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil, reservation_lock: nil)
+      with_reservation_lock(id, held: reservation_lock) do
+        start_locked(id, allow_write_collision: allow_write_collision,
+                     expected_collisions: expected_collisions, launch_authorization: launch_authorization)
+      end
+    end
+
+    # Starts within the caller's reservation; inputs/return/errors match start.
+    def start_locked(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil)
       task = @task_store.load(id)
       state = @state_store.load(id)
+      refuse_icebox!(id, state)
       raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
       unless state["result"].nil? || state["result"].is_a?(Hash)
         raise InvalidState, "#{id}: malformed result state"
@@ -305,8 +366,18 @@ module AgentCodingTool
       @state_store.write(id, state)
       state
     end
+    private :start_locked
 
-    def record(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [])
+    # Records an explicit outcome while serialized with scheduling/preparation.
+    # Returns state; a designation must be explicitly removed before recording.
+    def record(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [], reservation_lock: nil)
+      with_reservation_lock(id, held: reservation_lock) do
+        record_locked(id, outcome: outcome, summary: summary, next_action: next_action, artifact: artifact, tests: tests)
+      end
+    end
+
+    # Records within the caller's reservation; inputs/return/errors match record.
+    def record_locked(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [])
       raise InvalidState, "invalid outcome: #{outcome}" unless OUTCOMES.include?(outcome)
       if !next_action.nil? && !NEXT_ACTION_OUTCOMES.include?(outcome)
         raise InvalidState, "--next is only supported for blocked, needs_judgment, and failed outcomes"
@@ -314,6 +385,7 @@ module AgentCodingTool
 
       task = @task_store.load(id)
       state = @state_store.load(id)
+      refuse_icebox!(id, state)
       if outcome != "complete" && !state["snapshot"]
         raise InvalidState, "#{id}: prepare the task before recording #{outcome}"
       end
@@ -334,13 +406,67 @@ module AgentCodingTool
       @state_store.write(id, state)
       state
     end
+    private :record_locked
 
+    # Resets legacy runtime state under the reservation; deferred tasks retain
+    # their complete state until explicit restoration. Returns bytes written or
+    # retained state; malformed state/identity/locks raise before a write.
     def reset(id)
-      @task_store.load(id)
-      @state_store.write(id, { "id" => id })
+      with_reservation_lock(id) do
+        state = @state_store.load(id)
+        next state if state.key?("icebox")
+
+        @state_store.write(id, { "id" => id })
+      end
     end
 
     private
+
+    # Locks every lifecycle/scheduling writer, including tasks without runs.
+    # Rechecks identity and managed history under the lock; returns block value.
+    # Unsafe IDs/locks/history raise InvalidTask/InvalidState without mutation.
+    def with_reservation_lock(id, held: nil)
+      raise InvalidTask, "unsafe task ID" unless id.is_a?(String) && id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+
+      task = @task_store.load(id)
+      raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
+
+      data_root = File.dirname(File.dirname(@state_store.state_path(id)))
+      managed_path = File.join("#{File.realpath(data_root)}-runs", id)
+      if (File.exist?(managed_path) || File.symlink?(managed_path)) &&
+         !File.exist?(File.join("#{File.realpath(data_root)}-runs", "launch.lock"))
+        raise InvalidState, "#{id}: missing managed reservation lock; inspect retained evidence"
+      end
+      ReservationLock.synchronize(data_root, held: held) do |lock|
+        state = @state_store.load(id)
+        raise InvalidState, "#{id}: task state identity mismatch" if state.key?("id") && state["id"] != id
+        unless state["result"].nil? || state["result"].is_a?(Hash)
+          raise InvalidState, "#{id}: malformed result state"
+        end
+
+        path = File.join("#{File.realpath(data_root)}-runs", id)
+        AttemptRecovery.new(data_root: data_root).inspect(id) if File.exist?(path) || File.symlink?(path)
+        yield lock
+      end
+    end
+
+    # Detects preparation, execution, result/checkpoint/history pointers and
+    # private run/prompt evidence even when a snapshot is missing. Returns boolean.
+    def execution_evidence?(id, state)
+      return true if %w[status snapshot prepared_at prompt_path coding_skill planning_skill planning_guidance started_at result completion_snapshot checkpoint write_overlap write_collision_override].any? { |key| state.key?(key) }
+
+      data_root = File.dirname(File.dirname(@state_store.state_path(id)))
+      run_root = "#{File.realpath(data_root)}-runs"
+      paths = [File.join(run_root, id), File.join(run_root, "checkpoints", id)]
+      paths.any? { |path| File.exist?(path) || File.symlink?(path) } ||
+        File.exist?(File.join(@prompt_root, "#{id}.txt")) || File.symlink?(File.join(@prompt_root, "#{id}.txt")) ||
+        !Dir.glob(File.join(@prompt_root, "#{id}-*.txt")).empty?
+    end
+
+    # Refuses lifecycle entry while deferred; raises before state/prompt writes.
+    def refuse_icebox!(id, state)
+      raise InvalidState, "#{id}: ICEBOX; use act unicebox #{id} before continuing" if state.key?("icebox")
+    end
 
     # Binds explicit planning designation and pin to existing preparation state.
     # Fresh tasks and unopted legacy state remain compatible; missing/drifted
@@ -418,6 +544,8 @@ module AgentCodingTool
       authorities.uniq
     end
 
+    # Returns the requested completion window, retaining designated rows for
+    # conflict validation. Invalid filters raise ArgumentError; state errors propagate.
     def filter_completed_tasks(selected_tasks, completion_filter)
       unless %i[all active recent].include?(completion_filter)
         raise ArgumentError, "invalid completion filter: #{completion_filter.inspect}"
@@ -426,7 +554,7 @@ module AgentCodingTool
 
       complete = selected_tasks.each_with_index.filter_map do |task, index|
         state = @state_store.load(task.fetch("id"))
-        next unless state.dig("result", "outcome") == "complete"
+        next unless !state.key?("icebox") && state.dig("result", "outcome") == "complete"
 
         [task.fetch("id"), completion_time(state), index]
       end
@@ -452,9 +580,14 @@ module AgentCodingTool
       nil
     end
 
+    # Returns lifecycle/freshness context for a task, projecting valid deferral
+    # separately from its READY/BLOCKED basis. Conflicting evidence raises InvalidState.
     def status_context(task)
       id = task.fetch("id")
       state = @state_store.load(id)
+      if state.key?("icebox") && ((state.key?("id") && state["id"] != id) || execution_evidence?(id, state))
+        raise InvalidState, "#{id}: Icebox conflicts with lifecycle/execution evidence; inspect state before restoration"
+      end
       result = state["result"] || {}
       outcome = result["outcome"]
 
@@ -465,6 +598,11 @@ module AgentCodingTool
       return { "status" => status } if status
 
       incomplete = incomplete_dependencies(task)
+      if state.key?("icebox")
+        underlying = incomplete.empty? ? "READY" : "BLOCKED"
+        reason = "dependencies incomplete: #{incomplete.join(', ')}" unless incomplete.empty?
+        return { "status" => status_hash("ICEBOX", task, state, reason).merge("lifecycle_status" => underlying) }
+      end
       unless incomplete.empty?
         return {
           "status" => status_hash("BLOCKED", task, state, "dependencies incomplete: #{incomplete.join(', ')}")
@@ -573,10 +711,12 @@ module AgentCodingTool
       end
     end
 
+    # Returns ordinary unstarted tasks whose final missing prerequisite is the
+    # supplied ID. Icebox grants no unlock opportunity; invalid state propagates.
     def immediately_unlocked_tasks(completed_id, all_tasks)
       all_tasks.select do |task|
         state = @state_store.load(task.fetch("id"))
-        next false if state["snapshot"] || state.dig("result", "outcome")
+        next false if state.key?("icebox") || state["snapshot"] || state.dig("result", "outcome")
 
         incomplete = incomplete_dependencies(task)
         !incomplete.empty? && incomplete.all? { |dependency| dependency == completed_id }

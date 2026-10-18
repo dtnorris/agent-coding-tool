@@ -51,4 +51,4 @@ namespace :actd do
   end
 end
 
-task default: ["actd:validate_yaml", :test]
+task default: ["actd:validate_yaml", "test:all"]

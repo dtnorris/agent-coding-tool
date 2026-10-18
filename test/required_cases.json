@@ -165,17 +165,6 @@
       "LiveWriteCollisionStatusTest#test_read_only_refresh_warning_survives_alongside_collision",
       "LiveWriteCollisionStatusTest#test_status_batches_freshness_and_does_not_mutate_runtime_state"
     ],
-    "test/manual_parallel_launch_test.rb": [
-      "ManualParallelLaunchTest#test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
-      "ManualParallelLaunchTest#test_public_cli_without_override_refuses_before_worker_handoff",
-      "ManualParallelLaunchTest#test_new_worktree_cannot_be_nested_inside_external_checkout",
-      "ManualParallelLaunchTest#test_refusal_matrix_preserves_manual_candidate",
-      "ManualParallelLaunchTest#test_each_forbidden_sandbox_write_refuses",
-      "ManualParallelLaunchTest#test_preflight_races_refuse_before_reservation",
-      "ManualParallelLaunchTest#test_automatic_and_explicit_delivery_remain_disabled",
-      "ManualParallelLaunchTest#test_manual_candidate_refuses_and_terminal_non_candidate_remains_nonblocking",
-      "ManualParallelLaunchTest#test_manual_overlap_retains_candidate_when_source_moves_during_execution"
-    ],
     "test/next_test.rb": [
       "NextTest#test_ready_parallel_set_and_priority_over_maximum_cardinality",
       "NextTest#test_fresh_prepared_and_occupied_writers_leave_only_safe_starts",
@@ -190,14 +179,6 @@
       "NextTest#test_json_freshness_failure_and_bad_arguments_leave_stdout_empty",
       "NextTest#test_json_stale_work_is_intervention_without_start_authority",
       "NextTest#test_next_rejects_arguments_without_reading_or_changing_state"
-    ],
-    "test/parallel_delivery_test.rb": [
-      "ParallelDeliveryTest#test_both_delivery_orders_preserve_independent_candidates_and_recover",
-      "ParallelDeliveryTest#test_unknown_manual_sibling_and_unavailable_publication_guard_fail_closed",
-      "ParallelDeliveryTest#test_tampered_advanced_sibling_validation_blocks_delivery",
-      "ParallelDeliveryTest#test_automatic_then_explicit_cli_delivery_keep_separate_task_candidates",
-      "ParallelDeliveryTest#test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate",
-      "ParallelDeliveryTest#test_automatic_delivery_while_verified_sibling_remains_running"
     ],
     "test/parallel_launch_test.rb": [
       "ParallelLaunchTest#test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
@@ -255,6 +236,8 @@
       "RakefileTest#test_environment_override_selects_the_alternate_data_directory",
       "RakefileTest#test_default_and_test_keep_existing_selection_and_yaml_prerequisite",
       "RakefileTest#test_real_tasks_execute_isolated_suites_and_aggregate_prerequisites_once",
+      "RakefileTest#test_new_native_launcher_requires_explicit_file_and_case_registration",
+      "RakefileTest#test_original_default_case_requires_registered_native_replacement_evidence",
       "RakefileTest#test_missing_git_contracts_fail_closed",
       "RakefileTest#test_native_gate_rejects_missing_coverage_and_invalid_results",
       "RakefileTest#test_process_bytes_status_and_spawn_exception_are_preserved"
@@ -278,6 +261,8 @@
       "RepoInspectorTest#test_status_head_resolution_failure_is_explicit_and_does_not_fall_back"
     ],
     "test/retry_liveness_test.rb": [
+      "RetryLivenessTest#test_hostname_rename_requires_same_boot_and_user",
+      "RetryLivenessTest#test_time_machine_warning_is_scoped_and_diagnostic",
       "RetryLivenessTest#test_negative_host_pid_group_heartbeat_and_tool_matrix"
     ],
     "test/state_store_test.rb": [
@@ -374,6 +359,17 @@
       "DeliveryManagerTest#test_live_git_push_adapter_creates_only_absent_feature_ref",
       "DeliveryManagerTest#test_live_guard_rejects_unbounded_or_unclassified_publication"
     ],
+    "test/integration/manual_parallel_launch_git_integration.rb": [
+      "ManualParallelLaunchTest#test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
+      "ManualParallelLaunchTest#test_public_cli_without_override_refuses_before_worker_handoff",
+      "ManualParallelLaunchTest#test_new_worktree_cannot_be_nested_inside_external_checkout",
+      "ManualParallelLaunchTest#test_refusal_matrix_preserves_manual_candidate",
+      "ManualParallelLaunchTest#test_each_forbidden_sandbox_write_refuses",
+      "ManualParallelLaunchTest#test_preflight_races_refuse_before_reservation",
+      "ManualParallelLaunchTest#test_automatic_and_explicit_delivery_remain_disabled",
+      "ManualParallelLaunchTest#test_manual_candidate_refuses_and_terminal_non_candidate_remains_nonblocking",
+      "ManualParallelLaunchTest#test_manual_overlap_retains_candidate_when_source_moves_during_execution"
+    ],
     "test/integration/multi_delivery_git_integration.rb": [
       "MultiDeliveryGitIntegration#test_two_writers_validate_publish_cross_link_and_resume",
       "MultiDeliveryGitIntegration#test_second_validation_failure_publishes_nothing",
@@ -382,6 +378,14 @@
       "MultiDeliveryGitIntegration#test_moved_authority_and_competing_feature_ref_block_publication",
       "MultiDeliveryGitIntegration#test_squash_integration_cleanup_refusals_and_interrupted_resume",
       "MultiDeliveryGitIntegration#test_cleanup_refuses_unmerged_unsynchronized_unknown_and_foreign"
+    ],
+    "test/integration/parallel_delivery_git_integration.rb": [
+      "ParallelDeliveryTest#test_both_delivery_orders_preserve_independent_candidates_and_recover",
+      "ParallelDeliveryTest#test_unknown_manual_sibling_and_unavailable_publication_guard_fail_closed",
+      "ParallelDeliveryTest#test_tampered_advanced_sibling_validation_blocks_delivery",
+      "ParallelDeliveryTest#test_automatic_then_explicit_cli_delivery_keep_separate_task_candidates",
+      "ParallelDeliveryTest#test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate",
+      "ParallelDeliveryTest#test_automatic_delivery_while_verified_sibling_remains_running"
     ],
     "test/integration/publisher_git_integration.rb": [
       "PublisherTest#test_default_publishes_only_lifecycle_files_and_preserves_other_index_content",

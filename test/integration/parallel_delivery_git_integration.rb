@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-require_relative "test_helper"
-require_relative "launcher_support"
+require_relative "../test_helper"
+require_relative "../launcher_support"
 require "timeout"
 
 # Real disposable Git/process evidence with simulated publication only; no network.

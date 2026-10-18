@@ -1,9 +1,15 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require_relative "recovery_observations"
+require "minitest/mock"
 require "stringio"
 
+# Exercises production ownership against disposable native Git, with declared
+# observations only for decisions that refuse before any native mutation.
 class WorktreeManagerTest < Minitest::Test
+  include RecoveryObservations
+
   def git(*args, chdir: nil)
     stdout, stderr, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
     raise "fixture git failed: #{stderr}" unless status.success?
@@ -93,27 +99,50 @@ class WorktreeManagerTest < Minitest::Test
     end
   end
 
+  # Occupied paths, missing prepared objects and malformed records refuse without
+  # writes; a genuine changed native branch remains an independent refusal case.
   def test_foreign_paths_partial_metadata_missing_object_and_changed_branch_fail_closed
-    fixture do
+    fixture(git: false) do
       target = File.join(@visible, "T", "repo")
       FileUtils.mkdir_p(target)
       File.write(File.join(target, "keep"), "operator")
-      assert_raises(AgentCodingTool::InvalidState) { manager.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot) }
+      with_recovery_observations([]) do
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot) }
+        assert_includes error.message, "occupied path"
+      end
       assert_equal "operator", File.read(File.join(target, "keep"))
 
       missing = Marshal.load(Marshal.dump(@snapshot))
       missing["repo"]["pushed_sha"] = "f" * 40
-      assert_raises(AgentCodingTool::InvalidState) { manager.create(task_id: "M", attempt: 1, task: @task, snapshot: missing) }
+      observations = [
+        recovery_observation(@ordinary, "git", "rev-parse", "--path-format=absolute",
+          "--show-toplevel", "--git-common-dir", "--absolute-git-dir",
+          stdout: "#{@ordinary}\n#{@ordinary}/.git\n#{@ordinary}/.git\n".b),
+        recovery_observation(@ordinary, "git", "remote", "get-url", "origin", stdout: "#{@remote}\n".b),
+        recovery_observation(@ordinary, "git", "cat-file", "-e", "#{'f' * 40}^{commit}",
+          stderr: "fatal: Not a valid object name #{'f' * 40}^{commit}\n".b, exit_code: 128)
+      ]
+      with_recovery_observations(observations) do
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.create(task_id: "M", attempt: 1, task: @task, snapshot: missing) }
+        assert_includes error.message, "prepared object missing"
+      end
       refute File.exist?(@record)
+      refute File.exist?(File.join(@visible, "M", "repo"))
+      assert_equal "operator", File.binread(File.join(target, "keep"))
 
+      File.write(@record, '{"schema_version":')
+      with_recovery_observations([]) do
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.inspect! }
+        assert_includes error.message, "malformed ownership"
+      end
+      assert_equal '{"schema_version":', File.binread(@record)
+    end
+    fixture do
       branch_manager = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: File.join(@root, "private", "branch.json"))
       entry = branch_manager.create(task_id: "B", attempt: 1, task: @task, snapshot: @snapshot).fetch("entries").first
       git("switch", "-c", "foreign", chdir: entry.fetch("path"))
       assert_raises(AgentCodingTool::InvalidState) { branch_manager.inspect! }
       assert_equal "foreign", git("branch", "--show-current", chdir: entry.fetch("path"))
-
-      File.write(@record, '{"schema_version":')
-      assert_raises(AgentCodingTool::InvalidState) { manager.inspect! }
     end
   end
 
@@ -202,12 +231,20 @@ class WorktreeManagerTest < Minitest::Test
       entry = manager.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot).fetch("entries").first
       admin = git("rev-parse", "--absolute-git-dir", chdir: entry.fetch("path"))
       pointer = File.join(admin, "gitdir")
-      File.write(pointer, File.join(@root, "foreign", ".git") + "\n")
       original = File.binread(@record)
-      assert_raises(AgentCodingTool::InvalidState) { manager.inspect! }
-      assert_equal original, File.binread(@record)
-      assert File.directory?(entry.fetch("path"))
-      assert_equal File.join(@root, "foreign", ".git") + "\n", File.binread(pointer)
+      original_pointer = File.binread(pointer)
+      begin
+        File.write(pointer, File.join(@root, "foreign", ".git") + "\n")
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.inspect! }
+        assert_includes error.message, "native Git backpointer changed"
+        assert_equal original, File.binread(@record)
+        assert File.directory?(entry.fetch("path"))
+        assert_equal File.join(@root, "foreign", ".git") + "\n", File.binread(pointer)
+      ensure
+        File.binwrite(pointer, original_pointer)
+      end
+      assert_equal entry, manager.inspect!.fetch("entries").first
+      assert_equal [], manager.cleanup_preflight.first.fetch("blockers")
     end
   end
 end

@@ -113,7 +113,15 @@ class AttemptRecoveryTest < Minitest::Test
           end
         else
           abort "unexpected command" unless ARGV.first == "exec"
-          STDIN.read
+          consumed = STDIN.binmode.read
+          capture = File.join(root, "tst20-capture-prompt")
+          if File.file?(capture)
+            # Only this journey opts in; corrupt the observation, never the input.
+            recorded = consumed.dup
+            recorded.setbyte(0, recorded.getbyte(0) ^ 1) if File.read(capture) == "corrupt"
+            File.binwrite(File.join(root, "tst20-consumed-stdin"), recorded)
+            File.write(File.join(root, "tst20-worker.json"), JSON.generate("pid" => Process.pid, "workspace" => Dir.pwd))
+          end
           puts JSON.generate("type" => "thread.started", "thread_id" => "fixture-session")
           File.write(ARGV.fetch(ARGV.index("--output-last-message") + 1), mode == "invalid" ? "" : "No candidate. Human judgment required.\\n")
           exit(mode == "nonzero" ? 7 : 0)
@@ -444,17 +452,60 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # A valid checkpoint stays discoverable/reconstructable after current pointers
-  # clear. The fixture explicitly restores its own code before requesting retry;
-  # product closeout never restores or discards workspace data.
+  # One cold public CLI journey binds explicit preparation, actual worker stdin,
+  # checkpoint and historical reconstruction. A fixture-only corruption flag
+  # falsifies the same byte assertion required by test:all. The fixture restores
+  # only its own code before retry; product closeout never discards workspace data.
   def test_historical_checkpoint_uses_original_preparation_after_retry
     fixture do
+      succeeds("prepare", "T")
+      prepared = @states.load("T")
+      prompt = File.binread(prepared.fetch("prompt_path"))
+      refute_empty prompt
+      File.write(File.join(@fixture, "tst20-capture-prompt"), ENV["ACT_TST20_BREAK_PROMPT"] == "1" ? "corrupt" : "faithful")
       succeeds("launch", "T", "--codex")
       first = reports.first
+      assert_equal ["T", 1, "exited", 0], first.values_at("task_id", "attempt", "status", "exit_status")
+      assert_equal prepared, first.fetch("preparation_state")
+      assert_equal prompt, File.binread(first.fetch("prompt_path"))
+      assert_equal Digest::SHA256.hexdigest(prompt), first.fetch("prompt_sha256")
+      assert_equal prompt.bytesize, first.fetch("prompt_bytes")
+      worker = JSON.parse(File.binread(File.join(@fixture, "tst20-worker.json")))
+      assert_equal first.values_at("child_pid", "workspace"), worker.values_at("pid", "workspace")
+      assert_equal @base, git("rev-parse", "HEAD", directory: worker.fetch("workspace"))
+      assert_equal "act/T/attempt-1", git("branch", "--show-current", directory: worker.fetch("workspace"))
+      authority = prepared.fetch("snapshot").fetch("writer").slice("remote_url", "branch", "pushed_sha")
+      assert_equal authority, first.fetch("writable_authority")
+      assert_equal authority.fetch("remote_url"), git("remote", "get-url", "origin", directory: worker.fetch("workspace"))
+      stdin = File.binread(first.fetch("stdin_path"))
+      consumed = File.binread(File.join(@fixture, "tst20-consumed-stdin"))
+      exact_worker_prompt = lambda do |actual|
+        message = "TST20_EXACT_WORKER_PROMPT #{self.class}##{name}"
+        assert_equal prompt, actual.byteslice(0, prompt.bytesize), message
+        assert_equal stdin, actual, message
+      end
+      exact_worker_prompt.call(consumed)
+      assert_raises(Minitest::Assertion) { exact_worker_prompt.call(consumed + "\0") }
+      envelope = consumed.byteslice(prompt.bytesize..)
+      assert envelope.start_with?("\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---\n")
+      assert envelope.end_with?("--- END ACT LOCAL CLI EXECUTION ENVELOPE ---\n")
+      assert_includes envelope, "Writable worktrees: #{JSON.generate('writer' => worker.fetch('workspace'))}."
+      assert_includes envelope, "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate('writer' => authority)}."
       file = File.join(first.fetch("workspace"), "file.txt")
       File.write(file, "preserved implementation\n")
       checkpoint = JSON.parse(succeeds("checkpoint", "record", "T", "--workspace", first.fetch("workspace")))
+      original_attempt = Digest::SHA256.hexdigest(JSON.generate(first.fetch("execution_state").values_at("prepared_at", "started_at", "snapshot")))[0, 32]
+      assert_equal ["T", original_attempt, "writer", first.fetch("invocation_id"), authority],
+                   checkpoint.values_at("task_id", "attempt", "repository", "launch_invocation", "authority")
       patch_bytes = File.binread(checkpoint.fetch("path"))
+      assert_equal patch_bytes.bytesize, checkpoint.fetch("bytes")
+      assert_equal Digest::SHA256.hexdigest(patch_bytes), checkpoint.fetch("sha256")
+      assert_equal checkpoint.fetch("sha256"), checkpoint.fetch("implementation_sha256")
+      checkpoint_bytes = bytes(File.dirname(checkpoint.fetch("path")))
+      verified = JSON.parse(succeeds("checkpoint", "verify", "T", "--workspace", worker.fetch("workspace")))
+      assert_equal ["verified", true], verified.values_at("status", "workspace_checked")
+      assert_equal checkpoint.reject { |key, _| key == "path" }, verified.fetch("record")
+      run_bytes = bytes(File.dirname(first.fetch("worktrees_path")))
       File.write(file, "base\n")
       succeeds("record", "T", "failed")
       checkpoint_state = @states.load("T")
@@ -466,16 +517,30 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal before, bytes
       @states.write("T", checkpoint_state)
       succeeds("close-attempt", "T")
+      closeout = JSON.parse(File.binread(File.join(File.dirname(first.fetch("worktrees_path")), "closeout.json")))
+      assert_equal first.values_at("task_id", "attempt", "invocation_id"), closeout.values_at("task_id", "attempt", "invocation_id")
+      assert_equal prepared.fetch("snapshot"), closeout.fetch("state").fetch("snapshot")
+      assert_equal checkpoint_state.fetch("checkpoint"), closeout.fetch("state").fetch("checkpoint")
+      assert_equal run_bytes.to_h { |path, content| [File.basename(path), Digest::SHA256.hexdigest(content)] }, closeout.fetch("evidence")
       succeeds("prepare", "T", "--retry")
+      refute_equal prepared.fetch("prepared_at"), @states.load("T").fetch("prepared_at")
       refute @states.load("T")["checkpoint"]
       before = bytes
       result = JSON.parse(succeeds("checkpoint", "verify", "T", "--attempt", "1"))
       assert_equal "verified", result.fetch("status")
+      assert_equal verified.fetch("record"), result.fetch("record")
+      refute result.fetch("workspace_checked")
       assert_equal before, bytes
       destination = File.join(@fixture, "reconstructed")
-      succeeds("checkpoint", "recover", "T", "--attempt", "1", "--destination", destination, "--confirm-disconnected")
+      recovered = JSON.parse(succeeds("checkpoint", "recover", "T", "--attempt", "1", "--destination", destination, "--confirm-disconnected"))
+      assert_equal ["T", original_attempt, "reconstructed", destination], recovered.values_at("task_id", "attempt", "status", "path")
+      assert_equal authority.fetch("pushed_sha"), git("rev-parse", "HEAD", directory: destination)
       assert_equal "preserved implementation\n", File.binread(File.join(destination, "file.txt"))
       assert_equal patch_bytes, File.binread(checkpoint.fetch("path"))
+      assert_equal checkpoint_bytes, checkpoint_bytes.keys.to_h { |path| [path, File.binread(path)] }
+      assert_equal run_bytes, run_bytes.keys.to_h { |path| [path, File.binread(path)] }
+      assert_equal prompt, File.binread(prepared.fetch("prompt_path"))
+      assert_equal consumed, File.binread(File.join(@fixture, "tst20-consumed-stdin"))
       task_path = File.join(@data, "tasks", "T.yml")
       task = YAML.safe_load_file(task_path)
       task["checkpoint"] = { "mode" => "exempt", "category" => "inspection", "reason" => "Fixture policy change cannot erase evidence." }

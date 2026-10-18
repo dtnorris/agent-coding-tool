@@ -1059,7 +1059,7 @@ second launch is limited to 20 seconds, and no LLM inference, network, GitHub
 mutation or paid resource is involved. This pilot does not validate a real Mac
 Codex sandbox; that separate host check remains required before operational use.
 
-`ruby -Ilib:test test/manual_parallel_launch_test.rb` exercises cold public CLI
+`ruby -Ilib:test test/integration/manual_parallel_launch_git_integration.rb` exercises cold public CLI
 prepare/start/launch/checkpoint/delivery, active external work, different historical
 pins, byte preservation, negative controls and preflight races using finite fake
 Codex processes and native temporary Git. Sandbox results are simulated there.
@@ -1074,30 +1074,29 @@ reader, ordinary checkout, private evidence, shared Git administration and a
 known active external workspace. It launches no model or implementation worker
 and contacts no inference service. Unsupported hosts fail rather than skip.
 
-The test commands have distinct contracts during the test-suite migration:
+The test commands have distinct contracts:
 
 | Command | Required behavior |
 | --- | --- |
-| `bundle exec rake` | Configured ACTD YAML validation, then the existing default tests. |
-| `bundle exec rake test` | Unchanged `test/**/*_test.rb` selection, without ACTD YAML validation. |
-| `bundle exec rake test:git_contract` | Separately discovered Git contracts and their required-case inventory; fails closed until TST-15 supplies them. |
-| `bundle exec rake test:integration` | All five offline native Git suites listed below, each in a separate Ruby process. |
-| `bundle exec rake test:all` | Git contracts, native integrations, then the same default selection with required-case and result verification. |
+| `bundle exec rake` | Validate configured ACTD YAML, then enforce the full `test:all` aggregate. |
+| `bundle exec rake test` | Fast `test/**/*_test.rb` selection only, without ACTD YAML validation or native integrations. |
+| `bundle exec rake test:git_contract` | Required Git-contract inventory and strict real-Git comparison. |
+| `bundle exec rake test:integration` | All seven required offline native Git suites, in separate Ruby processes. |
+| `bundle exec rake test:all` | Git contracts, seven native integrations and verified default test coverage; missing or extra cases fail closed. |
 
-The default commands retain their existing behavior until a later coordinated,
-reviewed change. They do not establish aggregate or host operational acceptance.
+The default `rake` command validates ACTD YAML before the full required aggregate.
+The standalone fast `test` command does not establish complete acceptance.
 The aggregate uses real Rake prerequisites: a failed prerequisite stops the task,
-and each prerequisite runs once per invocation. It currently fails when Git
-contracts are absent. Tests use explicit temporary data directories and do not
-depend on personal task data. The publisher tests in the default suite use a
-deterministic Git runner fake. Run the offline native gate when changing Git
-staging, delivery, checkpoint or retry behavior:
+and each prerequisite runs once per invocation. Tests use explicit temporary
+data directories and do not depend on personal task data. The publisher tests
+in the default suite use a deterministic Git runner fake. Run the offline native
+gate when changing Git staging, delivery, checkpoint or retry behavior:
 
 ```sh
 bundle exec rake test:integration
 ```
 
-The five retained suites can also be run individually for diagnosis:
+The seven required suites can also be run individually for diagnosis:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
@@ -1105,6 +1104,8 @@ ruby -Ilib:test test/integration/delivery_manager_git_integration.rb
 ruby -Ilib:test test/integration/multi_delivery_git_integration.rb
 ruby -Ilib:test test/integration/checkpoint_git_integration.rb
 ruby -Ilib:test test/integration/attempt_retry_git_integration.rb
+ruby -Ilib:test test/integration/manual_parallel_launch_git_integration.rb
+ruby -Ilib:test test/integration/parallel_delivery_git_integration.rb
 ```
 
 The retry integration exercises cold public CLI handoffs, native Git ownership,
@@ -1116,7 +1117,7 @@ The deterministic retry-liveness matrix runs in the normal suite.
 inspected at ACT `198aaee6f70d953a3858dfaf61c7a377567e66d2`, plus the new
 entry-point regression cases. It is an acceptance inventory, not generated
 discovery output. The verified tasks reject a missing or unexpected suite file,
-an empty inventory, omitted required case, duplicate execution, failed process,
+an empty inventory, omitted or unregistered case, duplicate execution, failed process,
 missing/malformed summary or case evidence, inconsistent counts, zero assertions,
 and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
 the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
@@ -1139,6 +1140,34 @@ preserve named coverage when moving behavior. TST-20 owns final coordinated
 Rakefile and inventory reconciliation after operator-accepted integration.
 An inventory change needs review against original behavior obligations; do not
 regenerate it from reduced discovery to make an omission pass.
+
+For TST-17/18/19 integration, David is the single owner of
+`test/required_cases.json` updates until handing that responsibility to TST-20.
+The migration workers supply their test patches and explicit original-to-destination
+coverage tables; they do not independently edit the shared manifest. Use the
+existing fixed inventory, with no runner registration extension:
+
+1. Review each original identity and subcase against
+   `test/coverage/ACTFAST-native-coverage.md`. Preserve default identities while
+   making decision tests faster; register each new native subcase separately.
+   For a whole-case move, retain the exact original `Class#test_method` at its
+   mandatory destination. Renamed, split or consolidated replacements require
+   independent behavioral review and an explicit original/subcase-to-file/identity
+   table before any original obligation is removed.
+2. Add each new `test/integration/*_git_integration.rb` path and its exact case
+   identities to the `integration` object. Preserve all five existing native
+   file entries and their cases unless an independently verified replacement is
+   accepted. Update default entries only for reviewed moves or new default cases;
+   preserve every untouched family. Do not derive obligations from discovery.
+3. Compose the reviewed test and manifest changes in the same disposable
+   candidate before validation or integration. A manifest entry without its file
+   or evidence must fail. Workers may run their own files directly for focused
+   development; that is not verified aggregate acceptance. Preserve sibling
+   candidates and reconcile the manifest serially after each integration.
+4. Run the inexpensive `bundle exec ruby -Ilib:test test/rakefile_test.rb`
+   fixture gate first. Full native and aggregate acceptance belongs to the
+   operator on the composed candidate. Refresh baseline and preparation when
+   integration advances main; this procedure grants no publication authority.
 
 The offline gate does not invoke `manual_parallel_native_sandbox.rb`. Its
 separately authorized real-macOS/installed-Codex qualification above remains

@@ -74,6 +74,15 @@ class AttemptRecoveryTest < Minitest::Test
             end
           end
         end
+        if ENV["ACT18_BREAK_PROJECTION"]
+          module BrokenExternalProjection
+            # Negative control removes the required public activity handoff only.
+            def statuses(*arguments, **options, &block)
+              super.map { |row| row.reject { |key, _value| key == "external_activity" } }
+            end
+          end
+          AgentCodingTool::Coordinator.prepend(BrokenExternalProjection)
+        end
       RUBY
       File.write(File.join(@fixture, "lsof"), "#!/bin/sh\nexit 1\n")
       File.chmod(0o755, File.join(@fixture, "lsof"))
@@ -154,10 +163,11 @@ class AttemptRecoveryTest < Minitest::Test
 
   # Uses a cold public CLI process, with only host identity/lsof/sandbox external
   # boundaries faked. The real host PID disappears before the next CLI command.
-  def cli(*args, fault: nil, legacy: false, child_start_fault: false)
+  def cli(*args, fault: nil, legacy: false, child_start_fault: false, break_projection: false)
     environment = { "PATH" => "#{@fixture}:#{fixture_command_path}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
                     "RUBYOPT" => "#{ENV['RUBYOPT']} -r#{@preload}", "ACT16_CREATION_FAULT" => fault,
-                    "ACT16_LEGACY" => legacy ? "1" : nil, "ACT16_CHILD_START_FAULT" => child_start_fault ? "1" : nil }
+                    "ACT16_LEGACY" => legacy ? "1" : nil, "ACT16_CHILD_START_FAULT" => child_start_fault ? "1" : nil,
+                    "ACT18_BREAK_PROJECTION" => break_projection ? "1" : nil }
     output, error, status = Open3.capture3(environment, RbConfig.ruby, "-I#{File.join(Dir.pwd, 'lib')}",
                                           File.join(Dir.pwd, "bin", "agent-coding-tool"), *args)
     [status.exitstatus, output, error]
@@ -180,6 +190,78 @@ class AttemptRecoveryTest < Minitest::Test
   def bytes(root = @fixture)
     Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) && !File.symlink?(path) }
        .to_h { |path| [path, File.binread(path)] }
+  end
+
+  # Requires truthful external and canonical status in the same public output.
+  # Used unchanged for the projection-removal negative control.
+  def assert_external_stale_projection(output)
+    ["T: STALE", "pushed branch changed: writer", "EXTERNAL WORK REPORTED",
+     "unauthorized", "liveness unknown", "isolation unverified"].each do |text|
+      assert_includes output, text
+    end
+  end
+
+  # Starts a finite external fake independently of ACT. The pipe permits release
+  # after inspection; the five-second select bound survives parent failure.
+  def independent_worker
+    reader, writer = IO.pipe
+    process = Process.spawn(RbConfig.ruby, "-e", "STDIN.read(1) if IO.select([STDIN], nil, nil, 5)",
+                            in: reader, out: File::NULL, err: File::NULL)
+    reader.close
+    [process, writer]
+  end
+
+  # Exercises reporting through cold public CLI processes against a stale task.
+  # The finite worker is launched independently; its exit cannot close a report.
+  # A projection-breaking preload is the negative control for this same journey.
+  def test_external_activity_public_journey_preserves_stale_lifecycle
+    fixture do
+      succeeds("prepare", "T")
+      git("commit", "--allow-empty", "-m", "advance", directory: File.join(@fixture, "writer"))
+      git("push", "origin", "main", directory: File.join(@fixture, "writer"))
+      before = bytes
+      worker, release_worker = independent_worker
+      begin
+        report = JSON.parse(succeeds("external", "report", "T", "--reporter", "operator",
+                                    "--kind", "fake-codex", "--identifier", "fixture-worker", "--scope-complete"))
+        observation = report.fetch("active").fetch("observation_id")
+        detail = succeeds("status", "T")
+        dashboard = succeeds("status")
+        [detail, dashboard].each { |output| assert_external_stale_projection(output) }
+        broken = succeeds("status", "T", break_projection: true)
+        assert_raises(Minitest::Assertion) { assert_external_stale_projection(broken) }
+        document = JSON.parse(succeeds("next", "--json"))
+        fact = document.fetch("facts").fetch("tasks").find { |row| row["id"] == "T" }
+        assert_equal "STALE", fact.fetch("status")
+        assert_equal observation, fact.fetch("external_activity").fetch("observation_id")
+        release_worker.close
+        Process.wait(worker)
+        worker = nil
+        assert_equal observation, JSON.parse(succeeds("external", "show", "T")).fetch("active").fetch("observation_id")
+        assert_equal before, before.keys.to_h { |path| [path, File.binread(path)] }
+        closed = JSON.parse(succeeds("external", "end", "T", observation, "--disposition", "ended"))
+        assert_nil closed.fetch("active")
+        assert_equal observation, closed.fetch("closed").last.fetch("observation_id")
+        assert_includes succeeds("status", "T"), "T: STALE"
+        assert_equal before, before.keys.to_h { |path| [path, File.binread(path)] }
+        # Existing result authority is exercised only on an independently
+        # eligible control, never by laundering the stale incident preparation.
+        write_task(@data, id: "REVIEW", repositories: { "writer" => { "access" => "write", "path" => File.join(@fixture, "writer") } })
+        succeeds("prepare", "REVIEW")
+        control = JSON.parse(succeeds("external", "report", "REVIEW", "--reporter", "reviewer", "--kind", "fake", "--scope-complete"))
+        control_id = control.fetch("active").fetch("observation_id")
+        succeeds("external", "end", "REVIEW", control_id, "--disposition", "ended")
+        assert_includes succeeds("status", "REVIEW"), "REVIEW: PREPARED"
+        succeeds("start", "REVIEW")
+        succeeds("received", "REVIEW", "--artifact", "separately-reviewed-control.patch", "--test", "fixture-review=pass")
+        assert_includes succeeds("status", "REVIEW"), "REVIEW: CANDIDATE"
+        succeeds("finish", "REVIEW", "--summary", "Separately authorized fixture acceptance")
+        assert_includes succeeds("status", "REVIEW"), "REVIEW: COMPLETE"
+      ensure
+        release_worker.close unless release_worker.closed?
+        Process.wait(worker) if worker
+      end
+    end
   end
 
   # Proves the complete public handoff for all supported non-complete outcomes.
@@ -292,6 +374,37 @@ class AttemptRecoveryTest < Minitest::Test
       second = reports.fetch(1)
       assert_equal ["preflight_failed", nil, nil], second.values_at("status", "workspace", "child_pid")
       refute File.exist?(second.fetch("worktrees_path"))
+      git("commit", "--allow-empty", "-m", "advance writer", directory: File.join(@fixture, "writer"))
+      git("push", "origin", "main", directory: File.join(@fixture, "writer"))
+      # Original recovery errors must remain before, during and after observing
+      # an independently started worker; absent legacy boot evidence stays absent.
+      before_retry = cli("prepare", "T", "--retry")
+      before_launch = cli("launch", "T", "--codex")
+      assert_equal 2, before_retry.first
+      assert_equal 2, before_launch.first
+      original = bytes
+      worker, release_worker = independent_worker
+      begin
+        observation = JSON.parse(succeeds("external", "report", "T", "--reporter", "operator", "--kind", "fake-codex", "--scope-complete"))
+        id = observation.fetch("active").fetch("observation_id")
+        assert_external_stale_projection(succeeds("status", "T"))
+        assert_external_stale_projection(succeeds("status"))
+        fact = JSON.parse(succeeds("next", "--json")).fetch("facts").fetch("tasks").first
+        assert_equal ["STALE", id], [fact.fetch("status"), fact.fetch("external_activity").fetch("observation_id")]
+        assert_equal before_retry, cli("prepare", "T", "--retry")
+        assert_equal before_launch, cli("launch", "T", "--codex")
+        release_worker.close
+        Process.wait(worker)
+        worker = nil
+        assert_equal id, JSON.parse(succeeds("external", "show", "T")).fetch("active").fetch("observation_id")
+        succeeds("external", "end", "T", id, "--disposition", "lost-contact")
+        assert_equal before_retry, cli("prepare", "T", "--retry")
+        assert_equal before_launch, cli("launch", "T", "--codex")
+        assert_equal original, original.keys.to_h { |path| [path, File.binread(path)] }
+      ensure
+        release_worker.close unless release_worker.closed?
+        Process.wait(worker) if worker
+      end
       before = bytes
       rows = JSON.parse(succeeds("worktrees", "T")).fetch("attempts").sort_by { |row| row.fetch("attempt") }
       assert_equal "owned", rows.fetch(0).fetch("classification")

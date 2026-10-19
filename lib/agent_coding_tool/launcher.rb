@@ -42,6 +42,7 @@ module AgentCodingTool
     # This grants neither publication authority nor current integration approval.
     def verify_delivery_overlap!(id, run_dir)
       safe_root!
+      external_activity.assert_clear!(id)
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       store = StateStore.new(File.join(@data_root, "state"))
       state = store.load(id)
@@ -92,6 +93,16 @@ module AgentCodingTool
 
     private
 
+    # Uses configured stores independently of lightweight delivery coordinators.
+    # Initialization is read-only; no-observation checks make no Git/process calls.
+    def external_activity
+      @external_activity ||= @coordinator.respond_to?(:external_activity) ? @coordinator.external_activity :
+        ExternalActivity.new(data_root: @data_root,
+          task_store: TaskStore.new(File.join(@data_root, "tasks")),
+          state_store: StateStore.new(File.join(@data_root, "state")),
+          repo_inspector: RepoInspector.new(Config.load(File.join(@data_root, "config.yml"))))
+    end
+
     def safe_root!
       # Refuse symlinked evidence paths, including ancestors; never repair them.
       current = @run_root
@@ -118,6 +129,7 @@ module AgentCodingTool
       raise InvalidState, "#{id}: malformed state" unless state.is_a?(Hash)
       raise InvalidState, "#{id}: ICEBOX; use act unicebox #{id} before continuing" if state.key?("icebox")
       prior_runs!(id, state)
+      external_activity.assert_clear!(id)
       preflight_codex!(model, reasoning)
       raise InvalidState, "#{id}: already in flight; operator judgment required" if state["started_at"]
       raise InvalidState, "#{id}: recorded outcome; explicit prepare --retry required" if state["result"]
@@ -349,6 +361,7 @@ module AgentCodingTool
     end
 
     def checked_status!(id, allow_write_collision: false)
+      external_activity.assert_clear!(id)
       heads = nil
       status = @coordinator.statuses([id], strict_freshness: true) { |observed| heads = observed }.first
       raise InvalidState, "#{id}: launch blocked: #{status['status']} #{status['reason']}" unless status.fetch("status") == "PREPARED"
@@ -359,10 +372,16 @@ module AgentCodingTool
       end
     end
 
+    # Reads strict managed evidence, recognizing only the validated private
+    # external namespace. Unknown/foreign/malformed managed entries still refuse.
     def reports
       entries = Dir.children(@run_root).reject do |entry|
         entry == "launch.lock" ||
           (entry == ".DS_Store" && File.lstat(File.join(@run_root, entry)).file?)
+      end
+      if entries.include?(ExternalActivity::NAMESPACE)
+        external_activity.records
+        entries.delete(ExternalActivity::NAMESPACE)
       end
       if entries.include?("checkpoints")
         checkpoint_root = File.join(@run_root, "checkpoints")
@@ -432,6 +451,7 @@ module AgentCodingTool
     # Launch may admit a no-run IN_FLIGHT reservation with explicit permission;
     # delivery never may. Damaged/partial managed evidence still raises InvalidState.
     def reject_unknown_reservations!(id, bases, allow_write_collision:, allow_manual_overlap: false)
+      external_activity.assert_clear!(id)
       # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
       # pass also sees stale manual starts and orphaned host evidence. Historical
       # source movement never erases a reservation or repairs managed evidence.

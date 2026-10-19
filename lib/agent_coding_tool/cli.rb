@@ -69,6 +69,7 @@ module AgentCodingTool
       case command
       when "status" then status_command(argv)
       when "next" then next_command(argv)
+      when "external" then external_command(argv)
       when "icebox" then icebox_command(argv)
       when "unicebox" then icebox_command(argv, restore: true)
       when "prepare" then prepare_command(argv)
@@ -96,6 +97,50 @@ module AgentCodingTool
     end
 
     private
+
+    # Public explicit observation commands. Show is read-only; report/end acquire
+    # the existing shared reservation lock internally and print private JSON.
+    # Invalid arguments or private evidence raise Error without payload echoes.
+    def external_command(argv)
+      action = argv.shift
+      id = argv.shift
+      raise Error, "usage: external {report|show|end} TASK ..." unless %w[report show end].include?(action) && id
+      options = {}
+      observation_id = argv.shift if action == "end"
+      parser = OptionParser.new do |opts|
+        if action == "report"
+          %w[reporter kind identifier note reference].each do |field|
+            opts.on("--#{field} TEXT") { |value| options[field.to_sym] = value }
+          end
+          opts.on("--scope-complete", "operator reports a complete writable repository set") { options[:scope_complete] = true }
+          opts.on("--write-repository REMOTE,BRANCH", "additional reported writable authority; repeatable") do |value|
+            (options[:authorities] ||= []) << value.split(",", 2)
+          end
+        elsif action == "end"
+          opts.on("--disposition VALUE", ExternalActivity::DISPOSITIONS) { |value| options[:disposition] = value }
+        end
+      end
+      begin
+        parser.parse!(argv)
+      rescue OptionParser::ParseError
+        raise Error, "external activity: invalid options (private input omitted)", cause: nil
+      end
+      raise Error, "external activity: unexpected arguments" unless argv.empty?
+      store = coordinator.external_activity
+      result = case action
+               when "show" then store.show(id)
+               when "report"
+                 raise Error, "external report requires --reporter and --kind" unless options[:reporter] && options[:kind]
+                 store.report(id, **options)
+               when "end"
+                 raise Error, "external end requires observation ID and --disposition" unless observation_id && options[:disposition]
+                 store.end_activity(id, observation_id, **options)
+               end
+      @out.puts JSON.pretty_generate(result.merge("trust" => {
+        "reporter" => "operator-reported", "execution" => "unmanaged; unauthorized by ACT",
+        "isolation" => "unverified", "containment" => "unverified", "liveness" => "unknown",
+        "closure" => "operator report; not proof of termination or candidate quality" }))
+    end
 
     # Parses explicit deferral/restoration, printing the resulting designation.
     # Invalid arguments, ineligible state or unsafe/busy locks raise Error.
@@ -385,7 +430,7 @@ module AgentCodingTool
           statuses, family_summaries = compress_ready_statuses(statuses, next_id:)
         end
         statuses = statuses.select { |item| item.fetch("status") == "ICEBOX" } if options[:icebox]
-        statuses = statuses.reject { |item| item.fetch("status") == "ICEBOX" } if compact_icebox
+        statuses = statuses.reject { |item| item.fetch("status") == "ICEBOX" && !item["external_activity"] } if compact_icebox
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -474,6 +519,16 @@ module AgentCodingTool
         @out.puts "    act prepare #{row.fetch('id')}" if row.fetch("status") == "READY"
         @out.puts "    act start #{row.fetch('id')} (warns and proceeds; integration remains separate)"
       end
+      display_next_section("External activity blocks starts", selection.fetch("external_waits", [])) do |row|
+        @out.puts "  #{row.fetch('id')} (#{row.fetch('status')}): explicit external observation end required; original managed gates still apply"
+      end
+      ranked.each do |status|
+        next unless status["external_activity"]
+
+        @out.puts "  #{status.fetch('id')} (#{status.fetch('status')}): external activity reported"
+        display_external_activity(status)
+        display_icebox_details(status) if status.fetch("status") == "ICEBOX"
+      end
       display_next_section("Running lanes", selection.fetch("occupied").select { |row| row.fetch("status") == "IN_FLIGHT" }) do |row|
         @out.puts "  #{row.fetch('id')}: #{format_authorities(row.fetch('authorities'))}"
       end
@@ -530,7 +585,7 @@ module AgentCodingTool
         "facts" => {
           "tasks" => ranked.map do |status|
             id = status.fetch("id")
-            { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
+            row = { "id" => id, "status" => status.fetch("status"), "reason" => status["reason"],
               "depends_on" => tasks.fetch(id).fetch("depends_on", []),
               "priority_rank" => priority.fetch(id),
               "execution_evidence" => status["execution_evidence"],
@@ -538,6 +593,9 @@ module AgentCodingTool
               "freshness" => next_freshness(status, tasks.fetch(id)) }.merge(
                 status.fetch("status") == "ICEBOX" ? { "icebox" => status.fetch("state").fetch("icebox"),
                                                         "lifecycle_status" => status.fetch("lifecycle_status") } : {})
+            row["external_activity"] = status["external_activity"] if status["external_activity"]
+            row["external_conflicts"] = status["external_conflicts"] if status["external_conflicts"]
+            row
           end,
           "reservations" => occupied.map { |row| next_authority_row(row) }
         },
@@ -574,7 +632,12 @@ module AgentCodingTool
             next_status_row(status, priority, metrics).merge("category" => "wait_dependencies")
           end
         }
-      }
+      }.tap do |document|
+        if ranked.any? { |status| status["external_reservations"] }
+          document.fetch("facts")["external_reservations"] = ranked.first.fetch("external_reservations", [])
+          document.fetch("recommendations")["external_waits"] = selection.fetch("external_waits", [])
+        end
+      end
     end
 
     def next_authority_row(row)
@@ -758,7 +821,7 @@ module AgentCodingTool
       summaries = families.to_h do |family, items|
         [family, [items.length, items.length - selected.fetch(family).length]]
       end
-      visible = statuses.select { |item| item.fetch("status") != "READY" || visible_ids.key?(item.fetch("id")) }
+      visible = statuses.select { |item| item.fetch("status") != "READY" || item["external_activity"] || visible_ids.key?(item.fetch("id")) }
       [visible, summaries]
     end
 
@@ -837,7 +900,7 @@ module AgentCodingTool
     def limit_blocked_statuses(statuses)
       blocked_seen = 0
       statuses.select do |item|
-        next true unless item.fetch("status") == "BLOCKED"
+        next true unless item.fetch("status") == "BLOCKED" && !item["external_activity"]
 
         blocked_seen += 1
         blocked_seen <= BLOCKED_DISPLAY_LIMIT
@@ -885,6 +948,7 @@ module AgentCodingTool
       colored_prefix = "#{id}: #{colorize_status(status)}#{next_marker} — "
       title = normalize_dashboard_text(item.fetch("title"))
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
+      display_external_activity(item)
       display_icebox_details(item) if status == "ICEBOX"
 
       if status == "IN_FLIGHT"
@@ -922,6 +986,7 @@ module AgentCodingTool
     # Prints full task details, including designation/restoration and lifecycle
     # evidence. Missing fields and output errors propagate; no state is changed.
     def display_explicit_details(item)
+      display_external_activity(item)
       display_icebox_details(item) if item.fetch("status") == "ICEBOX"
       @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
       display_parallel_authorization(item)
@@ -935,6 +1000,22 @@ module AgentCodingTool
 
       write_collisions(item).each do |collision|
         puts_full_detail("reason", write_collision_detail(collision))
+      end
+    end
+
+    # Prints reported activity without truncating trust/age qualifiers. Canonical
+    # lifecycle/reason remain on their original rows; no liveness probe occurs.
+    def display_external_activity(item)
+      if (activity = item["external_activity"])
+        @out.puts "    EXTERNAL WORK REPORTED: unmanaged; unauthorized by ACT"
+        @out.puts "    isolation unverified; containment unverified; liveness unknown"
+        @out.puts "    last reported: #{activity.fetch('recorded_at')}; observation #{activity.fetch('observation_id')}"
+        @out.puts "    scope: #{activity.fetch('envelope').fetch('scope')} (operator report); explicit end required"
+        @out.puts "    INCONSISTENCY: COMPLETE with open external activity" if item["status"] == "COMPLETE"
+        @out.puts "    CONFLICT: managed execution also recorded" if item.dig("state", "started_at")
+      end
+      if item["external_conflicts"]
+        @out.puts "    External conflict: #{item.fetch('external_conflicts').map { |row| row.fetch('task_id') }.uniq.join(', ')}; new execution blocked"
       end
     end
 
@@ -1180,6 +1261,10 @@ module AgentCodingTool
                   "#{collision.fetch('task_id')} (#{collision.fetch('status')})."
         @out.puts "Starting both concurrently is likely to make one stale when the other lands."
       end
+      conflicts = coordinator.external_activity.conflicts(prepared.fetch("task"), state)
+      unless conflicts.empty?
+        @out.puts "WARNING: external activity conflict; preparation is a snapshot only; execution remains blocked until explicit end."
+      end
       @out.puts
       prompt = prepared.fetch("prompt")
       @out.write(prompt)
@@ -1300,6 +1385,13 @@ module AgentCodingTool
                               defer unstarted READY work; identical reason is a no-op
           unicebox TASK       explicitly restore normal eligibility computation
           next [--json]       advise safe parallel work without changing state
+          external report TASK --reporter TEXT --kind TEXT [--identifier TEXT]
+                              [--scope-complete] [--write-repository REMOTE,BRANCH]
+                              [--note TEXT] [--reference TEXT]
+                              report unmanaged activity; grants no execution authority
+          external show TASK  inspect bounded private history (read-only)
+          external end TASK OBSERVATION_ID --disposition ended|failed|lost-contact
+                              operator closeout; proves neither exit nor result quality
           prepare TASK [--retry]
           start TASK [--allow-write-collision]
                               mark a prepared task in flight (human assertion)
@@ -1337,7 +1429,7 @@ module AgentCodingTool
           Summaries count total/hidden READY. --all, --fam and TASK do not compress.
           --fam is exact and exclusive with TASK; --all and --active conflict.
           The recent COMPLETE window is global, before family filtering.
-          Default/--active hide Icebox rows and end with one full-inventory count.
+          Default/--active hide Icebox rows except open external reports, then count all.
           Icebox is scheduling, not an outcome; it never receives a start recommendation.
           Only unstarted READY may enter. Prepare/start/launch/record refuse it;
           reset retains it. All writers share the private launch reservation lock.
@@ -1358,6 +1450,19 @@ module AgentCodingTool
           guidance before plan/task-definition outputs. Omit for ordinary work.
           Designation/pin changes require evidence preservation and explicit
           operator reset/re-preparation; retry alone does not migrate pins.
+
+        External activity:
+          Reporter/process facts are operator-reported. Last-reported time is
+          not a heartbeat: liveness unknown, isolation/containment unverified.
+          Scope defaults to unknown and blocks new writers; --scope-complete
+          reserves registered/prepared writers plus reported additions, across
+          branches. Disjoint bounded writers may proceed. Overrides cannot bypass
+          external conflicts. Existing lifecycle/freshness/recovery gates apply.
+          Exact retained identifier/payload repeats are no-ops; other duplicate
+          reports refuse. Keep one active and eight closed observations per task.
+          End requires its observation ID; retained repeats are idempotent.
+          Notes/references are private inert text, never imported or published.
+          Ending changes no lifecycle or result; separately review any candidate.
       HELP
     end
   end

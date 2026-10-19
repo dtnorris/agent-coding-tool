@@ -51,7 +51,7 @@ module AgentCodingTool
              opened.uid == Process.uid && (opened.mode & 0o077).zero?
         raise InvalidState, "reservation: foreign/symlinked lock"
       end
-      raise InvalidState, "reservation: launch/recovery reservation busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+      raise InvalidState, "reservation lock: launch/recovery reservation busy; retry" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
 
       true
     end

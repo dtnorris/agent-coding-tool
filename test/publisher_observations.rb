@@ -48,7 +48,7 @@ module PublisherObservations
     [*destination_observations,
      git_observation(["symbolic-ref", "--quiet", "--short", "HEAD"], "main\n"),
      git_observation(["rev-parse", "HEAD"], "#{head}\n"), remote_observation(remote_head),
-     git_observation(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], status),
+     git_observation(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], status),
      *operations.map { |name| git_observation(["rev-parse", "--git-path", name], "#{@root}/.git/#{name}\n") },
      *scope_paths.map { |path| git_observation(["ls-files", "--stage", "--", path]) }]
   end

@@ -59,10 +59,46 @@ class IceboxGitIntegrationTest < Minitest::Test
       all = cli!("status", "--all")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
+      # Report reality while deliberately deferred: every public projection
+      # retains both facts, and ending a report never restores scheduling.
+      report = JSON.parse(cli!("external", "report", "TST-A", "--reporter", "operator",
+                               "--kind", "fake-codex", "--scope-complete"))
+      observation = report.fetch("active").fetch("observation_id")
+      %w[status next].each do |command|
+        view = cli!(command)
+        assert_includes view, "EXTERNAL WORK REPORTED"
+        assert_includes view, "unauthorized by ACT"
+        assert_includes view, "liveness unknown"
+      end
+      assert_includes cli!("status"), "TST-A: ICEBOX"
+      assert_includes cli!("next"), "TST-A (ICEBOX)"
+      assert_includes cli!("next"), "act unicebox TST-A"
+      reported = JSON.parse(cli!("next", "--json"))
+      fact = reported.dig("facts", "tasks").find { |row| row["id"] == "TST-A" }
+      assert_equal ["ICEBOX", "READY", state.fetch("icebox"), observation],
+                   [fact["status"], fact["lifecycle_status"], fact["icebox"], fact.dig("external_activity", "observation_id")]
+      assert_nil fact["execution_evidence"]
+      refute_includes reported.dig("recommendations", "starts").map { |row| row["id"] }, "TST-A"
+      cli!("external", "end", "TST-A", observation, "--disposition", "ended")
+      assert_equal state, @store.load("TST-A")
+      refute_match(/^TST-A:/, cli!("status"))
+
       cli!("unicebox", "TST-A")
       assert_equal "READY", JSON.parse(cli!("next", "--json")).dig("facts", "tasks").find { |row| row["id"] == "TST-A" }.fetch("status")
       cli!("prepare", "TST-A")
       assert @store.load("TST-A")["snapshot"]
+      report = JSON.parse(cli!("external", "report", "TST-A", "--reporter", "operator", "--kind", "fake-codex"))
+      retained = @store.load("TST-A")
+      [%w[start TST-A --allow-write-collision], %w[launch TST-A --codex --allow-write-collision]].each do |args|
+        _output, error, status = cli(*args)
+        assert_equal 2, status.exitstatus, error
+        assert_includes error, "external activity conflict"
+        assert_equal retained, @store.load("TST-A")
+        refute File.exist?(File.join(@root, "worker-pid"))
+      end
+      cli!("external", "end", "TST-A", report.fetch("active").fetch("observation_id"), "--disposition", "ended")
+      cli!("start", "TST-A")
+      assert @store.load("TST-A")["started_at"]
       assert_equal before, definition_bytes
       # This positive control traverses the same automatic preparation path
       # and fake worker boundary the deferred launch must never reach.

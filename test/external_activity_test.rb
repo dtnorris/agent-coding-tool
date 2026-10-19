@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "stringio"
+require "timeout"
 require_relative "test_helper"
 require "minitest/mock"
 
@@ -266,6 +267,29 @@ class ExternalActivityTest < Minitest::Test
     end
   end
 
+  # The external facade and lifecycle APIs share one validated reservation.
+  # Borrowing does not release it; a missing or foreign descriptor cannot bypass it.
+  def test_shared_reservation_borrows_lock_for_lifecycle_without_unlocking
+    fixture do
+      @activity.with_lock do |lock|
+        Timeout.timeout(5) do
+          @coordinator.prepare("A", reservation_lock: lock)
+          before = @states.load("A")
+          assert_raises(AgentCodingTool::InvalidState) { @coordinator.start("A") }
+          File.open(File.join(@parent, "foreign.lock"), "w+") do |foreign|
+            assert_raises(AgentCodingTool::InvalidState) { @coordinator.start("A", reservation_lock: foreign) }
+          end
+          assert_equal before, @states.load("A")
+          @coordinator.start("A", reservation_lock: lock)
+          @coordinator.record("A", outcome: "failed", reservation_lock: lock)
+          assert_raises(AgentCodingTool::InvalidState) { report("B") }
+        end
+      end
+      assert_equal "FAILED", @coordinator.status("A").fetch("status")
+      assert report("B").fetch("active")
+    end
+  end
+
   # Busy/malformed locks refuse tasks even without managed runs. Competing
   # processes cannot create two observations or reuse one retained supplied ID.
   def test_lock_serialization_and_cross_task_identity_races
@@ -436,7 +460,7 @@ class ExternalActivityTest < Minitest::Test
             if operation == "report"
               report(identifier: "racing-worker")
             else
-              @activity.with_lock { @coordinator.start("A") }
+              @activity.with_lock { |lock| @coordinator.start("A", reservation_lock: lock) }
             end
             exit! 0
           rescue AgentCodingTool::InvalidState
@@ -450,7 +474,7 @@ class ExternalActivityTest < Minitest::Test
       current = @activity.show("A").fetch("active").fetch("observation_id")
       @activity.end_activity("A", original, disposition: "ended")
       assert_equal current, @activity.show("A").fetch("active").fetch("observation_id")
-      assert_raises(AgentCodingTool::InvalidState) { @activity.with_lock { @coordinator.start("A", allow_write_collision: true) } }
+      assert_raises(AgentCodingTool::InvalidState) { @activity.with_lock { |lock| @coordinator.start("A", allow_write_collision: true, reservation_lock: lock) } }
     end
   end
 end

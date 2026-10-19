@@ -28,24 +28,7 @@ module AgentCodingTool
     # including tasks without managed runs. Busy/foreign paths raise InvalidState.
     # Never holds the lock for an external worker's lifetime.
     def with_lock
-      path = reservation_path
-      File.open(path, File::RDWR | File::CREAT | File::NOFOLLOW, 0o600) do |lock|
-        check_path!(path, directory: false)
-        unless lock.stat.ino == File.stat(path).ino && lock.stat.dev == File.stat(path).dev &&
-               lock.flock(File::LOCK_EX | File::LOCK_NB)
-          raise InvalidState, "external activity: launch/recovery reservation lock busy; retry"
-        end
-        yield lock
-      end
-    end
-
-    # Returns the validated shared lock path for callers retaining an existing
-    # lock descriptor, such as automatic delivery. Unsafe paths refuse pre-write.
-    def reservation_path
-      check_path!(@root, directory: true, create: true)
-      path = File.join(@root, "launch.lock")
-      check_path!(path, directory: false) if File.exist?(path) || File.symlink?(path)
-      path
+      ReservationLock.synchronize(@data) { |lock| yield lock }
     end
 
     # Returns validated documents without writes or liveness probes. Damaged

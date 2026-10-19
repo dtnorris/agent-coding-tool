@@ -21,11 +21,13 @@ module AgentCodingTool
       @run_root = "#{@data_root}-runs"
     end
 
+    # Launches one foreground worker under the shared reservation through start.
+    # Returns worker status; unsafe state/paths and preflight failures raise Error.
     def launch(id, model: nil, reasoning: nil, allow_write_collision: false)
       raise InvalidTask, "launch: unsafe task ID" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       @manual_conflicts = []
       safe_root!
-      external_activity.with_lock do |lock|
+      ReservationLock.synchronize(@data_root) do |lock|
         run_locked(id, model, reasoning, lock, allow_write_collision)
       end
     rescue Psych::Exception, KeyError, TypeError, ArgumentError => e
@@ -125,6 +127,7 @@ module AgentCodingTool
       state_store = StateStore.new(File.join(@data_root, "state"))
       state = state_store.load(id)
       raise InvalidState, "#{id}: malformed state" unless state.is_a?(Hash)
+      raise InvalidState, "#{id}: ICEBOX; use act unicebox #{id} before continuing" if state.key?("icebox")
       prior_runs!(id, state)
       external_activity.assert_clear!(id)
       preflight_codex!(model, reasoning)
@@ -134,7 +137,7 @@ module AgentCodingTool
         validate_preparation!(task, state)
       else
         raise InvalidState, "#{id}: partial preparation; operator judgment required" unless state.empty? || state == { "id" => id }
-        state = @coordinator.prepare(id).fetch("state")
+        state = @coordinator.prepare(id, reservation_lock: lock).fetch("state")
       end
       validate_preparation!(task, state)
       checked_status!(id, allow_write_collision: allow_write_collision)
@@ -256,7 +259,7 @@ module AgentCodingTool
         save_report
         @coordinator.start(id, allow_write_collision: allow_write_collision,
                            expected_collisions: @collisions,
-                           launch_authorization: @report["collision_authorization"])
+                           launch_authorization: @report["collision_authorization"], reservation_lock: lock)
         @report["execution_state"] = state_store.load(id)
         @report["status"] = "reserved"
         save_report

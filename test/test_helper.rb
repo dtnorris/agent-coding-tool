@@ -65,7 +65,11 @@ module TestHelpers
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, "tasks"))
       FileUtils.mkdir_p(File.join(dir, "state", "prompts"))
-      yield dir
+      begin
+        yield dir
+      ensure
+        FileUtils.remove_entry("#{dir}-runs") if File.directory?("#{dir}-runs") && !File.symlink?("#{dir}-runs")
+      end
     end
   end
 

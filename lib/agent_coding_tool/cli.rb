@@ -18,7 +18,8 @@ module AgentCodingTool
       "STALE_CANDIDATE" => 60,
       "STALE" => 70,
       "FAILED" => 80,
-      "BLOCKED" => 100
+      "BLOCKED" => 100,
+      "ICEBOX" => 110
     }.freeze
     STATUS_COLORS = {
       "COMPLETE" => 32,
@@ -69,6 +70,8 @@ module AgentCodingTool
       when "status" then status_command(argv)
       when "next" then next_command(argv)
       when "external" then external_command(argv)
+      when "icebox" then icebox_command(argv)
+      when "unicebox" then icebox_command(argv, restore: true)
       when "prepare" then prepare_command(argv)
       when "start" then start_command(argv)
       when "launch" then return launch_command(argv)
@@ -137,6 +140,27 @@ module AgentCodingTool
         "reporter" => "operator-reported", "execution" => "unmanaged; unauthorized by ACT",
         "isolation" => "unverified", "containment" => "unverified", "liveness" => "unknown",
         "closure" => "operator report; not proof of termination or candidate quality" }))
+    end
+
+    # Parses explicit deferral/restoration, printing the resulting designation.
+    # Invalid arguments, ineligible state or unsafe/busy locks raise Error.
+    def icebox_command(argv, restore: false)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--reason TEXT", "optional reason for intentional deferral") { |value| options[:reason] = value } unless restore
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool #{restore ? 'unicebox TASK' : 'icebox TASK [--reason TEXT]'}" unless id && argv.empty?
+
+      if restore
+        coordinator.unicebox(id)
+        @out.puts "Restored #{id}; eligibility will be recomputed from lifecycle and dependencies"
+      else
+        coordinator.icebox(id, **options)
+        @out.puts "Deferred #{id}: ICEBOX; restore with act unicebox #{id}"
+      end
     end
 
     def deliver_command(argv)
@@ -364,6 +388,7 @@ module AgentCodingTool
         end
         opts.on("--all", "show every task, including all completed tasks") { options[:all] = true }
         opts.on("--active", "show no completed tasks") { options[:active] = true }
+        opts.on("--icebox", "show only intentionally deferred tasks") { options[:icebox] = true }
       end
       parser.require_exact = true
       parser.parse!(argv)
@@ -374,8 +399,8 @@ module AgentCodingTool
       options[:completion_filter] = :active if options[:active]
 
       id = argv.shift
-      unless argv.empty? && !(id && options.key?(:family))
-        raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active]"
+      unless argv.empty? && !(id && (options.key?(:family) || options[:icebox]))
+        raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox]"
       end
       if options.key?(:family) && !coordinator.tasks.any? { |task| task_family(task.fetch("id")) == options[:family] }
         raise Error, "unknown task family: #{options[:family]}"
@@ -387,6 +412,8 @@ module AgentCodingTool
                    coordinator.statuses(completion_filter: options.fetch(:completion_filter))
                  end
       broad_dashboard = id.nil?
+      deferred = statuses.select { |item| item.fetch("status") == "ICEBOX" }
+      compact_icebox = broad_dashboard && !options[:all] && !options.key?(:family) && !options[:icebox]
       completion_metrics = {}
       next_id = nil
       family_summaries = {}
@@ -402,6 +429,8 @@ module AgentCodingTool
         elsif !options[:all]
           statuses, family_summaries = compress_ready_statuses(statuses, next_id:)
         end
+        statuses = statuses.select { |item| item.fetch("status") == "ICEBOX" } if options[:icebox]
+        statuses = statuses.reject { |item| item.fetch("status") == "ICEBOX" && !item["external_activity"] } if compact_icebox
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
       previous_bucket = nil
@@ -422,6 +451,16 @@ module AgentCodingTool
         end
         previous_bucket = bucket
       end
+      display_icebox_summary(deferred) if compact_icebox
+    end
+
+    # Prints exactly one final, uncompressed inventory count. Families use the
+    # existing first-prefix rule and lexical order; output errors propagate.
+    def display_icebox_summary(deferred)
+      count = deferred.length
+      families = deferred.map { |item| task_family(item.fetch("id")) }.uniq.sort
+      suffix = families.empty? ? "" : " from families (#{families.join(', ')})"
+      @out.puts "#{count} Icebox #{pluralize(count, 'task')}#{suffix}"
     end
 
     def next_command(argv)
@@ -483,7 +522,13 @@ module AgentCodingTool
       display_next_section("External activity blocks starts", selection.fetch("external_waits", [])) do |row|
         @out.puts "  #{row.fetch('id')} (#{row.fetch('status')}): explicit external observation end required; original managed gates still apply"
       end
-      ranked.each { |status| display_external_activity(status) if status["external_activity"] }
+      ranked.each do |status|
+        next unless status["external_activity"]
+
+        @out.puts "  #{status.fetch('id')} (#{status.fetch('status')}): external activity reported"
+        display_external_activity(status)
+        display_icebox_details(status) if status.fetch("status") == "ICEBOX"
+      end
       display_next_section("Running lanes", selection.fetch("occupied").select { |row| row.fetch("status") == "IN_FLIGHT" }) do |row|
         @out.puts "  #{row.fetch('id')}: #{format_authorities(row.fetch('authorities'))}"
       end
@@ -545,7 +590,9 @@ module AgentCodingTool
               "priority_rank" => priority.fetch(id),
               "execution_evidence" => status["execution_evidence"],
               "candidate_handoff" => status["candidate_handoff"],
-              "freshness" => next_freshness(status, tasks.fetch(id)) }
+              "freshness" => next_freshness(status, tasks.fetch(id)) }.merge(
+                status.fetch("status") == "ICEBOX" ? { "icebox" => status.fetch("state").fetch("icebox"),
+                                                        "lifecycle_status" => status.fetch("lifecycle_status") } : {})
             row["external_activity"] = status["external_activity"] if status["external_activity"]
             row["external_conflicts"] = status["external_conflicts"] if status["external_conflicts"]
             row
@@ -672,7 +719,8 @@ module AgentCodingTool
     # Returns a new bucket-ordered array. Only READY receives ACT preference,
     # descending unlock/dependency metrics, natural numeric ID ties and finally
     # full-ID ties, then the one-time CL-WLO-01 exception within READY CL slots.
-    # Other lifecycle ordering and input rows are preserved.
+    # Icebox sorts last with natural ID ties; other lifecycle ordering and input
+    # rows are preserved. Missing row/metric fields raise KeyError.
     def sort_statuses(statuses, completion_metrics)
       ranked = statuses.each_with_index
               .sort_by do |item, index|
@@ -688,7 +736,8 @@ module AgentCodingTool
                              end
                 complete_rank = status == "COMPLETE" ? completion_rank(item) : [0, 0]
                 blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
-                [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, index]
+                icebox_rank = status == "ICEBOX" ? [natural_task_id(id), id] : [[], ""]
+                [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, *icebox_rank, index]
               end
               .map(&:first)
       prioritize_batch39_cleanup(ranked)
@@ -858,6 +907,8 @@ module AgentCodingTool
       end
     end
 
+    # Returns the display separator bucket for an effective status, including
+    # the final Icebox group. Unknown labels retain the exceptional-state bucket.
     def status_bucket(status)
       case status
       when "COMPLETE" then 0
@@ -866,6 +917,7 @@ module AgentCodingTool
       when "IN_FLIGHT" then 3
       when "READY" then 4
       when "BLOCKED" then 6
+      when "ICEBOX" then 7
       else 5
       end
     end
@@ -887,6 +939,8 @@ module AgentCodingTool
       end
     end
 
+    # Prints one width-aware dashboard row plus its relevant evidence. Accepts
+    # an effective status and metrics; missing fields/output errors propagate.
     def display_dashboard_item(item, completion_metrics, next_id:)
       id = item.fetch("id")
       status = item.fetch("status")
@@ -895,6 +949,7 @@ module AgentCodingTool
       title = normalize_dashboard_text(item.fetch("title"))
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
       display_external_activity(item)
+      display_icebox_details(item) if status == "ICEBOX"
 
       if status == "IN_FLIGHT"
         @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
@@ -928,8 +983,11 @@ module AgentCodingTool
       @out.puts compact_detail_line("resume", "act prepare #{item.fetch('id')} --retry")
     end
 
+    # Prints full task details, including designation/restoration and lifecycle
+    # evidence. Missing fields and output errors propagate; no state is changed.
     def display_explicit_details(item)
       display_external_activity(item)
+      display_icebox_details(item) if item.fetch("status") == "ICEBOX"
       @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]
       display_parallel_authorization(item)
       if recorded_retryable_outcome?(item)
@@ -959,6 +1017,16 @@ module AgentCodingTool
       if item["external_conflicts"]
         @out.puts "    External conflict: #{item.fetch('external_conflicts').map { |row| row.fetch('task_id') }.uniq.join(', ')}; new execution blocked"
       end
+    end
+
+    # Shows persisted scheduling evidence separately from underlying lifecycle.
+    # Expects a validated Icebox row; output errors and missing fields propagate.
+    def display_icebox_details(item)
+      designation = item.fetch("state").fetch("icebox")
+      puts_full_detail("icebox since", designation.fetch("at"))
+      puts_full_detail("icebox reason", designation.fetch("reason")) if designation.key?("reason")
+      puts_full_detail("underlying lifecycle", item.fetch("lifecycle_status"))
+      puts_full_detail("restore", "act unicebox #{item.fetch('id')}")
     end
 
     # Renders recorded execution/candidate evidence; compact dashboards truncate
@@ -1177,7 +1245,7 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool prepare TASK [--retry]" unless id && argv.empty?
 
-      prepared = with_attempt_lock(id) { coordinator.prepare(id, retry_result: retry_result) }
+      prepared = coordinator.prepare(id, retry_result: retry_result)
       state = prepared.fetch("state")
       @out.puts "Prepared #{id} against authoritative pushed heads:"
       state.fetch("snapshot").each do |name, repo|
@@ -1223,9 +1291,7 @@ module AgentCodingTool
         raise Error, "usage: agent-coding-tool start TASK [--allow-write-collision]"
       end
 
-      state = coordinator.external_activity.with_lock do
-        coordinator.start(id, allow_write_collision: allow_write_collision)
-      end
+      state = coordinator.start(id, allow_write_collision: allow_write_collision)
       if (overlap = state["write_overlap"])
         overlap.fetch("conflicts").each do |row|
           @out.puts "WARNING: #{id} overlaps #{row.fetch('task_id')} (#{row.fetch('status')}) on " \
@@ -1281,29 +1347,21 @@ module AgentCodingTool
         raise Error, "usage: #{usage}"
       end
 
-      with_attempt_lock(id) { coordinator.record(id, outcome: outcome, **options) }
+      coordinator.record(id, outcome: outcome, **options)
       @out.puts(success ? success.call(id, outcome) : "Recorded #{id}: #{outcome}")
     end
 
+    # Resets ordinary runtime state or explains the deferred no-op. Invalid
+    # arguments/state/locks raise Error; output identifies retained scheduling.
     def reset_command(argv)
       id = argv.shift
       raise Error, "usage: agent-coding-tool reset TASK" unless id && argv.empty?
 
-      coordinator.external_activity.with_lock { coordinator.reset(id) }
-      @out.puts "Reset #{id} runtime state"
-    end
-
-    # Serializes managed-attempt preparation/outcomes with launch and closeout.
-    # Tasks without run evidence also serialize external mutations. A busy or
-    # foreign shared reservation lock refuses before prompt/state writes.
-    def with_attempt_lock(id)
-      raise InvalidTask, "unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
-      coordinator.external_activity.with_lock do
-        task_root = File.join("#{File.realpath(@data_root)}-runs", id)
-        if File.exist?(task_root) || File.symlink?(task_root)
-          AttemptRecovery.new(data_root: @data_root).inspect(id)
-        end
-        yield
+      state = coordinator.reset(id)
+      if state.is_a?(Hash) && state.key?("icebox")
+        @out.puts "#{id}: ICEBOX and runtime state retained; use act unicebox #{id} before resetting"
+      else
+        @out.puts "Reset #{id} runtime state"
       end
     end
 
@@ -1321,6 +1379,11 @@ module AgentCodingTool
           status [TASK] [--all | --active]
           status --fam FAMILY [--all | --active]
                               show the complete READY family; global NEXT only
+          status --icebox [--fam FAMILY] [--all | --active]
+                              show only deferred work; --all/--fam include Icebox last
+          icebox TASK [--reason TEXT]
+                              defer unstarted READY work; identical reason is a no-op
+          unicebox TASK       explicitly restore normal eligibility computation
           next [--json]       advise safe parallel work without changing state
           external report TASK --reporter TEXT --kind TEXT [--identifier TEXT]
                               [--scope-complete] [--write-repository REMOTE,BRANCH]
@@ -1366,6 +1429,14 @@ module AgentCodingTool
           Summaries count total/hidden READY. --all, --fam and TASK do not compress.
           --fam is exact and exclusive with TASK; --all and --active conflict.
           The recent COMPLETE window is global, before family filtering.
+          Default/--active hide Icebox rows except open external reports, then count all.
+          Icebox is scheduling, not an outcome; it never receives a start recommendation.
+          Only unstarted READY may enter. Prepare/start/launch/record refuse it;
+          reset retains it. All writers share the private launch reservation lock.
+          State YAML icebox: {at: ISO-8601 string, reason: optional string} is
+          atomically replaced; unicebox removes only that mapping. Different
+          repeated reasons require unicebox first; identical repeats keep time.
+          --icebox may combine with --fam/--all/--active, never TASK.
 
         Outcomes:
           candidate_complete  worker result is ready for human application/review

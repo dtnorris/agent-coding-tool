@@ -368,7 +368,8 @@ class CLITest < Minitest::Test
       "P1: PREPARED — Prepared task",
       "",
       "B1: BLOCKED — Blocked task",
-      "    waiting on: R1"
+      "    waiting on: R1",
+      "0 Icebox tasks"
     ], lines
   end
 
@@ -397,7 +398,8 @@ class CLITest < Minitest::Test
       "R1: READY — Ready one",
       "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
       "R2: READY — Ready two",
-      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel"
+      "    downstream: 0 levels / 0 tasks; unlocks: 0 tasks / 0 parallel",
+      "0 Icebox tasks"
     ], lines
   end
 
@@ -429,7 +431,8 @@ class CLITest < Minitest::Test
       "    unlocks: 0 tasks / 0 parallel",
       "",
       "B1: BLOCKED — A blocked title with enou...",
-      "    waiting on: R1, R2, R3, R4"
+      "    waiting on: R1, R2, R3, R4",
+      "0 Icebox tasks"
     ], out.string.lines.map(&:chomp)
     in_flight_line = out.string.lines.find { |line| line.start_with?("F1: IN_FLIGHT") }
     assert_equal 1, out.string.lines.count { |line| line.start_with?("F1: IN_FLIGHT") }
@@ -508,8 +511,9 @@ class CLITest < Minitest::Test
       cli.instance_variable_set(:@coordinator, fake_status_coordinator([long_status]))
 
       assert_equal 0, cli.run(%w[status])
-      assert_equal 1, out.string.lines.length
-      headline = out.string.chomp
+      assert_equal 2, out.string.lines.length
+      assert_equal "0 Icebox tasks\n", out.string.lines.last
+      headline = out.string.lines.first.chomp
       assert headline.end_with?("...")
       assert_operator visible_width(headline), :<=, width
       headline
@@ -522,7 +526,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 80)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([fitting]))
     assert_equal 0, cli.run(%w[status])
-    assert_equal "S1: STALE — Short title\n", out.string
+    assert_equal "S1: STALE — Short title\n0 Icebox tasks\n", out.string
     refute_includes out.string, "..."
   end
 
@@ -634,7 +638,8 @@ class CLITest < Minitest::Test
       assert_equal 0, cli.run(%w[status])
 
       assert_operator visible_width(out.string.lines.first.chomp), :<=, width
-      out.string.lines.map(&:chomp).last(3).each do |line|
+      assert_equal "0 Icebox tasks\n", out.string.lines.last
+      out.string.lines.map(&:chomp)[1, 3].each do |line|
         assert_operator visible_width(line), :<=, width
       end
     end
@@ -713,9 +718,10 @@ class CLITest < Minitest::Test
 
     assert_equal 0, plain_cli.run(%w[status])
     assert_equal 0, color_cli.run(%w[status])
-    assert_equal 1, plain.string.lines.length
-    assert plain.string.chomp.end_with?("...")
-    assert_operator visible_width(plain.string.chomp), :<=, 36
+    assert_equal 2, plain.string.lines.length
+    assert_equal "0 Icebox tasks\n", plain.string.lines.last
+    assert plain.string.lines.first.chomp.end_with?("...")
+    assert_operator visible_width(plain.string.lines.first.chomp), :<=, 36
     assert_includes tty.string, "\e[36mIN_FLIGHT\e[0m"
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
@@ -731,7 +737,7 @@ class CLITest < Minitest::Test
     cli.instance_variable_set(:@coordinator, coordinator)
 
     assert_equal 0, cli.run(%w[status])
-    assert_equal ["F1: IN_FL..."], out.string.lines.map(&:chomp)
+    assert_equal ["F1: IN_FL...", "0 Icebox tasks"], out.string.lines.map(&:chomp)
   end
 
   def test_status_uses_columns_for_non_tty_output_and_honors_no_color
@@ -752,7 +758,8 @@ class CLITest < Minitest::Test
       "K1: CANDIDATE — A candidate tit...",
       "    downstream: 0 levels / 0",
       "    tasks; unlocks: 0 tasks / 0",
-      "    parallel"
+      "    parallel",
+      "0 Icebox tasks"
     ], out.string.lines.map(&:chomp)
   ensure
     previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
@@ -942,7 +949,8 @@ class CLITest < Minitest::Test
     assert_equal [
       "F1: IN_FLIGHT — Running with refresh",
       "    read-only refresh/reconcile: af-data-pipeline, af-workloads",
-      "F2: IN_FLIGHT — Running without refresh"
+      "F2: IN_FLIGHT — Running without refresh",
+      "0 Icebox tasks"
     ], out.string.lines.map(&:chomp)
   end
 

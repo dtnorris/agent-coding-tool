@@ -37,20 +37,17 @@ module AgentCodingTool
       @overlap_identity = nil
       verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
       verifier.send(:safe_root!)
-      path = verifier.send(:external_activity).reservation_path
-      owned_lock = reservation_lock || File.open(path, File::RDWR | File::CREAT | File::NOFOLLOW, 0o600)
-      begin
-        unless owned_lock.stat.ino == File.stat(path).ino && owned_lock.stat.dev == File.stat(path).dev &&
-               owned_lock.flock(File::LOCK_EX | File::LOCK_NB)
-          raise InvalidState, "delivery: another launch holds the reservation lock"
+      ReservationLock.synchronize(@data_root, held: reservation_lock) do |lock|
+        @reservation_lock = lock
+        begin
+          verify_overlap!(id)
+          File.open(File.join(run_dir, "delivery.lock"), File::RDWR | File::CREAT, 0o600) do |delivery_lock|
+            raise InvalidState, "delivery: another delivery holds lock" unless delivery_lock.flock(File::LOCK_EX | File::LOCK_NB)
+            deliver_locked(id, run_dir)
+          end
+        ensure
+          @reservation_lock = nil
         end
-        verify_overlap!(id)
-        File.open(File.join(run_dir, "delivery.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-          raise InvalidState, "delivery: another delivery holds lock" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-          deliver_locked(id, run_dir)
-        end
-      ensure
-        owned_lock.close unless reservation_lock
       end
     end
 
@@ -142,6 +139,8 @@ module AgentCodingTool
       raise InvalidState, "delivery: malformed trusted validation contract"
     end
 
+    # Delivers the specified host run within the caller's reservation, passing
+    # that lock through the result write. Returns details or raises on invalid evidence.
     def deliver_locked(id, run_dir)
       report_path = File.join(run_dir, "handoff.json")
       raise InvalidState, "delivery: foreign handoff" if File.symlink?(report_path)
@@ -154,7 +153,7 @@ module AgentCodingTool
       verify_worker_artifacts!(report, run_dir)
       if report.fetch("writable_repositories", [report["writable_repository"]]).length > 1
         return MultiDeliveryManager.new(data_root: @data_root, coordinator: @coordinator,
-                                        provider: @provider, guard: @guard).deliver_multi_locked(id, run_dir, report)
+                                        provider: @provider, guard: @guard).deliver_multi_locked(id, run_dir, report, reservation_lock: @reservation_lock)
       end
       contract, contract_sha = contract!(id)
       name = report.fetch("writable_repository")
@@ -275,6 +274,7 @@ module AgentCodingTool
       state = StateStore.new(File.join(@data_root, "state")).load(id)
       if !state["result"] && state["started_at"]
         @coordinator.record(id, outcome: "candidate_complete", summary: "Verified draft PR #{details.fetch('pr').fetch('url')}",
+                            reservation_lock: @reservation_lock,
                             artifact: details.fetch("pr").fetch("url"),
                             tests: details.fetch("commands").map { |c| "#{c.fetch('argv').join(' ')}: exit 0" })
       elsif state.dig("result", "outcome") != "candidate_complete" ||

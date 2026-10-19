@@ -273,11 +273,12 @@ class ParallelDeliveryTest < Minitest::Test
       File.open(File.join("#{@data}-runs", "launch.lock"), File::RDWR) do |lock|
         assert lock.flock(File::LOCK_EX | File::LOCK_NB)
         error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
-        assert_match(/another launch holds the reservation lock/, error.message)
+        assert_match(/reservation lock: launch\/recovery reservation busy/, error.message)
       end
       assert_equal candidates, candidate_bytes(candidate_paths)
       write_task(@data, id: "EXTERNAL", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       @coordinator.prepare("EXTERNAL")
+      external_state = File.binread(@store.state_path("EXTERNAL"))
       original = manager.method(:run_command!)
       coordinator = @coordinator
       manager.define_singleton_method(:run_command!) do |*args|
@@ -286,7 +287,11 @@ class ParallelDeliveryTest < Minitest::Test
         result
       end
       error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
-      assert_match(/manual worker isolation and activity are unverified/, error.message)
+      # Concurrent starts fail at the reservation; the separate manual-sibling
+      # negative control still checks workers already in flight before delivery.
+      assert_equal "reservation lock: launch/recovery reservation busy; retry", error.message
+      assert_equal external_state, File.binread(@store.state_path("EXTERNAL"))
+      assert_equal "PREPARED", @coordinator.status("EXTERNAL").fetch("status")
       assert_empty provider.pushes
       assert_empty provider.refs
       assert_empty provider.prs

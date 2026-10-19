@@ -290,7 +290,66 @@ only in an eligible context; ending cannot resolve STALE preparation, legacy
 liveness uncertainty or historical closeout blockers. David retains integration
 and final acceptance authority.
 
-`bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active]`
+Icebox tasks remain in `facts.tasks` with effective `status: "ICEBOX"` and
+the additive `icebox` mapping and `lifecycle_status` string (`READY` or
+`BLOCKED`). These fields preserve the designation and underlying eligibility
+without changing existing v0.1 field types or meanings. No start or manual
+parallel recommendation includes them. Deferral is not completion and grants
+no dependency unlock credit; an iceboxed prerequisite remains named in its
+dependent's blocker diagnosis.
+
+`bin/agent-coding-tool icebox TASK [--reason TEXT]`
+
+Intentionally defers worthwhile but deprioritized, unstarted READY work.
+Icebox is an operator scheduling designation, separate from execution
+lifecycle and recorded outcomes. A reason is optional. PREPARED, IN_FLIGHT,
+CANDIDATE/STALE_CANDIDATE, STALE, terminal and dependency-BLOCKED work cannot
+initially enter. Partial preparation, retained prompt, checkpoint, result or
+private attempt evidence also refuses entry even when a snapshot is missing.
+Task definitions, dependencies and history are never rewritten to make work
+eligible. Unknown IDs and malformed/conflicting state fail with diagnostics.
+
+The optional `icebox` mapping lives in the existing `state/TASK.yml`:
+
+```yaml
+icebox:
+  at: '2026-10-18T12:00:00Z'
+  reason: Revisit after profiling
+```
+
+`at` must be an ISO 8601 timestamp string including time and timezone; `reason`,
+when present, must be a string. Null, scalar/list mappings, unknown keys and
+invalid timestamps/types are rejected. Legacy files without `icebox` keep
+ordinary behavior; unrelated compatible metadata is retained. Identical
+repetitions do not write state or change the original timestamp. A different
+reason requires explicit `unicebox`, followed by a new deferral.
+
+`bin/agent-coding-tool unicebox TASK`
+
+Removes only `icebox`; repeated restoration is a no-op. Eligibility is computed
+again from actual lifecycle, dependencies and freshness. Dependency changes
+while deferred remain visible as underlying blockers and may prevent READY
+after restoration. Explicit `prepare`, automatic `launch`, manual `start`,
+`record`, `received` and `finish` refuse designated work. `prepare --retry`
+cannot restore it. `reset` is a no-op for a deferred task, retaining all state;
+only explicit restoration permits lifecycle entry.
+
+Scheduling mutations, preparation, starts and outcomes serialize on the same
+private `launch.lock`, including first preparation and direct Coordinator API
+calls. They reread state under the lock; competing operations refuse before
+mutation/handoff and may be retried after inspection. Launch passes its held
+lock through preparation/start, avoiding recursive locking. Unsafe/foreign or
+symlinked reservation paths refuse. This preserves existing execution,
+checkpoint, collision, recovery and human-review gates.
+
+StateStore uses its existing same-directory atomic replacement. Failures before
+rename leave the old state intact; a directory-sync failure after rename reports
+that state **was replaced** with crash durability unconfirmed. Inspect state
+before retrying an uncertain operation. No new lifecycle outcome is stored and
+no publication occurs implicitly; normal explicit ACTD publication selects the
+existing state file.
+
+`bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox]`
 
 Shows effective task state. The default dashboard includes active work with
 READY compression as described below, the three easiest blocked tasks, and the five most recently
@@ -302,6 +361,27 @@ task with the same COMPLETE ordering, and `--active` excludes every completed
 task while retaining the three-blocker dashboard limit. The two options are
 mutually exclusive. Explicit `status TASK` lookup always shows the named task
 without compression or a NEXT marker.
+
+Default and `--active` dashboards hide individual Icebox rows and exclude them
+from READY/active recommendation counts. An open external observation keeps its
+Icebox row visible, including its unverified execution and unknown liveness
+qualifiers. Reporting or ending external work never removes the Icebox
+designation; `unicebox` remains explicit. Both facts appear together in `next`
+and its JSON inventory, without recommending the deferred task. Exactly one final line counts the
+full Icebox inventory before READY compression: `0 Icebox tasks`,
+`1 Icebox task from families (TST)`, or
+`8 Icebox tasks from families (ACT, CL, FO, TST)`. Family names use the same
+first-hyphen-prefix rule below, in deterministic lexical order. The count stays
+on one readable line in non-TTY/narrow output (it may exceed a very narrow
+terminal, like an intact drill-down command).
+
+`status TASK` shows the designation timestamp, optional reason, underlying
+lifecycle/blocker and `act unicebox TASK`. `status --icebox` lists only deferred
+tasks; it may combine with `--fam`, `--all` or `--active`, but not TASK.
+`--all` and explicit family views include full Icebox rows as the very last
+status group, after BLOCKED, rather than substituting the compact footer.
+Icebox rows use natural task-ID ties and receive no NEXT marker or READY
+priority promotion. All other filtering/compression rules remain as below.
 
 `act stat --fam CL` (`bin/agent-coding-tool status --fam CL`) shows all READY
 work in the exact `CL` family without compression, plus that family's ordinary
@@ -346,7 +426,7 @@ than the terminal can overflow just like other unbreakable detail tokens.
 
 Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`,
 `NEEDS_JUDGMENT`, `IN_FLIGHT`, `READY`, then other active or exceptional
-states, with `BLOCKED` last. Within READY only, ACT-family work ranks ahead
+states, then `BLOCKED`, with `ICEBOX` last when explicitly included. Within READY only, ACT-family work ranks ahead
 of all other families. Each tier retains descending immediate collision-aware
 parallel unlock width, immediate unlock count, longest downstream dependency
 path, then distinct downstream task count. Genuine ties use natural task-ID
@@ -1008,7 +1088,8 @@ that moment.
 `bin/agent-coding-tool reset TASK`
 
 Clears runtime state for a task, including the in-flight marker. The task
-definition is untouched.
+definition is untouched. A deferred task retains its entire state until explicit
+`unicebox`; reset never silently removes scheduling intent.
 
 `bin/agent-coding-tool publish [TASK | --all] [--dry-run]`
 
@@ -1190,8 +1271,8 @@ The test commands have distinct contracts:
 | `bundle exec rake` | Validate configured ACTD YAML, then enforce the full `test:all` aggregate. |
 | `bundle exec rake test` | Fast `test/**/*_test.rb` selection only, without ACTD YAML validation or native integrations. |
 | `bundle exec rake test:git_contract` | Required Git-contract inventory and strict real-Git comparison. |
-| `bundle exec rake test:integration` | All seven required offline native Git suites, in separate Ruby processes. |
-| `bundle exec rake test:all` | Git contracts, seven native integrations and verified default test coverage; missing or extra cases fail closed. |
+| `bundle exec rake test:integration` | All eight required offline native Git suites, in separate Ruby processes. |
+| `bundle exec rake test:all` | Git contracts, eight native integrations and verified default test coverage; missing or extra cases fail closed. |
 
 The default `rake` command validates ACTD YAML before the full required aggregate.
 The standalone fast `test` command does not establish complete acceptance.
@@ -1205,7 +1286,7 @@ gate when changing Git staging, delivery, checkpoint or retry behavior:
 bundle exec rake test:integration
 ```
 
-The seven required suites can also be run individually for diagnosis:
+The eight required suites can also be run individually for diagnosis:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
@@ -1215,6 +1296,7 @@ ruby -Ilib:test test/integration/checkpoint_git_integration.rb
 ruby -Ilib:test test/integration/attempt_retry_git_integration.rb
 ruby -Ilib:test test/integration/manual_parallel_launch_git_integration.rb
 ruby -Ilib:test test/integration/parallel_delivery_git_integration.rb
+ruby -Ilib:test test/integration/icebox_git_integration.rb
 ```
 
 The retry integration exercises cold public CLI handoffs, native Git ownership,

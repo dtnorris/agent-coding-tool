@@ -186,7 +186,7 @@ class ParallelLaunchTest < Minitest::Test
       File.open(File.join(root, "launch.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
         assert lock.flock(File::LOCK_EX | File::LOCK_NB)
         assert_equal 2, cli.run(%w[start T])
-        assert_match(/reservation lock/, err.string)
+        assert_match(/reservation lock: launch\/recovery reservation busy/, err.string)
         refute @store.load("T")["started_at"]
       end
       assert_equal 0, cli.run(%w[start T])

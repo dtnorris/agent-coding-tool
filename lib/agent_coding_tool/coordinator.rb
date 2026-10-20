@@ -681,6 +681,21 @@ module AgentCodingTool
       reason = "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: #{refresh.join(', ')}" unless refresh.empty?
       reason = "pushed branch changed: #{stale.join(', ')}" unless stale.empty?
       status = status_hash(label, task, state, reason)
+      # Lifecycle is recorded evidence, independent of effective eligibility.
+      status["lifecycle_status"] = outcome == "candidate_complete" ? "CANDIDATE" : state["started_at"] ? "IN_FLIGHT" : "PREPARED"
+      unless stale.empty?
+        status["writable_source_changes"] = stale.filter_map do |name|
+          previous = snapshot[name]
+          next unless previous
+
+          source_task = task.merge("repositories" => task.fetch("repositories").slice(name))
+          validate_prepared_provenance!([{ "pending" => { "task" => source_task, "snapshot" => snapshot } }])
+          validate_freshness!(freshness_references(source_task, snapshot), pushed_heads)
+          { "repository" => name, "remote_url" => previous.fetch("remote_url"),
+            "branch" => previous.fetch("branch"), "prepared_sha" => previous.fetch("pushed_sha"),
+            "observed_sha" => pushed_heads.fetch(previous.values_at("remote_url", "branch")) }
+        end
+      end
       if outcome == "candidate_complete"
         delivery = recorded_candidate_delivery(task.fetch("id"), state)
         status["candidate_handoff"] = {

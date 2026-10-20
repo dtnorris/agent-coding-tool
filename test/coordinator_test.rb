@@ -83,6 +83,7 @@ class CoordinatorTest < Minitest::Test
         refute result.key?("started_at")
         label = outcome == "candidate_complete" ? "CANDIDATE" : outcome.upcase
         assert_equal label, coordinator.status("T1").fetch("status")
+        refute_equal "IN_FLIGHT", coordinator.status("T1")["lifecycle_status"]
         error = assert_raises(AgentCodingTool::InvalidState) { coordinator.start("T1") }
         assert_match(outcome == "complete" ? /already complete/ : /use prepare --retry/, error.message)
         assert_equal result, coordinator.status("T1").fetch("state")
@@ -148,12 +149,19 @@ class CoordinatorTest < Minitest::Test
         heads["reference"] = "c" * 40
         status = coordinator.status("T1")
         assert_equal "IN_FLIGHT", status.fetch("status")
+        assert_equal "IN_FLIGHT", status.fetch("lifecycle_status")
+        refute status.key?("writable_source_changes")
         assert_includes status.fetch("reason"), "refresh and reconcile materially affected findings before finalizing: reference"
         assert_equal started, status.fetch("state")
         next unless mixed
 
         heads["alpha"] = "d" * 40
-        assert_equal "STALE", coordinator.status("T1").fetch("status")
+        status = coordinator.status("T1")
+        assert_equal "STALE", status.fetch("status")
+        assert_equal "IN_FLIGHT", status.fetch("lifecycle_status")
+        assert_equal [{ "repository" => "alpha", "remote_url" => "git@github.com:example/alpha.git",
+                        "branch" => "main", "prepared_sha" => "a" * 40, "observed_sha" => "d" * 40 }],
+                     status.fetch("writable_source_changes")
         assert_equal "pushed branch changed: alpha", coordinator.status("T1").fetch("reason")
         assert_equal started, coordinator.status("T1").fetch("state")
       end
@@ -326,6 +334,7 @@ class CoordinatorTest < Minitest::Test
       status = coordinator.status("T1")
       assert_equal "STALE", status.fetch("status")
       assert_match(/alpha/, status.fetch("reason"))
+      assert_equal "PREPARED", status.fetch("lifecycle_status")
     end
   end
 
@@ -354,6 +363,7 @@ class CoordinatorTest < Minitest::Test
 
       heads["alpha"] = "c" * 40
       assert_equal "STALE_CANDIDATE", coordinator.status("T1").fetch("status")
+      assert_equal "CANDIDATE", coordinator.status("T1").fetch("lifecycle_status")
     end
   end
 

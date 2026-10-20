@@ -147,6 +147,83 @@ class StatusNextSummaryTest < Minitest::Test
     end
   end
 
+  # Drives real CLI preparation/start/status/next handoffs with only pushed Git
+  # observations faked. Checks lifecycle, multiple identities, narrow/color output
+  # and byte-preserved persisted evidence; unexpected command failures fail tests.
+  def test_started_stale_source_is_visible_without_changing_eligibility_or_state
+    with_workspace do |dir|
+      write_task(dir, id: "A", repositories: repo("alpha").merge(repo("beta")))
+      heads = { "alpha" => "a" * 40, "beta" => "c" * 40 }
+      inspector = ProbeInspector.new(heads:)
+      coordinator = coordinator_for_inspector(dir, inspector)
+      output_for(dir, coordinator, %w[prepare A])
+      output_for(dir, coordinator, %w[start A])
+      clean = output_for(dir, coordinator, %w[status A])
+      assert_match(/^A: IN_FLIGHT — Task$/, clean)
+      refute_includes clean, "STALE"
+
+      # Retained metadata need not be independently valid to prove status reads
+      # preserve its exact bytes. This is not host checkpoint verification.
+      store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+      state = store.load("A")
+      state["checkpoint"] = { "status" => "verified", "attempt" => "fixture" }
+      state["history"] = [{ "summary" => "prior evidence" }]
+      store.write("A", state)
+      before = Dir.glob(File.join(dir, "state", "**", "*")).select { |path| File.file?(path) }
+                  .to_h { |path| [path, File.binread(path)] }
+      heads.merge!("alpha" => "b" * 40, "beta" => "d" * 40)
+      inspector.reset_counts
+
+      [%w[status], %w[status --all], %w[status A]].each do |args|
+        output = output_for(dir, coordinator, args)
+        assert_match(/^A: IN_FLIGHT \(STALE\)/, output)
+        assert_includes output, "reconcile writable source and renew validation before delivery"
+        assert_includes output, "isolation unverified; liveness unknown"
+        %w[alpha beta].each do |name|
+          assert_includes output, "source #{name}: #{remote(name)} [main]"
+          assert_includes output, "prepared pushed: #{state.fetch('snapshot').fetch(name).fetch('pushed_sha')}"
+          assert_includes output, "current pushed:  #{heads.fetch(name)}"
+        end
+      end
+      assert_equal 3, inspector.head_batches.length
+      assert_empty inspector.snapshot_calls
+
+      previous = ENV.delete("NO_COLOR")
+      begin
+        [false, true].each do |no_color|
+          no_color ? ENV["NO_COLOR"] = "1" : ENV.delete("NO_COLOR")
+          [12, 20, 38, 80].each do |width|
+            output = output_for(dir, coordinator, %w[status], out: TTYOutput.new(width))
+            headline = output.lines.first.chomp
+            assert_operator AgentCodingTool::CLI.allocate.send(:display_width, headline), :<=, width
+            assert_includes output, "STALE: reconcile"
+            assert_includes output, "liveness unknown"
+            assert_includes output, "current pushed:  #{heads.fetch('beta')}"
+            if no_color
+              refute_match(/\e\[/, output)
+            elsif width == 80
+              assert_includes output, "\e[31mIN_FLIGHT (STALE)\e[0m"
+            end
+          end
+        end
+      ensure
+        previous ? ENV["NO_COLOR"] = previous : ENV.delete("NO_COLOR")
+      end
+
+      status = coordinator.status("A")
+      assert_equal "STALE", status.fetch("status")
+      assert_equal "IN_FLIGHT", status.fetch("lifecycle_status")
+      assert_equal %w[alpha beta], status.fetch("writable_source_changes").map { |row| row.fetch("repository") }
+      assert_includes output_for(dir, coordinator, %w[next]), "A (IN_FLIGHT (STALE))"
+      document = JSON.parse(output_for(dir, coordinator, %w[next --json]))
+      assert_empty document.dig("recommendations", "starts")
+      assert_empty document.dig("facts", "reservations")
+      assert_equal "STALE", document.dig("facts", "tasks", 0, "status")
+      assert_equal before, before.keys.to_h { |path| [path, File.binread(path)] }
+      assert_equal state, store.load("A")
+    end
+  end
+
   def test_width_color_no_color_and_explicit_status_behavior
     with_workspace do |dir|
       write_task(dir, id: "A")

@@ -1,5 +1,14 @@
 {
   "default": {
+    "test/launcher_fixture_test.rb": [
+      "LauncherFixtureTest#test_scoped_fixture_environment_permissions_and_retention",
+      "LauncherFixtureTest#test_foreign_container_refuses_without_repair",
+      "LauncherFixtureTest#test_protected_paths_cannot_be_inside_fixture_container",
+      "LauncherFixtureTest#test_occupied_invocation_directory_is_never_reused",
+      "LauncherFixtureTest#test_denied_fixture_probe_refuses_worker",
+      "LauncherFixtureTest#test_root_identity_change_before_reservation_refuses_worker",
+      "LauncherFixtureTest#test_worker_failure_retains_fixture_and_evidence"
+    ],
     "test/icebox_test.rb": [
       "IceboxTest#test_idempotency_optional_reason_and_metadata_preservation",
       "IceboxTest#test_strict_mapping_validation_and_legacy_state",

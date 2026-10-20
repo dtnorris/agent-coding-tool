@@ -76,6 +76,7 @@ module LauncherSupport
     File.write(@@fake_executable, <<~RUBY)
       #!#{RbConfig.ruby}
       require 'json'
+      require 'tmpdir'
       if ARGV == ['--version']
         puts 'codex-cli 0.162.1'
         exit
@@ -98,8 +99,9 @@ module LauncherSupport
         settings_root = Dir.pwd
         settings_root = File.dirname(settings_root) until File.file?(File.join(settings_root, 'fake-settings.json')) || settings_root == File.dirname(settings_root)
         settings = JSON.parse(File.read(File.join(settings_root, 'fake-settings.json')))
+        extra_roots = JSON.parse(ARGV.find { |arg| arg.start_with?('sandbox_workspace_write.writable_roots=') }.split('=', 2).last)
         targets.each do |target|
-          if settings.fetch('mode') == 'leaky' || (target.start_with?(Dir.pwd + '/') && !target.include?('/.git/'))
+          if settings.fetch('mode') == 'leaky' || ([Dir.pwd] + extra_roots).any? { |root| target.start_with?(root + '/') && !target.include?('/.git/') }
             File.write(target, 'breach')
             puts '1'
           else
@@ -131,6 +133,16 @@ module LauncherSupport
       File.binwrite(File.join(root, 'stdin'), input)
       File.write(File.join(root, 'argv'), JSON.generate(ARGV))
       File.write(File.join(root, 'envkeys'), JSON.generate(ENV.keys))
+      Dir.mktmpdir('worker-fixture-') do |directory|
+        temporary = File.join(directory, 'file')
+        File.write(temporary, 'created')
+        abort 'fixture read failed' unless File.read(temporary) == 'created'
+        File.write(temporary, 'updated')
+        abort 'fixture write failed' unless File.read(temporary) == 'updated'
+        File.unlink(temporary)
+        File.write(File.join(root, 'worker-temp'), JSON.generate('TMPDIR' => ENV.fetch('TMPDIR'), 'directory' => directory))
+      end
+      File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
       File.write('worker-change.txt', 'worker')
       puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
       puts 'progress'
@@ -246,8 +258,13 @@ module LauncherSupport
           command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&
           !command.include?('--full-auto')
         paths = command.drop(command.index('act-probe') + 1)
+        @observed_sandbox_roots = JSON.parse(command.find { |arg| arg.start_with?('sandbox_workspace_write.writable_roots=') }.split('=', 2).last)
+        @observed_sandbox_tmpdir = env.fetch('TMPDIR')
         output = paths.map do |path|
-          allowed = @fake_mode == 'leaky' || path.start_with?(File.join(@root, 'worktrees', 'T', 'repo') + '/')
+          allowed = @fake_mode == 'leaky' ||
+            ([options.fetch(:chdir)] + @observed_sandbox_roots).any? { |root| path.start_with?(root + '/') }
+          allowed = false if @fake_mode == 'fixture_denied' && path.start_with?(env.fetch('TMPDIR') + '/')
+          allowed = true if @fake_mode == 'fixture_parent_leaky' && File.dirname(path) == File.dirname(env.fetch('TMPDIR'))
           File.write(path, 'breach') if allowed
           allowed ? "1\n" : "0\n"
         end.join
@@ -257,7 +274,7 @@ module LauncherSupport
     else
       raise "unexpected external command: #{command.inspect}" unless command.shift == 'git'
       if command == ['rev-parse', '--path-format=absolute', '--git-common-dir'] &&
-         [@ordinary, @dep_ordinary].compact.include?(options[:chdir])
+         ([@ordinary, @dep_ordinary] + @store.load('T').fetch('snapshot', {}).values.map { |repo| repo.fetch('path') }).compact.include?(options[:chdir])
         admin = File.join(@root, options.fetch(:chdir) == @ordinary ? 'admin' : 'admin-dep')
         FileUtils.mkdir_p(admin)
         return [admin, '', Status.new(true)]

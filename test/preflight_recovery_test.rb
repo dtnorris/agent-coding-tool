@@ -33,6 +33,9 @@ class PreflightRecoveryTest < Minitest::Test
     fixture(git: true) do
       report = failed_attempt
       path = report.fetch("workspace")
+      fixture_path = report.fetch("fixture").fetch("path")
+      File.binwrite(File.join(fixture_path, "retained.bin"), "\x00\xfffixture".b)
+      File.symlink(@data, File.join(fixture_path, "protected-link"))
       assert_equal "preflight_failed", report.fetch("status")
       refute @store.load("T")["started_at"]
       assert File.directory?(path)
@@ -43,6 +46,8 @@ class PreflightRecoveryTest < Minitest::Test
       assert_equal "failed", @store.load("T").dig("result", "outcome")
       assert_equal "preflight_abandoned", JSON.parse(File.binread(File.join(result.fetch("run_dir"), "handoff.json"))).fetch("status")
       assert File.file?(result.fetch("record_path"))
+      assert_equal "\x00\xfffixture".b, File.binread(File.join(fixture_path, "retained.bin"))
+      assert File.symlink?(File.join(fixture_path, "protected-link"))
       assert_equal result, recovery.abandon("T")
       assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T") }
       checkpoint = File.join("#{@data}-runs", "checkpoints", "NC-02D", "attempt")
@@ -51,6 +56,9 @@ class PreflightRecoveryTest < Minitest::Test
       Time.stub(:now, Time.now + 2) { @coordinator.prepare("T", retry_result: true) }
       write_fake("success")
       assert_equal 0, launcher.launch("T")
+      later = Dir.glob("#{@data}-runs/T/*/handoff.json").map { |record| JSON.parse(File.binread(record)) }.find { |record| record["attempt"] == 2 }
+      refute_equal fixture_path, later.fetch("fixture").fetch("path")
+      assert_equal "\x00\xfffixture".b, File.binread(File.join(fixture_path, "retained.bin"))
       assert_equal '{"preserved":true}', File.binread(File.join(checkpoint, "current.json"))
       @coordinator.record("T", outcome: "complete")
       cleanup = AgentCodingTool::CleanupManager.new(data_root: @data).preflight("T")

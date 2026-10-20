@@ -217,6 +217,7 @@ module AgentCodingTool
         verified_conflicts = current_conflicts
         @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") } +
           AttemptRecovery.new(data_root: @data_root).protected_paths(id, before_attempt: attempt)
+        provision_fixture!(inventory)
         sandbox_probe!(inventory, workspace, run_dir)
         heads = checked_status!(id, allow_write_collision: allow_write_collision)
         changed_write!(task, state, heads)
@@ -250,6 +251,7 @@ module AgentCodingTool
           File.binread(state.fetch("prompt_path")) == prompt && @coordinator.launch_prompt(id).b == prompt
         validate_authorities!(task, state)
         manager.inspect!
+        verify_fixture!(inventory)
         final_conflicts = reject_unknown_reservations!(id, bases,
           allow_write_collision: allow_write_collision, allow_manual_overlap: true)
         unless identity.call(final_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
@@ -678,14 +680,98 @@ module AgentCodingTool
       raise Error, "launch: Codex CLI missing; install/authenticate locally before launch"
     end
 
-    def worker_env
-      %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
+    # Returns the existing environment allowlist. Only execution/probing uses the
+    # recorded fixture TMPDIR; CLI authentication preflight keeps the host value.
+    def worker_env(fixture: false)
+      env = %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
+      env["TMPDIR"] = @report.fetch("fixture").fetch("path") if fixture
+      env
+    end
+
+    # Resolves existing ancestors as well as system aliases, including protected
+    # paths not created yet. Dangling symlinks raise rather than hide containment.
+    def fixture_canonical_path(path)
+      path = File.expand_path(path)
+      return File.realpath(path) if File.exist?(path) || File.symlink?(path)
+      File.join(fixture_canonical_path(File.dirname(path)), File.basename(path))
+    end
+
+    # Refuses symlinks anywhere and requires a private operator-owned directory.
+    # Optionally creates an absent container. Returns its inode identity;
+    # missing, foreign or permissive roots otherwise raise without repair.
+    def fixture_identity!(path, create: false)
+      cursor = path
+      loop do
+        raise InvalidState, "launch: symlinked fixture path: #{cursor}" if File.symlink?(cursor)
+        break if cursor == File.dirname(cursor)
+        cursor = File.dirname(cursor)
+      end
+      Dir.mkdir(path, 0o700) if create && !File.exist?(path)
+      stat = File.stat(path)
+      unless stat.directory? && stat.uid == Process.uid && (stat.mode & 0o077).zero?
+        raise InvalidState, "launch: fixture directory must be private and owned by the operator"
+      end
+      { "device" => stat.dev, "inode" => stat.ino, "uid" => stat.uid }
+    end
+
+    # Requires the entire fixture container to be disjoint from protected roots,
+    # including future evidence/validation and native Git administration. Returns
+    # the fixed sibling container; ambiguous paths or any overlap raise.
+    def fixture_container!(inventory)
+      container = "#{@data_root}-fixtures"
+      protected = [@source_root, @data_root, @run_root, "#{@data_root}-validation",
+                   Config.load(File.join(@data_root, "config.yml")).worktree_root,
+                   ENV.fetch("CODEX_HOME", File.join(ENV.fetch("HOME"), ".codex")),
+                   *(@parallel_roots || [])]
+      inventory.fetch("entries").each do |entry|
+        parent = entry.fetch("parent")
+        protected.concat([entry.fetch("path"), parent,
+                          git!("rev-parse", "--path-format=absolute", "--git-common-dir", chdir: parent)])
+        remote = entry.fetch("remote_url")
+        protected << remote if remote.start_with?("/")
+      end
+      protected.flat_map { |path| [WorktreeManager.canonical_system_path(path), fixture_canonical_path(path)] }.uniq.each do |path|
+        if container == path || container.start_with?("#{path}/") || path.start_with?("#{container}/")
+          raise InvalidState, "launch: fixture container overlaps protected path: #{path}"
+        end
+      end
+      container
+    end
+
+    # Exclusively creates a fresh per-invocation temporary root and records its
+    # ownership outside the writable subtree. Failures retain resources/evidence;
+    # no cleanup, adoption, chmod repair or reuse of an occupied child occurs.
+    def provision_fixture!(inventory)
+      container = fixture_container!(inventory)
+      container_identity = fixture_identity!(container, create: true)
+      invocation = @report.fetch("invocation_id")
+      raise InvalidState, "launch: invalid fixture invocation" unless invocation.match?(/\A[0-9a-f-]{36}\z/)
+      path = File.join(container, invocation)
+      @report["fixture"] = { "path" => path, "state" => "creating", "container_identity" => container_identity }
+      save_report
+      Dir.mkdir(path, 0o700)
+      @report.fetch("fixture").merge!(fixture_identity!(path)).merge!("state" => "ready")
+      save_report
+      verify_fixture!(inventory)
+    end
+
+    # Rechecks containment, permissions and recorded device/inode before handoff.
+    # A replaced, removed or damaged root blocks execution without deleting it.
+    def verify_fixture!(inventory)
+      container = fixture_container!(inventory)
+      fixture = @report.fetch("fixture")
+      unless fixture["state"] == "ready" &&
+             fixture["path"] == File.join(container, @report.fetch("invocation_id")) &&
+             fixture_identity!(container) == fixture.fetch("container_identity") &&
+             fixture_identity!(fixture.fetch("path")) == fixture.slice("device", "inode", "uid")
+        raise InvalidState, "launch: fixture directory identity changed; preserve and inspect"
+      end
     end
 
     def codex_command(workspace, model, reasoning, extra_roots: [])
       command = [@codex, "exec", "--ignore-user-config", "--ignore-rules", "--sandbox", "workspace-write",
                  "-c", "approval_policy=never", "-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"',
-                 "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(extra_roots)}",
+                 "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(extra_roots + [@report.fetch('fixture').fetch('path')])}",
                  "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                  "-c", "features.multi_agent=false", "--json", "--output-last-message", @report.fetch("final_path")]
       command += ["--model", model] if model
@@ -699,6 +785,7 @@ module AgentCodingTool
         "The exact ACT prompt above retains task authority. Writable worktrees: #{JSON.generate(workspaces)}. Original paths are observations, not writable roots.\n" \
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Concurrent ACT worktrees are outside this worker's writable sandbox: #{JSON.generate(@parallel_roots || [])}. Collision permission grants no integration authority.\n" \
+        "Temporary fixtures: #{JSON.generate(@report.fetch('fixture').fetch('path'))} (TMPDIR). Only this attempt's fixture directory is writable; it contains no private ACT evidence. Contents are retained for operator review.\n" \
         "#{notice}" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
@@ -708,6 +795,7 @@ module AgentCodingTool
     end
 
     def sandbox_probe!(inventory, workspace, run_dir)
+      verify_fixture!(inventory)
       platform = RbConfig::CONFIG.fetch("host_os").match?(/darwin/) ? "macos" :
                  RbConfig::CONFIG.fetch("host_os").match?(/linux/) ? "linux" : nil
       raise InvalidState, "launch: unsupported sandbox platform" unless platform
@@ -717,7 +805,9 @@ module AgentCodingTool
         !help.include?("--full-auto")
       marker = "ACT sandbox probe #{SecureRandom.hex(12)}"
       targets = [[File.join(run_dir, "sandbox-deny-#{SecureRandom.hex(6)}"), false]]
-      targets << [File.join(@data_root, ".act-probe-#{SecureRandom.hex(6)}"), false] if @manual_conflicts&.any?
+      targets << [File.join(@data_root, ".act-probe-#{SecureRandom.hex(6)}"), false]
+      targets << [File.join(@report.fetch("fixture").fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), true]
+      targets << [File.join("#{@data_root}-fixtures", ".act-probe-#{SecureRandom.hex(6)}"), false]
       inventory.fetch("entries").each do |entry|
         targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
         targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
@@ -743,10 +833,10 @@ module AgentCodingTool
         # prevents operator config from changing the probe's permissions.
         stdout, result = Dir.mktmpdir("act-sandbox-config-") do |isolated_home|
           output, _stderr, status = Open3.capture3(
-            worker_env.merge("CODEX_HOME" => isolated_home), @codex,
+            worker_env(fixture: true).merge("CODEX_HOME" => isolated_home), @codex,
             "-c", 'sandbox_mode="workspace-write"',
             "-c", "sandbox_workspace_write.network_access=false",
-            "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1))}",
+            "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1) + [@report.fetch('fixture').fetch('path')])}",
             "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
             "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
             "sandbox", "--",
@@ -830,7 +920,8 @@ module AgentCodingTool
           end
         end
         begin
-          pid = @spawner.call(worker_env, *command, chdir: @report.fetch("workspace"),
+          verify_fixture!(@report.fetch("worktrees"))
+          pid = @spawner.call(worker_env(fixture: true), *command, chdir: @report.fetch("workspace"),
                               in: input_r, out: stdout_w, err: stderr_w, pgroup: true, unsetenv_others: true)
         rescue SystemCallError => e
           @report.merge!("status" => "child_start_failed", "exit_status" => 127, "error" => e.message)

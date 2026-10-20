@@ -44,8 +44,9 @@ class ManualParallelNativeSandboxTest < Minitest::Test
         source_root: Dir.pwd, codex: File.realpath(codex))
       launcher.instance_variable_set(:@parallel_roots, [external, @data])
       launcher.instance_variable_set(:@manual_conflicts, [{ "task_id" => "A" }])
-      launcher.instance_variable_set(:@report, {})
+      launcher.instance_variable_set(:@report, { "invocation_id" => SecureRandom.uuid })
       launcher.instance_variable_set(:@report_path, File.join(run_dir, "handoff.json"))
+      launcher.send(:provision_fixture!, inventory)
       ready = File.join(@root, "ready")
       child = Process.spawn(RbConfig.ruby, "-e",
         'File.write(ARGV[1], "ready"); 200.times { File.write(ARGV[0], "active"); sleep 0.025 }',
@@ -56,8 +57,54 @@ class ManualParallelNativeSandboxTest < Minitest::Test
       Process.kill(0, child)
       assert_equal "\x00\xffpreserved".b, File.binread(File.join(external, "candidate.bin"))
       assert_equal "macos", JSON.parse(File.binread(File.join(run_dir, "handoff.json"))).fetch("sandbox_probe").fetch("platform")
+      assert_native_fixture_lifecycle(launcher, inventory, writer, run_dir, external)
     ensure
       Process.waitpid(child) if child
     end
+  end
+
+  # Host-only positive/negative gate using the production fixture environment
+  # and exact writable roots. No authentication or inference is performed.
+  def assert_native_fixture_lifecycle(launcher, inventory, writer, run_dir, external)
+    record = JSON.parse(File.binread(File.join(run_dir, "handoff.json")))
+    fixture_path = record.fetch("fixture").fetch("path")
+    roots = inventory.fetch("entries").select { |entry| entry["access"] == "write" }.map { |entry| entry.fetch("path") }.drop(1) + [fixture_path]
+    denied = [File.dirname(fixture_path), @data, run_dir, @ordinary,
+              File.join(@ordinary, ".git"), external,
+              inventory.fetch("entries").find { |entry| entry["access"] == "read_only" }.fetch("path"),
+              "/tmp", Dir.tmpdir].uniq.map { |root| File.join(root, "act-native-deny-#{SecureRandom.hex(8)}") }
+    script = <<~'SH'
+      set -eu
+      directory="$TMPDIR/native-fixture-$$"
+      mkdir "$directory"
+      printf created > "$directory/file"
+      test "$(cat "$directory/file")" = created
+      printf updated > "$directory/file"
+      test "$(cat "$directory/file")" = updated
+      rm "$directory/file"
+      rmdir "$directory"
+      for path; do
+        if mkdir "$path" 2>/dev/null; then
+          rmdir "$path"
+          exit 1
+        fi
+      done
+      printf 'fixture lifecycle verified\n'
+    SH
+    Dir.mktmpdir("act-native-config-") do |home|
+      output, error, status = Open3.capture3(
+        launcher.send(:worker_env, fixture: true).merge("CODEX_HOME" => home), ENV.fetch("ACT_NATIVE_CODEX"),
+        "-c", 'sandbox_mode="workspace-write"',
+        "-c", "sandbox_workspace_write.network_access=false",
+        "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(roots)}",
+        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+        "sandbox", "--", "/bin/sh", "-c", script, "act-fixture-native", *denied,
+        chdir: writer, unsetenv_others: true
+      )
+      assert status.success?, error
+      assert_equal "fixture lifecycle verified\n", output
+    end
+    denied.each { |path| refute File.exist?(path), "protected path created: #{path}" }
   end
 end

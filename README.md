@@ -619,11 +619,25 @@ installed `exec`/`login` help and requires the recognized
 ChatGPT login status. It strips API-key and other unneeded environment variables,
 ignores user configuration and execpolicy rules, fixes provider/login to
 OpenAI/ChatGPT, uses `--sandbox workspace-write -c approval_policy=never`,
-disables shell network and temporary writable roots, and disables multiple
+disables shell network and broad temporary writable roots, and disables multiple
 agents. It grants additional writable roots only for the task's other authorized
-writer worktrees. Before reserving ACT state, a no-inference Codex sandbox
+writer worktrees and one dedicated per-attempt fixture directory. The launcher
+creates `<ACTD>-fixtures/<invocation-id>` outside public source, with private
+operator-owned directories, and sets the worker's `TMPDIR` to that exact child.
+Only the child is authorized; its container, sibling attempts, host temporary
+directories and private ACT evidence remain outside the writable roots. Both
+temporary-root exclusion flags remain enabled. Symlinks, occupied invocation
+paths, unsafe ownership/permissions, identity changes and overlap with protected
+paths (including ACTD, evidence/checkpoints, validation contracts, authentication,
+original repositories and shared Git administration) block handoff without repair.
+The private handoff records the fixture path and directory identities. Fixture
+contents survive success, failure, interruption and retry for operator review;
+each invocation creates a fresh root, and existing worktree cleanup does not
+delete fixtures. Do not place private evidence in the writable fixture directory.
+Before reserving ACT state, a no-inference Codex sandbox
 probe uses flat `codex sandbox -- COMMAND` with an explicit
-`sandbox_mode="workspace-write"` override. It checks writable access in every writer and denied writes to ordinary
+`sandbox_mode="workspace-write"` override. It checks writable access in every writer
+and the fixture child, and denied writes to the fixture container, ACTD, ordinary
 checkouts, private evidence, each reader and shared Git administration.
 Other CLI versions, an unsupported probe or a failed boundary check
 blocks worker handoff. The operator's installed Mac CLI must pass this probe.
@@ -1276,6 +1290,11 @@ This runs the production sandbox write/deny probe against disposable writer,
 reader, ordinary checkout, private evidence, shared Git administration and a
 known active external workspace. It launches no model or implementation worker
 and contacts no inference service. Unsupported hosts fail rather than skip.
+It also requires native fixture create/read/write/delete through the production
+`TMPDIR`, and denies directory creation in the fixture container, private data,
+evidence, original checkout, reader, shared Git administration, external workspace
+and broad temporary roots. Run this command on the Mac host outside Codex;
+ordinary tests and sandbox simulations do not establish native acceptance.
 
 The test commands have distinct contracts:
 

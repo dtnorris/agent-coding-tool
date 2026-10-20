@@ -605,7 +605,7 @@ class LauncherTest < Minitest::Test
       assert_equal dep_remote, dependency.fetch("remote_url")
       assert_equal File.join(@root, "worktrees", "T", "dep"), dependency.fetch("path")
       assert_includes File.binread(report.fetch("stdin_path")), dependency.fetch("path")
-      assert_equal 6, report.fetch("sandbox_probe").fetch("protected_paths")
+      assert_equal 8, report.fetch("sandbox_probe").fetch("protected_paths")
       assert_equal "exited", report.fetch("status")
     end
   end
@@ -622,7 +622,7 @@ class LauncherTest < Minitest::Test
       task = YAML.safe_load_file(task_path)
       task.fetch("repositories")["other"] = { "access" => "write", "path" => other }
       File.write(task_path, YAML.dump(task))
-      assert_equal 0, launcher.launch("T")
+      assert_equal 0, launcher(real_sandbox_probe: true).launch("T")
       handoff = report
       entries = handoff.fetch("worktrees").fetch("entries")
       assert_equal %w[other repo], entries.select { |item| item["access"] == "write" }.map { |item| item["name"] }.sort
@@ -630,7 +630,7 @@ class LauncherTest < Minitest::Test
       assert_equal [@base, @base], entries.map { |item| item.fetch("base_sha") }
       secondary = File.join(@root, "worktrees", "T", "attempt-1", "other")
       command = JSON.parse(File.read(File.join(@root, "argv")))
-      assert_includes command, "sandbox_workspace_write.writable_roots=#{JSON.generate([secondary])}"
+      assert_includes command, "sandbox_workspace_write.writable_roots=#{JSON.generate([secondary, handoff.fetch('fixture').fetch('path')])}"
       assert_equal @base, git("rev-parse", "HEAD", chdir: secondary)
       assert_equal "act/T/attempt-1", git("branch", "--show-current", chdir: secondary)
       assert_equal "origin", git("remote", chdir: other)

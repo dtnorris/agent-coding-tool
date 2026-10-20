@@ -136,8 +136,9 @@ class AttemptRecoveryTest < Minitest::Test
       when ["sandbox", "--help"] then puts "Usage: codex sandbox [OPTIONS] [COMMAND]..."
       else
         if ARGV.include?("sandbox")
+          roots = [Dir.pwd] + JSON.parse(ARGV.find { |arg| arg.start_with?("sandbox_workspace_write.writable_roots=") }.split("=", 2).last)
           ARGV.drop(ARGV.index("act-probe") + 1).each do |target|
-            allowed = mode == "leaky" || target.start_with?(Dir.pwd + "/")
+            allowed = mode == "leaky" || roots.any? { |root| target.start_with?(root + "/") }
             File.write(target, "breach") if allowed
             puts(allowed ? "1" : "0")
           end
@@ -272,6 +273,8 @@ class AttemptRecoveryTest < Minitest::Test
         succeeds("launch", "T", "--codex", "--reasoning", "high")
         first = reports.fetch(0)
         assert_equal [1, "exited", 0, true, "fresh_at_exit"], first.values_at("attempt", "status", "exit_status", "final_valid", "writable_freshness")
+        first_fixture = first.fetch("fixture").fetch("path")
+        File.binwrite(File.join(first_fixture, "retained.bin"), "\x00\xfffixture".b)
         old = bytes(File.dirname(first.fetch("worktrees_path")))
         original_state = first.fetch("execution_state")
         succeeds("record", "T", outcome, "--summary", "No candidate.", "--next", "Explicit closeout and retry.")
@@ -289,6 +292,11 @@ class AttemptRecoveryTest < Minitest::Test
         refute_equal first.fetch("prepared_at"), @states.load("T").fetch("prepared_at")
         succeeds("launch", "T", "--codex", "--reasoning", "high")
         second = reports.fetch(1)
+        second_fixture = second.fetch("fixture").fetch("path")
+        refute_equal first_fixture, second_fixture
+        assert_equal "\x00\xfffixture".b, File.binread(File.join(first_fixture, "retained.bin"))
+        assert_includes second.fetch("argv"), "sandbox_workspace_write.writable_roots=#{JSON.generate([second_fixture])}"
+        refute_includes second.fetch("argv"), "sandbox_workspace_write.writable_roots=#{JSON.generate([first_fixture])}"
         assert_equal 2, second.fetch("attempt")
         refute_equal first.fetch("invocation_id"), second.fetch("invocation_id")
         assert_equal first.fetch("execution_state"), original_state

@@ -445,8 +445,7 @@ module AgentCodingTool
           summary = item.fetch("status") == "READY" ? family_summaries.delete(family) : nil
           display_family_summary(family, summary) if summary
         else
-          status = item.fetch("status")
-          @out.puts "#{item.fetch('id')}: #{colorize_status(status)} — #{item.fetch('title')}"
+          @out.puts "#{item.fetch('id')}: #{human_status(item)} — #{item.fetch('title')}"
           display_explicit_details(item)
         end
         previous_bucket = bucket
@@ -544,7 +543,9 @@ module AgentCodingTool
           (status.fetch("status") == "BLOCKED" && status.dig("state", "result", "outcome") == "blocked")
       end
       display_next_section("Interventions", interventions) do |status|
-        @out.puts "  #{status.fetch('id')} (#{status.fetch('status')}): #{status.fetch('reason')}"
+        @out.puts "  #{status.fetch('id')} (#{human_status(status)}): #{status.fetch('reason')}"
+        display_stale_source(status)
+        display_parallel_authorization(status) if status["lifecycle_status"] == "IN_FLIGHT"
         @out.puts "    recorded next: #{status.fetch('next_action')}" if status.key?("next_action")
       end
       dependency_waits = ranked.select do |status|
@@ -595,6 +596,8 @@ module AgentCodingTool
                                                         "lifecycle_status" => status.fetch("lifecycle_status") } : {})
             row["external_activity"] = status["external_activity"] if status["external_activity"]
             row["external_conflicts"] = status["external_conflicts"] if status["external_conflicts"]
+            row["lifecycle_status"] = status["lifecycle_status"] if status["lifecycle_status"]
+            row["writable_source_changes"] = status["writable_source_changes"] if status["writable_source_changes"]
             row
           end,
           "reservations" => occupied.map { |row| next_authority_row(row) }
@@ -939,15 +942,40 @@ module AgentCodingTool
       end
     end
 
+    # Returns a human label from effective status and recorded lifecycle evidence.
+    # Eligibility consumers keep using status. Missing status raises KeyError.
+    def human_status(item)
+      status = item.fetch("status")
+      return colorize_status(status) unless status == "STALE" && item["lifecycle_status"] == "IN_FLIGHT"
+
+      label = "IN_FLIGHT (STALE)"
+      color_status? ? "\e[#{STATUS_COLORS.fetch(status)}m#{label}#{ANSI_RESET}" : label
+    end
+
+    # Prints verified changed writable identities and reconciliation requirements.
+    # Full identities are retained even on narrow terminals; no probes or writes.
+    # Missing source fields and output failures propagate to the caller.
+    def display_stale_source(item)
+      return unless item["writable_source_changes"]
+
+      @out.puts "    STALE: reconcile writable source and renew validation before delivery; integration/completion require separate authority."
+      item.fetch("writable_source_changes").each do |source|
+        @out.puts "    source #{source.fetch('repository')}: #{source.fetch('remote_url')} [#{source.fetch('branch')}]"
+        @out.puts "      prepared pushed: #{source.fetch('prepared_sha')}"
+        @out.puts "      current pushed:  #{source.fetch('observed_sha')}"
+      end
+    end
+
     # Prints one width-aware dashboard row plus its relevant evidence. Accepts
     # an effective status and metrics; missing fields/output errors propagate.
     def display_dashboard_item(item, completion_metrics, next_id:)
       id = item.fetch("id")
       status = item.fetch("status")
       next_marker = id == next_id ? " (NEXT)" : ""
-      colored_prefix = "#{id}: #{colorize_status(status)}#{next_marker} — "
+      colored_prefix = "#{id}: #{human_status(item)}#{next_marker} — "
       title = normalize_dashboard_text(item.fetch("title"))
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
+      display_stale_source(item)
       display_external_activity(item)
       display_icebox_details(item) if status == "ICEBOX"
 
@@ -968,7 +996,7 @@ module AgentCodingTool
         puts_wrapped(detail,
                      first_prefix: "    ", continuation_prefix: "    ")
       end
-      display_parallel_authorization(item, compact: true) if %w[CANDIDATE STALE_CANDIDATE].include?(status)
+      display_parallel_authorization(item, compact: status != "STALE") if %w[STALE CANDIDATE STALE_CANDIDATE].include?(status)
       if recorded_retryable_outcome?(item)
         display_compact_handoff(item)
       elsif item["reason"]
@@ -986,6 +1014,7 @@ module AgentCodingTool
     # Prints full task details, including designation/restoration and lifecycle
     # evidence. Missing fields and output errors propagate; no state is changed.
     def display_explicit_details(item)
+      display_stale_source(item)
       display_external_activity(item)
       display_icebox_details(item) if item.fetch("status") == "ICEBOX"
       @out.puts "    checkpoint: #{item.fetch('checkpoint')} (last explicit check)" if item["checkpoint"]

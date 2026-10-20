@@ -123,7 +123,8 @@ class NextTest < Minitest::Test
       output = next_output(dir, coordinator)
 
       assert_equal ["E-READY"], section_ids(output, "Next safe parallel starts")
-      assert_includes output, "A-STALE (STALE): pushed branch changed"
+      assert_includes output, "A-STALE (IN_FLIGHT (STALE)): pushed branch changed"
+      assert_includes output, "liveness unknown"
       assert_includes output, "B-STALE-CANDIDATE (STALE_CANDIDATE): pushed branch changed"
       assert_includes output, "C-FAILED (FAILED): test failed"
       assert_includes output, "recorded next: inspect logs"
@@ -180,14 +181,13 @@ class NextTest < Minitest::Test
         inspector.reset_counts
         inspector.head_result = result
         before = state_bytes(dir)
-        output = StringIO.new
-        errors = StringIO.new
-        cli = cli_for(dir, coordinator, out: output, err: errors)
-
-        assert_equal 2, cli.run(["next"])
-        assert_empty output.string
-        assert_match(/pushed-head evidence is missing or malformed/, errors.string)
-        assert_equal 1, inspector.head_batches.length
+        [%w[next], %w[next --json], %w[status], %w[status A]].each do |args|
+          output, errors = StringIO.new, StringIO.new
+          assert_equal 2, cli_for(dir, coordinator, out: output, err: errors).run(args)
+          assert_empty output.string
+          assert_match(/pushed-head evidence is missing or malformed|prepared snapshot lacks freshness provenance/, errors.string)
+        end
+        assert_equal 4, inspector.head_batches.length
         assert_empty inspector.snapshot_calls
         assert_equal before, state_bytes(dir)
       end
@@ -339,6 +339,7 @@ class NextTest < Minitest::Test
       inspector = ProbeInspector.new(heads:)
       coordinator = coordinator_with(dir, inspector)
       coordinator.prepare("A-STALE")
+      coordinator.start("A-STALE")
       heads["alpha"] = "b" * 40
 
       document = json_next(dir, coordinator)
@@ -349,6 +350,11 @@ class NextTest < Minitest::Test
       assert_match(/pushed branch changed/, stale.fetch("reason"))
       fact = document.dig("facts", "tasks").find { |row| row.fetch("id") == "A-STALE" }
       assert_equal "changed_writable_head", fact.dig("freshness", "state")
+      assert_equal "STALE", fact.fetch("status")
+      assert_equal "IN_FLIGHT", fact.fetch("lifecycle_status")
+      assert_equal "b" * 40, fact.fetch("writable_source_changes").first.fetch("observed_sha")
+      assert_equal "unknown", fact.dig("execution_evidence", "liveness")
+      assert_empty document.dig("facts", "reservations")
       assert_equal "a" * 40, fact.dig("freshness", "prepared_repositories", 0, "prepared_pushed_sha")
       refute document.to_s.include?("act start A-STALE")
     end

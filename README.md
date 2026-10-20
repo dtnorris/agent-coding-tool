@@ -475,6 +475,18 @@ summary and next action.
 Prepared, in-flight, and candidate tasks are compared against current pushed
 heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
 movement preserves the state with a refresh/reconciliation warning.
+With a recorded start and no result, human status and next interventions show
+`IN_FLIGHT (STALE)`: source movement does not establish that execution ended.
+Changed writable repositories show their prepared/current pushed SHAs and remote
+branch identities, with reconciliation and renewed validation required before
+delivery. These warnings and identities remain visible below truncated dashboard
+headlines. Isolation evidence is qualified by its last recorded verification;
+liveness stays unknown. Inspection never probes workers or changes stored state.
+Effective `status` remains `STALE`, preserving ordering, collision policy and
+action eligibility. `next --json` keeps its schema version and adds optional
+`lifecycle_status` and `writable_source_changes` facts; consumers must continue
+using effective `status` and freshness for eligibility. Existing states need no
+migration. Candidates and explicit outcomes retain their existing labels.
 Presentation filtering does not alter task state or dependency resolution.
 Fresh `PREPARED` rows also show observed overlaps with a fresh
 `IN_FLIGHT` or `CANDIDATE` writer with the same authoritative
@@ -487,7 +499,8 @@ Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGH
 `received` → `CANDIDATE` → `finish` → `COMPLETE`. `received` is shorthand for
 the `candidate_complete` outcome, and `finish` is shorthand for the `complete`
 outcome. Recorded outcomes, incomplete dependencies, and hard staleness take
-precedence over `IN_FLIGHT`.
+precedence over effective `IN_FLIGHT`; the stale human label retains the start
+as historical evidence without granting permission to act on stale work.
 
 `bin/agent-coding-tool prepare TASK`
 

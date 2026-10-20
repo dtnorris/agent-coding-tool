@@ -4,6 +4,8 @@ require "open3"
 require "stringio"
 require_relative "../test_helper"
 
+# Physical publication oracles; policy/string permutations use strict ordinary
+# observations in publisher_test.rb rather than constructing another Git world.
 class PublisherTest < Minitest::Test
   def with_repo
     Dir.mktmpdir do |dir|
@@ -55,8 +57,16 @@ class PublisherTest < Minitest::Test
     run_git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").first.lines.map(&:strip).sort
   end
 
+  # Publishes modified, new and deleted lifecycle paths to a local fixture remote;
+  # asserts exact commit scope and unrelated index bytes. Fixture failures raise.
   def test_default_publishes_only_lifecycle_files_and_preserves_other_index_content
     with_repo do |root, _bare|
+      deleted = "state/prompts/T1-20261007T120000Z.txt"
+      File.write(File.join(root, deleted), "old prompt\n")
+      run_git(root, "add", "--", deleted)
+      run_git(root, "commit", "-m", "prompt base")
+      run_git(root, "push", "origin", "main")
+      File.delete(File.join(root, deleted))
       File.write(File.join(root, "state", "T1.yml"), "after\n")
       File.write(File.join(root, "state", "T2.yml"), "second task\n")
       File.write(File.join(root, "state", "prompts", "T1-20261008T120000Z.txt"), "prompt\n")
@@ -68,7 +78,7 @@ class PublisherTest < Minitest::Test
       result = publisher(root).publish(mode: :default)
       assert result.fetch(:pushed)
       assert_equal remote_head(root), result.fetch(:sha)
-      assert_equal %w[state/T1.yml state/T2.yml state/prompts/T1-20261008T120000Z.txt], committed_paths(root)
+      assert_equal ["state/T1.yml", "state/T2.yml", deleted, "state/prompts/T1-20261008T120000Z.txt"], committed_paths(root)
       assert_equal before_index, run_git(root, "ls-files", "--stage", "--", "tasks/T2.yml").first
       assert_equal " M config.yml\nM  tasks/T2.yml\n", run_git(root, "status", "--short").first
       assert_equal false, publisher(root).publish(mode: :default).fetch(:pushed, false)
@@ -201,6 +211,8 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # An actual rejecting hook leaves the committed SHA available for retry;
+  # the accepted retry must publish it without a third commit. Git failures raise.
   def test_push_failure_preserves_commit_and_retry_is_idempotent
     with_repo do |root, bare|
       File.write(File.join(root, "state", "T1.yml"), "pending\n")
@@ -217,40 +229,8 @@ class PublisherTest < Minitest::Test
       assert_equal local, retry_result.fetch(:sha)
       assert_equal ["state/T1.yml"], retry_result.fetch(:files)
       assert_equal local, remote_head(root)
-      assert_equal false, publisher(root).publish(mode: :default).fetch(:pushed, false)
-    end
-  end
-
-  def test_interruption_after_commit_can_retry_without_new_commit
-    with_repo do |root, _bare|
-      File.write(File.join(root, "state", "T1.yml"), "pending\n")
-      instance = publisher(root)
-      instance.define_singleton_method(:push_and_verify!) do |_remote, _branch, _sha|
-        raise AgentCodingTool::RepositoryError, "injected interruption"
-      end
-      error = assert_raises(AgentCodingTool::RepositoryError) { instance.publish(mode: :default) }
-      local = run_git(root, "rev-parse", "HEAD").first.strip
-      assert_includes error.message, local
-      refute_equal local, remote_head(root)
-      assert_equal local, publisher(root).publish(mode: :default).fetch(:sha)
-      assert_equal local, remote_head(root)
       assert_equal "2\n", run_git(root, "rev-list", "--count", "HEAD").first
-    end
-  end
-
-  def test_default_includes_deletion_and_preserves_unrelated_staging
-    with_repo do |root, _bare|
-      File.write(File.join(root, "state", "prompts", "T1-20261008T120000Z.txt"), "old\n")
-      run_git(root, "add", "-A")
-      run_git(root, "commit", "-m", "prompt base")
-      run_git(root, "push", "origin", "main")
-      File.delete(File.join(root, "state", "prompts", "T1-20261008T120000Z.txt"))
-      File.write(File.join(root, "tasks", "T2.yml"), "staged unrelated\n")
-      run_git(root, "add", "tasks/T2.yml")
-      result = publisher(root).publish(mode: :default)
-      assert result.fetch(:pushed)
-      assert_equal ["state/prompts/T1-20261008T120000Z.txt"], committed_paths(root)
-      assert_includes run_git(root, "status", "--short").first, "M  tasks/T2.yml"
+      assert_equal false, publisher(root).publish(mode: :default).fetch(:pushed, false)
     end
   end
 
@@ -326,49 +306,6 @@ class PublisherTest < Minitest::Test
       assert_equal 1, results.count { |result| result[:pushed] }
       assert_equal remote_head(root), run_git(root, "rev-parse", "HEAD").first.strip
       assert_equal 2, run_git(root, "rev-list", "--count", "HEAD").first.to_i
-    end
-  end
-
-  def test_cli_dry_run_all_reports_scope_without_publication
-    with_repo do |root, _bare|
-      File.write(File.join(root, "tasks", "T1.yml"), "draft\n")
-      out = StringIO.new
-      err = StringIO.new
-      cli = AgentCodingTool::CLI.new(root: root, data_root: root, out: out, err: err)
-      old = remote_head(root)
-      assert_equal 0, cli.run(%w[publish --all --dry-run])
-      assert_includes out.string, "DRY RUN (no changes made)"
-      assert_includes out.string, "tasks/T1.yml"
-      assert_includes out.string, "Commit needed: true"
-      assert_includes out.string, "Remote publication was not attempted."
-      assert_equal old, remote_head(root)
-      assert_empty err.string
-    end
-  end
-
-  def test_ssh_https_identity_normalization_and_unsupported_remote
-    with_repo do |root, bare|
-      instance = publisher(root)
-      assert_equal "dtnorris/agent-coding-tool-data",
-                   instance.send(:identity, "git@github.com:dtnorris/agent-coding-tool-data.git")
-      assert_equal "dtnorris/agent-coding-tool-data",
-                   instance.send(:identity, "https://github.com/dtnorris/agent-coding-tool-data.git")
-      assert_equal "file://#{File.realpath(bare)}", instance.send(:identity, bare)
-      assert_raises(AgentCodingTool::RepositoryError) { instance.send(:identity, "https://example.com/other") }
-    end
-  end
-
-  def test_unexpected_push_destination_fails_before_git_mutation
-    with_repo do |root, _bare|
-      other = File.join(File.dirname(root), "other.git")
-      run_git(File.dirname(root), "init", "--bare", other)
-      run_git(root, "remote", "set-url", "--push", "origin", other)
-      File.write(File.join(root, "state", "T1.yml"), "pending\n")
-      old = run_git(root, "rev-parse", "HEAD").first.strip
-      assert_match(/exactly one push destination/, publisher(root).publish(mode: :default, dry_run: true).fetch(:blocker))
-      assert_raises(AgentCodingTool::RepositoryError) { publisher(root).publish(mode: :default) }
-      assert_equal old, run_git(root, "rev-parse", "HEAD").first.strip
-      refute File.exist?(File.join(root, ".git", "act-publish.lock"))
     end
   end
 

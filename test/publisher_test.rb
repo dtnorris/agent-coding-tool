@@ -113,9 +113,21 @@ class PublisherTest < Minitest::Test
     expect_git([*reads, *reads])
     assert_match(/identity mismatch/, @publisher.publish(mode: :default, dry_run: true).fetch(:blocker))
     assert_raises(AgentCodingTool::RepositoryError) { @publisher.publish(mode: :default) }
-    expect_git(destination_observations(push_urls: ["https://github.com/another/repository.git"]))
+    reads = destination_observations(push_urls: ["https://github.com/another/repository.git"])
+    expect_git([*reads, *reads])
     assert_match(/exactly one push destination/, @publisher.publish(mode: :default, dry_run: true).fetch(:blocker))
+    assert_raises(AgentCodingTool::RepositoryError) { @publisher.publish(mode: :default) }
     refute File.exist?(File.join(@root, ".git", "act-publish.lock"))
+  end
+
+  # Resolves string spellings and existing local paths through real Publisher
+  # logic; unsupported authorities raise without any external observations.
+  def test_ssh_https_identity_normalization_and_unsupported_remote
+    expect_git([])
+    assert_equal REPOSITORY, @publisher.send(:identity, REMOTE)
+    assert_equal REPOSITORY, @publisher.send(:identity, "https://github.com/#{REPOSITORY}.git")
+    assert_equal "file://#{File.realpath(@root)}", @publisher.send(:identity, @root)
+    assert_raises(AgentCodingTool::RepositoryError) { @publisher.send(:identity, "https://example.com/other") }
   end
 
   # Branch/checkout observations cannot authorize the wrong execution root.
@@ -148,6 +160,15 @@ class PublisherTest < Minitest::Test
       git_observation(["push", "origin", "HEAD:refs/heads/main"], stderr: "injected push failure", success: false)])
     error = assert_raises(AgentCodingTool::RepositoryError) { @publisher.publish(mode: :default) }
     assert_includes error.message, COMMIT
+    # A missing push executable takes the exceptional external boundary while
+    # retaining the same committed candidate and production failure handling.
+    expect_git([*publication_observations(status: " M state/T1.yml\0", scope_paths: files),
+      *commit_observations(files),
+      GitContract::Observation.new(argv: ["git", "push", "origin", "HEAD:refs/heads/main"], cwd: @root,
+        exception: Errno::ENOENT.new("injected push interruption"))])
+    error = assert_raises(AgentCodingTool::RepositoryError) { @publisher.publish(mode: :default) }
+    assert_includes error.message, "local commit #{COMMIT} preserved"
+    assert_includes error.message, "injected push interruption"
     retry_reads = [*inspection_observations(status: "", scope_paths: [], head: COMMIT),
       git_observation(["rev-parse", "HEAD^"], "#{BASE}\n"),
       git_observation(["show", "-s", "--format=%B", "HEAD"], commit_arguments(files).fetch(5) + "\n"),
@@ -218,7 +239,8 @@ class PublisherTest < Minitest::Test
     files = ["state/T1.yml"]
     reads = inspection_observations(status: " M state/T1.yml\0", scope_paths: files)
     expect_git([*reads, *publication_observations(status: " M state/T1.yml\0", scope_paths: files),
-      *commit_observations(files, task_id: "T1"), *push_observations])
+      *commit_observations(files, task_id: "T1"), *push_observations,
+      *inspection_observations(status: " M tasks/T1.yml\0", scope_paths: ["tasks/T1.yml"])])
     out, err = StringIO.new, StringIO.new
     cli = AgentCodingTool::CLI.new(root: @root, data_root: @root, out: out, err: err)
     AgentCodingTool::Publisher.stub(:new, @publisher) do
@@ -228,6 +250,13 @@ class PublisherTest < Minitest::Test
       out.rewind
       assert_equal 0, cli.run(%w[publish T1])
       assert_includes out.string, "PUBLISHED: #{COMMIT}"
+      out.truncate(0)
+      out.rewind
+      assert_equal 0, cli.run(%w[publish --all --dry-run])
+      assert_includes out.string, "DRY RUN (no changes made)"
+      assert_includes out.string, "tasks/T1.yml"
+      assert_includes out.string, "Commit needed: true"
+      assert_includes out.string, "Remote publication was not attempted."
     end
     assert_empty err.string
   end

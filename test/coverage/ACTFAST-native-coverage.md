@@ -2,6 +2,40 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## TST-22 publisher proof placement
+
+The publisher pilot retains 16 native publisher cases and 16 ordinary publisher
+cases. The required inventory contains 293 default cases, 75 native integration
+cases and eight Git contracts. Earlier counts and mappings below describe their
+named historical baselines. The inventory enforces identities, not line coverage
+or a minimum native portfolio. Host checkpoint and aggregate acceptance remain
+separate from this source mapping.
+
+All identities below belong to `PublisherTest`. Ordinary replacements are in
+[publisher_test.rb](../publisher_test.rb); physical proofs remain in the mandatory
+[publisher_git_integration.rb](../integration/publisher_git_integration.rb).
+Publisher's real selection, identity, failure, retry and CLI decisions still run.
+Ordinary external responses use the existing exact argv/cwd/bytes/outcome/order
+observations and teardown consumption check; there is no native fallback.
+
+| Removed native case (`test_` prefix) | Enforced replacement and refusal | Retained physical oracle |
+| --- | --- | --- |
+| `ssh_https_identity_normalization_and_unsupported_remote` | Same identity in the ordinary suite: SSH/HTTPS strings, existing local path and unsupported-authority refusal, with an empty strict transcript | Native local-remote identities throughout publication, plus `identity_branch_divergence_and_unpublished_history_fail_closed` |
+| `cli_dry_run_all_reports_scope_without_publication` | Ordinary `cli_outputs_verified_publication_and_dry_run`: actual CLI all-mode scope, commit-needed/no-publication messages and empty stderr; exact read-only transcript forbids writes | `all_three_dry_runs_are_read_only` preserves actual HEAD, remote ref, index bytes and status; private-record previews remain native |
+| `unexpected_push_destination_fails_before_git_mutation` | Ordinary `unexpected_identity_or_push_destination_fails_before_mutation`: both preview and actual publish refuse the wrong destination before lock creation; strict transcript permits only identity reads | Native destination validation and physical publication scope remain; native previews preserve real refs/index/files |
+| `interruption_after_commit_can_retry_without_new_commit` | Ordinary `push_failure_preserves_commit_and_retry_does_not_recommit`: both failed-status and exceptional push observations preserve the committed SHA; retry transcripts permit no commit | `push_failure_preserves_commit_and_retry_is_idempotent` uses a real rejecting receive hook, unchanged retry SHA/ref, exact paths, two-commit count and no-op afterward; the native ref race also preserves the local commit |
+| `default_includes_deletion_and_preserves_unrelated_staging` | Consolidated into native `default_publishes_only_lifecycle_files_and_preserves_other_index_content`: a tracked timestamped prompt is deleted alongside modified/new lifecycle files, with exact committed paths and unrelated index bytes | The same native case checks the pushed ref, preserved unrelated staging/config edit and subsequent no-op; all-mode native tracked/untracked/deleted/ignored proof remains |
+
+The other native obligations remain: task-specific physical scope, mixed staged
+and working versions, nested repositories, commit-hook failure and intent-to-add
+cleanup, detached/missing-remote refusals, lifecycle commands staying local,
+unfinished-operation refusal, cross-scope rename, remote races and serialized
+publication. The private external-record case still checks active and ended
+records outside every public selection, including file bytes and timestamps.
+Immutable skill-object reads and public prepare/persisted/consumed-prompt journeys
+are unchanged. Native/replay byte, status, exception and strict-matching controls
+remain in [the Git contract](../git_contract/README.md).
+
 ## ACTFAST cleanup — 2026-10-18
 
 The operator-authorized cleanup removes all 11 `RakefileTest` self-tests and their required-case entry without replacements. The current inventory is 265 default cases across 21 files, 73 native integration cases and eight Git contracts (346 aggregate). Rakefile coverage rows, source hashes, migration obligations and execution results below describe their historical baselines; they do not require retaining the deleted self-tests. Runtime suite enforcement and ACTD YAML validation remain unchanged.

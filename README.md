@@ -1075,6 +1075,79 @@ intercept commands run directly in a shell or validate a browser workspace
 that has not been brought to a local checkout. Focused-test success remains a
 separate worker report, never inferred from a valid checkpoint.
 
+Each gate invocation retains immutable `gate-UUID.started.json` and
+`gate-UUID.finished.json` receipts beside its checkpoint record. Paths are
+printed on stderr; the CLI still prints the command's exit code on success.
+Read these private JSON files directly, including from a fresh process:
+
+```sh
+ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.binread(ARGV.fetch(0))))' /absolute/private/path/gate-UUID.finished.json
+```
+
+Receipts bind task, attempt, repository, prepared authority, checkpoint record
+and patch hash to an individual invocation. They retain exact top-level argv,
+workspace argument, actual cwd when execution is reached, timestamps, and only
+the gate process's `TMPDIR`, `TMP`, `TEMP`, `SEED` and `TESTOPTS` settings
+(null means unset). Environment inheritance and command execution are unchanged:
+ACT still calls `system(*command, chdir: workspace)`, without interception,
+redirection, shell instrumentation or additional environment overrides.
+Stdout/stderr remain visible and complete output is explicitly **not captured**.
+Descendant commands, shell assignments and framework-effective settings are
+not inferred from argv or the gate's environment.
+
+`command_outcome` distinguishes not run, failed to start, exited (with actual
+exit code), signal (with signal number), and incomplete/unknown. Candidate
+pre/post checks are independent: `candidate_validation: passed` requires both
+checks against the same checkpoint record and a successful command. A command
+pass followed by a candidate change is a validation failure. Exempt tasks have
+no candidate and report `not_applicable` on command success. An unfinished
+started receipt establishes an invocation attempt, not command completion or
+success. Later invocations never overwrite or inherit earlier results. Unsafe
+task/evidence context can refuse before any receipt is possible. Receipt setup
+and write errors warn that crash durability is unconfirmed, including after a
+partial write; they do not mask command/candidate exceptions or change command
+returns. Exempt commands can run without receipts when storage is unavailable
+or has symlinked ancestry (including macOS `/var`); evidence symlinks remain
+rejected, and required checkpoint verification still blocks unsafe evidence.
+Inspect retained files before retrying; no persistence redesign or guarantee
+against host/disk loss is implied.
+
+Optional gate flags before `--` record operator declarations without changing
+execution: `--requested-seed NUMBER` and `--requested-selection TEXT`. These
+values do not establish that a test runner used them. For supported observation,
+`--observations /absolute/private/attempt/NAME.observation.json` names a fresh,
+absent direct child of this checkpoint's private attempt directory (the directory
+of the patch returned by `checkpoint record`). Arrange for the command or its
+framework reporter to write this file with mode 0600. ACT does not inject its
+path into the environment or modify the command. The sole supported format is
+a JSON object of at most 8192 bytes:
+
+```json
+{"schema_version":"agent-coding-tool-gate-observation/v1","seed":31046,"selection":"subset","summary":{"tests":2,"assertions":3,"failures":0,"errors":0,"skips":0}}
+```
+
+Seed, selection and summary are optional or null. Seed is an integer; selection
+is a string of at most 1024 bytes. Summary accepts only the shown count keys,
+each a nonnegative integer; omitted counts stay unknown. Unknown keys or invalid,
+missing, nonprivate, foreign-owned or symlinked reports yield explicit unavailable
+observations, without failing a passing command. Reused or foreign report paths
+refuse execution. Accepted observations retain their source path and content
+hash, labeled **command-reported**, not independently verified framework facts.
+The sidecar remains private; its unchecked contents are never copied into a
+receipt. Without it seed, selection and counts stay explicitly unobserved. A
+request for seed 51565 with reported seed 31046 remains a mismatch; a pass with
+different temporary-directory or selection conditions is never called
+reproduction. ACT makes no reproduction or root-cause judgment.
+
+Invocation metadata is exact, private operator evidence, not a public report.
+Do not put credentials or sensitive values in command argv, the retained setting
+names, requested declarations or observation fields. Pass secrets through other
+inherited environment variables, which ACT does not snapshot. Omit sensitive
+observation fields rather than supplying redacted text as an exact observation.
+Review and redact a separate copy before sharing; never publish private receipts
+automatically. Checkpoint preservation, command success and human acceptance
+remain separate facts; delivery and lifecycle authority are unchanged.
+
 After independently confirming a disconnected worker has stopped, run
 `act checkpoint recover TASK --destination PATH --confirm-disconnected`.
 Recovery verifies the immutable record and checksum, reconstructs the exact

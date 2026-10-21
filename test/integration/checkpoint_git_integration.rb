@@ -211,6 +211,239 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Exercises public record/gate in cold CLI processes, then reads retained JSON
+  # in another interpreter. Checks binary console bytes, declared versus reported
+  # facts and changed conditions without treating a pass as reproduction.
+  def test_public_gate_receipts_bind_candidate_and_distinguish_conditions
+    fixture do |root, data, _ordinary, workspace, base|
+      cli = File.expand_path("../../bin/agent-coding-tool", __dir__)
+      environment = { "AGENT_CODING_TOOL_DATA_DIR" => data, "SEED" => "51565",
+                      "TESTOPTS" => "--name subset", "ACT_RECEIPT_SECRET" => "secret-canary" }
+      stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, cli,
+        "checkpoint", "record", "T", "--workspace", workspace)
+      assert status.success?, stderr
+      record = JSON.parse(stdout)
+      directory = File.dirname(record.fetch("path"))
+      report_path = File.join(directory, "first.observation.json")
+      command = [RbConfig.ruby, "-rjson", "-e", <<~'RUBY', report_path]
+        report = { schema_version: "agent-coding-tool-gate-observation/v1", seed: 31046,
+          selection: "subset", summary: { tests: 2, assertions: 3, failures: 0, errors: 0, skips: 0 } }
+        File.open(ARGV.fetch(0), "wx", 0o600) { |file| file.write(JSON.generate(report)) }
+        STDOUT.binmode.write("seed=31046\n\x00\xff".b)
+        STDERR.binmode.write("\x80error-stream\x00\n".b)
+      RUBY
+      stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, "-rjson", cli,
+        "checkpoint", "gate", "T", "--workspace", workspace,
+        "--requested-seed", "51565", "--requested-selection", "subset", "--observations", report_path, "--", *command)
+      assert status.success?, stderr
+      assert_equal "seed=31046\n\x00\xff0\n".b, stdout.b
+      assert_equal "\x80error-stream\x00\n".b, stderr.b.gsub(/^Checkpoint gate receipt: .*\n/n, "")
+      reader = 'puts JSON.generate(Dir.glob(File.join(ARGV.fetch(0), "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) })'
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-rjson", "-e", reader, directory)
+      assert status.success?, stderr
+      receipt = JSON.parse(stdout).fetch(0)
+      assert_equal AgentCodingTool::Checkpoint::GATE_SCHEMA, receipt.fetch("schema_version")
+      assert_equal record.values_at("task_id", "attempt", "repository", "authority"), receipt.values_at("task_id", "attempt", "repository", "authority")
+      assert_equal base, receipt.dig("authority", "pushed_sha")
+      assert_equal record.fetch("record_file"), receipt.dig("candidate", "record_file")
+      assert_equal record.fetch("sha256"), receipt.dig("candidate", "sha256")
+      assert_equal command, receipt.fetch("argv")
+      assert_equal workspace, receipt.fetch("cwd")
+      assert_equal 51565, receipt.dig("requested", "seed")
+      assert_equal 31046, receipt.dig("observed", "seed")
+      assert_equal "command_report", receipt.dig("observed", "source", "kind")
+      assert_equal Digest::SHA256.file(report_path).hexdigest, receipt.dig("observed", "source", "sha256")
+      assert_equal 3, receipt.dig("observed", "summary", "assertions")
+      assert_equal "passed", receipt.fetch("candidate_validation")
+      assert_equal "verified", receipt.fetch("post_check")
+      assert_equal({ "status" => "not_captured" }, receipt.fetch("output"))
+      before = Dir.glob(File.join(directory, "gate-*.json")).to_h { |path| [path, File.binread(path)] }
+      temporary = File.join(root, "alternate-tmp")
+      Dir.mkdir(temporary)
+      changed = environment.merge("TMPDIR" => temporary, "TESTOPTS" => "--name other")
+      stdout, stderr, status = Open3.capture3(changed, RbConfig.ruby, cli,
+        "checkpoint", "gate", "T", "--workspace", workspace, "--requested-selection", "other", "--", RbConfig.ruby, "-e", "exit 0")
+      assert status.success?, stderr
+      receipts = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert_equal 2, receipts.length
+      other = receipts.find { |row| row.fetch("invocation_id") != receipt.fetch("invocation_id") }
+      assert_equal receipt.fetch("candidate"), other.fetch("candidate")
+      refute_equal receipt.dig("settings", "TMPDIR"), other.dig("settings", "TMPDIR")
+      refute_equal receipt.dig("settings", "TESTOPTS"), other.dig("settings", "TESTOPTS")
+      assert_equal "other", other.dig("requested", "selection")
+      assert_equal({ "status" => "not_observed", "seed" => nil, "selection" => nil, "summary" => nil }, other.fetch("observed"))
+      before.each { |path, bytes| assert_equal bytes, File.binread(path) }
+      Dir.glob(File.join(directory, "gate-*.json")).each do |path|
+        refute_includes File.binread(path), "secret-canary"
+        assert_equal 0, File.stat(path).mode & 0o077
+      end
+    end
+  end
+
+  # Compares native system outcomes and binary bytes with the original gate's
+  # failure rule, then proves post-check failures cannot turn a command pass into
+  # candidate validation. All signals target only the finite fixture child.
+  def test_gate_receipts_preserve_process_failures_and_candidate_checks
+    fixture do |root, data, _ordinary, workspace, _base|
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      record = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(record.fetch("path"))
+      commands = [
+        [RbConfig.ruby, "-e", 'STDOUT.binmode.write("\x00\xff".b); STDERR.binmode.write("\xfe\x00".b); exit 7'],
+        [RbConfig.ruby, "-e", 'Process.kill("TERM", Process.pid)'],
+        [File.join(root, "missing-command")]
+      ]
+      commands.each_with_index do |command, index|
+        # Original command failure rule; candidate verification is exercised by
+        # the real gate, including Git calls that overwrite Ruby's $? afterward.
+        original = lambda do
+          success = system(*command, chdir: workspace)
+          exit_code = $?.exitstatus if $?
+          raise AgentCodingTool::InvalidState, "checkpoint: validation command failed (#{exit_code || 'unavailable'})" unless success
+        end
+        expected_error = nil
+        expected_stdout, expected_stderr = capture_subprocess_io { expected_error = assert_raises(AgentCodingTool::InvalidState, &original) }
+        actual_error = nil
+        actual_stdout, actual_stderr = capture_subprocess_io do
+          actual_error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: command) }
+        end
+        assert_equal expected_error.message, actual_error.message
+        assert_equal expected_stdout.b, actual_stdout.b
+        assert_equal expected_stderr.b, actual_stderr.b
+        receipt = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }.find { |row| row.fetch("argv") == command }
+        assert_equal %w[exited signal failed_to_start].fetch(index), receipt.dig("command_outcome", "status")
+        assert_equal 7, receipt.dig("command_outcome", "exit_code") if index.zero?
+        assert_equal Signal.list.fetch("TERM"), receipt.dig("command_outcome", "signal") if index == 1
+        assert_equal "verified", receipt.fetch("post_check")
+        assert_equal "failed", receipt.fetch("candidate_validation")
+      end
+      # An identical patch in a replacement checkpoint is still another record.
+      replacement = lambda do |*argv, **options|
+        checkpoint.record("T", workspace: workspace)
+        Kernel.system(*argv, **options)
+      end
+      checkpoint.stub(:system, replacement) do
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        end
+        assert_includes error.message, "candidate changed during validation"
+      end
+      command = [RbConfig.ruby, "-e", 'File.write("new.txt", "mutated")']
+      error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: command) }
+      assert_includes error.message, "stale implementation"
+      receipt = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }.find { |row| row.fetch("argv") == command }
+      assert_equal true, receipt.dig("command_outcome", "success")
+      assert_equal "failed", receipt.fetch("post_check")
+      assert_equal "failed", receipt.fetch("candidate_validation")
+      marker = File.join(root, "must-not-run")
+      refused = ["touch", marker]
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: refused) }
+      refute File.exist?(marker)
+      receipt = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }.find { |row| row.fetch("argv") == refused }
+      assert_equal "not_run", receipt.dig("command_outcome", "status")
+      assert_equal "failed", receipt.fetch("pre_check")
+      assert_equal "not_checked", receipt.fetch("post_check")
+    end
+  end
+
+  # Injects receipt sync/write errors and command exceptions at explicit seams;
+  # original errors and return values survive, and interrupted facts stay unknown.
+  def test_gate_receipt_write_failure_cannot_mask_primary_failure_or_claim_durability
+    fixture do |_root, data, _ordinary, workspace, _base|
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      record = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(record.fetch("path"))
+      write_once = checkpoint.method(:write_once!)
+      failing_receipt = lambda do |path, bytes|
+        raise IOError, "injected" if File.basename(path).start_with?("gate-")
+        write_once.call(path, bytes)
+      end
+      checkpoint.stub(:write_once!, failing_receipt) do
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+        end
+        assert_equal "checkpoint: validation command failed (8)", error.message
+        File.write(File.join(workspace, "new.txt"), "changed")
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        end
+        assert_includes error.message, "stale implementation"
+      end
+      assert_empty Dir.glob(File.join(directory, "gate-*.json"))
+      assert_includes diagnostics.string, "crash durability unconfirmed"
+      refute_includes diagnostics.string, "Checkpoint gate receipt:"
+      File.write(File.join(workspace, "new.txt"), "untracked\n")
+      [Interrupt.new("injected"), Errno::ENOENT.new("injected")].each do |failure|
+        checkpoint.stub(:system, ->(*) { raise failure }) do
+          actual = assert_raises(failure.class) { checkpoint.gate("T", workspace: workspace, command: ["unused"]) }
+          assert_same failure, actual
+        end
+      end
+      receipts = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert_equal %w[failed_to_start incomplete_or_unknown], receipts.map { |row| row.dig("command_outcome", "status") }.sort
+      assert receipts.all? { |row| row.fetch("post_check") == "not_checked" }
+      starts = Dir.glob(File.join(directory, "gate-*.started.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert starts.all? { |row| row.dig("command_outcome", "status") == "incomplete_or_unknown" && row.fetch("finished_at").nil? }
+      # A directory sync failure can leave bytes behind without durable success.
+      sync_failure = lambda do |path, bytes|
+        write_once.call(path, bytes)
+        raise NotImplementedError if File.basename(path).start_with?("gate-")
+      end
+      diagnostics.truncate(0)
+      diagnostics.rewind
+      checkpoint.stub(:write_once!, sync_failure) do
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+      end
+      assert_includes diagnostics.string, "crash durability unconfirmed"
+      refute_includes diagnostics.string, "Checkpoint gate receipt:"
+    end
+  end
+
+  # Refuses stale/foreign observation inputs before execution and treats missing,
+  # unsafe or unsupported command reports as unknown, never retaining their text.
+  def test_gate_observation_inputs_are_fresh_private_and_narrow
+    fixture do |root, data, _ordinary, workspace, _base|
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: StringIO.new)
+      record = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(record.fetch("path"))
+      reused = File.join(directory, "reused.observation.json")
+      File.write(reused, "secret-canary", mode: "wx", perm: 0o600)
+      link = File.join(directory, "link.observation.json")
+      File.symlink(reused, link)
+      marker = File.join(root, "must-not-run")
+      [reused, link, File.join(root, "foreign.observation.json")].each do |path|
+        assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker], observations: path) }
+      end
+      refute File.exist?(marker)
+      absent = File.join(directory, "absent.observation.json")
+      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], observations: absent)
+      invalid = File.join(directory, "invalid.observation.json")
+      assert_equal 0, checkpoint.gate("T", workspace: workspace, observations: invalid,
+        command: [RbConfig.ruby, "-e", 'File.write(ARGV[0], %q({"secret":"secret-canary"}), mode: "wx", perm: 0o600)', invalid])
+      receipts = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert_equal 3, receipts.count { |row| row.dig("command_outcome", "status") == "not_run" }
+      assert_equal 2, receipts.count { |row| row.dig("observed", "status") == "unavailable_or_invalid" }
+      receipts.each { |row| assert_nil row.dig("observed", "seed") }
+      # The invocation argv is exact; only the sidecar's unchecked content is excluded.
+      refute receipts.any? { |row| row.fetch("observed").to_json.include?("secret-canary") }
+      state = AgentCodingTool::StateStore.new(File.join(data, "state")).load("T")
+      fifo = File.join(directory, "fifo.observation.json")
+      File.mkfifo(fifo, 0o600)
+      File.chmod(0o644, reused)
+      oversized = File.join(directory, "oversized.observation.json")
+      File.write(oversized, " " * 8193, mode: "wx", perm: 0o600)
+      [fifo, link, reused, oversized].each do |path|
+        assert_equal "unavailable_or_invalid", checkpoint.send(:gate_observations, path, "T", state).fetch("status")
+      end
+      File.chmod(0o755, directory)
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker]) }
+      refute File.exist?(marker)
+    end
+  end
+
   # Keeps the missing prepared-object native destination alongside checkpoint
   # baseline/evidence refusal. Every failed operation preserves fixture resources.
   def test_wrong_baseline_and_foreign_or_symlinked_evidence_fail_closed
@@ -239,6 +472,9 @@ class CheckpointTest < Minitest::Test
       File.binwrite(foreign, original)
       File.symlink(foreign, record.fetch("path"))
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T") }
+      marker = File.join(root, "must-not-run")
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker]) }
+      refute File.exist?(marker)
     end
   end
 
@@ -294,6 +530,128 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Exercises exempt commands through symlinked ancestry and unavailable storage;
+  # command results survive, unsafe paths stay untouched, and safe receipts persist.
+  def test_exempt_gate_receipt_setup_is_best_effort_without_following_symlinks
+    fixture(native: false) do |root, data, _ordinary, workspace, _base|
+      task_path = File.join(data, "tasks", "T.yml")
+      task = YAML.safe_load_file(task_path)
+      task["checkpoint"] = { "mode" => "exempt", "category" => "inspection", "reason" => "Read-only audit." }
+      File.write(task_path, YAML.dump(task))
+      alias_root = File.join(root, "alias")
+      File.symlink(root, alias_root)
+      storage = "#{data}-runs"
+      File.write(storage, "occupied")
+      [File.join(alias_root, "data"), data].each do |data_root|
+        diagnostics = StringIO.new
+        checkpoint = AgentCodingTool::Checkpoint.new(data_root: data_root, err: diagnostics)
+        marker = File.join(root, "ran")
+        assert_equal 0, checkpoint.gate("T", workspace: workspace,
+          command: [RbConfig.ruby, "-e", 'File.write(ARGV.fetch(0), "ran")', marker])
+        assert_equal "ran", File.read(marker)
+        File.unlink(marker)
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+        end
+        assert_equal "checkpoint: validation command failed (8)", error.message
+        assert_includes diagnostics.string, "crash durability unconfirmed"
+        refute_includes diagnostics.string, "Checkpoint gate receipt:"
+        assert_equal "occupied", File.read(storage)
+        observations = File.join(storage, "unsafe.observation.json")
+        assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: ["touch", marker], observations: observations)
+        end
+        refute File.exist?(marker)
+      end
+      File.unlink(storage)
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+      receipts = Dir.glob(File.join(storage, "checkpoints", "T", "*", "gate-*.finished.json"))
+      assert_equal 1, receipts.length
+      receipt = JSON.parse(File.binread(receipts.fetch(0)))
+      assert_nil receipt.fetch("candidate")
+      assert_equal "not_applicable", receipt.fetch("candidate_validation")
+      assert_includes diagnostics.string, "Checkpoint gate receipt:"
+      refute_includes diagnostics.string, "crash durability unconfirmed"
+    end
+  end
+
+  # Receipt directory creation failures preserve required candidate checks and
+  # command results, including refusal if an identical patch replaces the record.
+  def test_gate_receipt_setup_failure_retains_required_candidate_binding
+    fixture do |_root, data, _ordinary, workspace, _base|
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      record = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(record.fetch("path"))
+      check_directory = checkpoint.method(:directory!)
+      unavailable = lambda do |id, state, create: true|
+        raise Errno::EACCES, "injected receipt setup failure" if create
+        check_directory.call(id, state, create: false)
+      end
+      checkpoint.stub(:directory!, unavailable) do
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+        end
+        assert_equal "checkpoint: validation command failed (8)", error.message
+        replacement = lambda do |*argv, **options|
+          AgentCodingTool::Checkpoint.new(data_root: data).record("T", workspace: workspace)
+          Kernel.system(*argv, **options)
+        end
+        checkpoint.stub(:system, replacement) do
+          error = assert_raises(AgentCodingTool::InvalidState) do
+            checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+          end
+          assert_equal "checkpoint: candidate changed during validation", error.message
+        end
+      end
+      assert_empty Dir.glob(File.join(directory, "gate-*.json"))
+      assert_includes diagnostics.string, "crash durability unconfirmed"
+      refute_includes diagnostics.string, "Checkpoint gate receipt:"
+    end
+  end
+
+  # Required checkpoints (including stored checkpoints on exempt tasks) still
+  # reject symlinked ancestry/root before commands; preserved evidence is unchanged.
+  def test_gate_receipt_setup_cannot_bypass_required_symlink_verification
+    fixture do |root, data, _ordinary, workspace, _base|
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      record = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(record.fetch("path"))
+      preserved = Dir.children(directory).to_h { |name| [name, File.binread(File.join(directory, name))] }
+      alias_root = File.join(root, "alias")
+      File.symlink(root, alias_root)
+      marker = File.join(root, "must-not-run")
+      aliased = AgentCodingTool::Checkpoint.new(data_root: File.join(alias_root, "data"), err: diagnostics)
+      error = assert_raises(AgentCodingTool::InvalidState) do
+        aliased.gate("T", workspace: workspace, command: ["touch", marker])
+      end
+      assert_equal "checkpoint: symlinked evidence path", error.message
+      storage = "#{data}-runs"
+      relocated = File.join(root, "relocated-evidence")
+      File.rename(storage, relocated)
+      File.symlink(relocated, storage)
+      task_path = File.join(data, "tasks", "T.yml")
+      [false, true].each do |exempt|
+        if exempt
+          task = YAML.safe_load_file(task_path)
+          task["checkpoint"] = { "mode" => "exempt", "category" => "inspection", "reason" => "Read-only audit." }
+          File.write(task_path, YAML.dump(task))
+        end
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: ["touch", marker])
+        end
+        assert_equal "checkpoint: symlinked evidence path", error.message
+        refute File.exist?(marker)
+        assert_equal preserved, Dir.children(directory).to_h { |name| [name, File.binread(File.join(directory, name))] }
+      end
+      refute_includes diagnostics.string, "Checkpoint gate receipt:"
+    end
+  end
+
   def test_exemption_and_old_task_default
     with_workspace do |data|
       write_task(data, id: "T")
@@ -310,6 +668,18 @@ class CheckpointTest < Minitest::Test
                   "remote_url" => "test", "branch" => "main", "pushed_sha" => "a" * 40 } } }
       AgentCodingTool::StateStore.new(File.join(data, "state")).write("T", state)
       assert_equal "exempt", AgentCodingTool::Checkpoint.new(data_root: data).verify("T").fetch("status")
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      assert_equal 0, checkpoint.gate("T", workspace: data, command: [RbConfig.ruby, "-e", "exit 0"])
+      if File.realpath(data) != data
+        refute File.exist?("#{data}-runs")
+        assert_includes diagnostics.string, "crash durability unconfirmed"
+        refute_includes diagnostics.string, "Checkpoint gate receipt:"
+      else
+        receipt = JSON.parse(File.binread(Dir.glob(File.join("#{data}-runs", "checkpoints", "T", "*", "gate-*.finished.json")).fetch(0)))
+        assert_nil receipt.fetch("candidate")
+        assert_equal "not_applicable", receipt.fetch("candidate_validation")
+      end
       prompt = AgentCodingTool::PromptRenderer.new.render(task, {})
       assert_equal 1, prompt.scan(/^## Implementation checkpoint$/).length
       task["checkpoint"] = { "mode" => "exempt" }

@@ -71,6 +71,8 @@ class PromptRendererTest < Minitest::Test
     assert_includes prompt, "passes focused validation"
     assert_includes prompt, "ACT verifies content"
     assert_includes prompt, "not CANDIDATE, COMPLETE"
+    assert_includes prompt, "Requested seed/selection declarations never prove effectiveness"
+    assert_includes prompt, "Keep secrets out of argv"
     exempt = renderer.render(task.merge("checkpoint" => { "mode" => "exempt", "category" => "inspection",
                                                          "reason" => "No code." }), snapshot)
     assert_equal 1, exempt.scan(/^## Implementation checkpoint$/).length

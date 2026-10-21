@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "securerandom"
+require "shellwords"
 require "tempfile"
 require "tmpdir"
 require "time"
@@ -32,6 +33,43 @@ module AgentCodingTool
       @states = StateStore.new(File.join(@data_root, "state"))
       @root = "#{@data_root}-runs"
       @err = err
+    end
+
+    # Exports canonical bytes without reading/writing host task/run state. Inputs
+    # declare task, local baseline, remote and an absent artifact outside workspace.
+    # Returns checked artifact identity and shell-safe operator commands; invalid,
+    # empty, changing or inapplicable candidates raise. This is not a checkpoint,
+    # a prepared-authority/freshness check, or evidence that tests passed.
+    def export(id, workspace:, base_sha:, artifact:, remote: "origin")
+      raise InvalidTask, "checkpoint: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      raise InvalidState, "checkpoint: exact baseline SHA required" unless base_sha.match?(/\A[0-9a-f]{40}\z/)
+      base = { "pushed_sha" => base_sha, "remote" => remote,
+               "remote_url" => git!(workspace, "remote", "get-url", remote) }
+      workspace = workspace!(workspace, base)
+      artifact = File.expand_path(artifact)
+      unless !File.exist?(artifact) && !File.symlink?(artifact) &&
+             File.realpath(File.dirname(artifact)) == File.dirname(artifact) &&
+             artifact != workspace && !artifact.start_with?("#{workspace}/")
+        raise InvalidState, "checkpoint: export requires an absent artifact outside workspace with real parent"
+      end
+      bytes, inventory = implementation(workspace, base_sha)
+      raise InvalidState, "checkpoint: empty implementation" if bytes.empty? || inventory.empty?
+      write_once!(artifact, bytes)
+      verify_patch!(artifact, bytes, inventory, workspace, base)
+      latest, latest_inventory = implementation(workspace!(workspace, base), base_sha)
+      raise InvalidState, "checkpoint: implementation changed during export" unless latest == bytes && latest_inventory == inventory
+      prefix = ["env", "AGENT_CODING_TOOL_DATA_DIR=#{@data_root}", "act", "checkpoint"]
+      target = [id, "--workspace", workspace]
+      { "status" => "canonical_format_checked", "task_id" => id, "workspace" => workspace,
+        "base_sha" => base_sha, "artifact" => artifact, "sha256" => Digest::SHA256.hexdigest(bytes),
+        "bytes" => bytes.bytesize, "changed_files" => inventory, "host_checkpoint" => "pending",
+        "worker_checks" => "not attested; report actual focused commands and results separately",
+        "next_owner" => "operator",
+        "host_commands" => {
+          "record" => Shellwords.join(prefix + ["record", *target, "--artifact", artifact]),
+          "verify" => Shellwords.join(prefix + ["verify", *target]),
+          "gate_prefix" => Shellwords.join(prefix + ["gate", *target, "--"]) },
+        "remaining" => "host record/verify, required gated tests, freshness, integration, acceptance and publication; no authority granted" }
     end
 
     def record(id, workspace:, artifact: nil)
@@ -435,27 +473,35 @@ module AgentCodingTool
       path
     end
 
+    # Returns canonical binary patch bytes and a complete status/path inventory
+    # against sha, including untracked files, using disposable index/objects.
+    # Staged changes, unsafe files and failed Git operations raise InvalidState.
     def implementation(workspace, sha)
       _staged, _error, staged = Open3.capture3("git", "diff", "--cached", "--quiet", sha, chdir: workspace)
       raise InvalidState, "checkpoint: staged-only changes require operator judgment" unless staged.success?
-      Tempfile.create("act-checkpoint-index-") do |index|
-        env = { "GIT_INDEX_FILE" => index.path }
-        File.unlink(index.path)
-        git!(workspace, "read-tree", sha, env: env)
-        git!(workspace, "add", "-A", env: env)
-        names = git!(workspace, "diff", "--cached", "--name-status", "-z", "--no-renames", sha, env: env, strip: false).split("\0")
-        inventory = names.each_slice(2).map { |status, path| { "status" => status, "path" => path } }
-        raise InvalidState, "checkpoint: malformed changed-file inventory" unless
-          inventory.all? { |row| %w[A M D T].include?(row["status"]) &&
-            row["path"] && !row["path"].empty? && !row["path"].start_with?("../", "/") }
-        inventory.each do |entry|
-          next if entry.fetch("status") == "D"
-          path = File.join(workspace, entry.fetch("path"))
-          raise InvalidState, "checkpoint: symlinked/foreign changed file" unless File.file?(path) && !File.symlink?(path)
+      # Objects and index are disposable too: a confined worker must not write
+      # shared Git administration when hashing untracked/changed content.
+      Dir.mktmpdir("act-checkpoint-objects-") do |objects|
+        Tempfile.create("act-checkpoint-index-") do |index|
+          env = { "GIT_INDEX_FILE" => index.path, "GIT_OBJECT_DIRECTORY" => objects,
+                  "GIT_ALTERNATE_OBJECT_DIRECTORIES" => git!(workspace, "rev-parse", "--path-format=absolute", "--git-path", "objects") }
+          File.unlink(index.path)
+          git!(workspace, "read-tree", sha, env: env)
+          git!(workspace, "add", "-A", env: env)
+          names = git!(workspace, "diff", "--cached", "--name-status", "-z", "--no-renames", sha, env: env, strip: false).split("\0")
+          inventory = names.each_slice(2).map { |status, path| { "status" => status, "path" => path } }
+          raise InvalidState, "checkpoint: malformed changed-file inventory" unless
+            inventory.all? { |row| %w[A M D T].include?(row["status"]) &&
+              row["path"] && !row["path"].empty? && !row["path"].start_with?("../", "/") }
+          inventory.each do |entry|
+            next if entry.fetch("status") == "D"
+            path = File.join(workspace, entry.fetch("path"))
+            raise InvalidState, "checkpoint: symlinked/foreign changed file" unless File.file?(path) && !File.symlink?(path)
+          end
+          patch = git!(workspace, "diff", "--cached", "--binary", "--full-index",
+                       "--no-ext-diff", "--no-renames", sha, env: env, strip: false)
+          [patch.b, inventory]
         end
-        patch = git!(workspace, "diff", "--cached", "--binary", "--full-index",
-                     "--no-ext-diff", "--no-renames", sha, env: env, strip: false)
-        [patch.b, inventory]
       end
     end
 

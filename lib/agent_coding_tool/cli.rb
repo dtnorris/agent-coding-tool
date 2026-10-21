@@ -184,13 +184,15 @@ module AgentCodingTool
     def checkpoint_command(argv)
       action = argv.shift
       id = argv.shift
-      unless %w[record verify gate recover].include?(action) && id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
-        raise Error, "usage: agent-coding-tool checkpoint {record|verify|gate|recover} TASK ..."
+      unless %w[export record verify gate recover].include?(action) && id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+        raise Error, "usage: agent-coding-tool checkpoint {export|record|verify|gate|recover} TASK ..."
       end
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--workspace PATH") { |value| options[:workspace] = value }
         opts.on("--artifact PATH") { |value| options[:artifact] = value }
+        opts.on("--base SHA") { |value| options[:base] = value }
+        opts.on("--remote NAME") { |value| options[:remote] = value }
         opts.on("--destination PATH") { |value| options[:destination] = value }
         opts.on("--confirm-disconnected") { options[:confirm_disconnected] = true }
         opts.on("--attempt NUMBER", Integer) { |value| options[:attempt] = value }
@@ -199,11 +201,21 @@ module AgentCodingTool
         opts.on("--observations PATH") { |value| options[:observations] = value }
       end
       parser.order!(argv)
+      if action != "export" && options.keys.any? { |key| %i[base remote].include?(key) }
+        raise Error, "checkpoint: base and remote are export-only options"
+      end
       if action != "gate" && options.keys.any? { |key| %i[seed selection observations].include?(key) }
         raise Error, "checkpoint: requested settings and observations are gate-only options"
       end
       checkpoint = Checkpoint.new(data_root: @data_root, err: @err)
       result = case action
+               when "export"
+                 unless argv.empty? && options[:workspace] && options[:artifact] && options[:base] &&
+                        (options.keys - %i[workspace artifact base remote]).empty?
+                   raise Error, "checkpoint export requires --workspace PATH --base SHA --artifact PATH [--remote NAME]"
+                 end
+                 checkpoint.export(id, workspace: options.fetch(:workspace), base_sha: options.fetch(:base),
+                                   artifact: options.fetch(:artifact), remote: options.fetch(:remote, "origin"))
                when "record"
                  raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination] && !options[:attempt]
                  checkpoint.record(id, workspace: options.fetch(:workspace), artifact: options[:artifact])
@@ -1334,6 +1346,14 @@ module AgentCodingTool
         @out.puts "  #{name}: #{repo.fetch('pushed_sha')} (#{local})"
       end
       @out.puts "Prompt: #{state.fetch('prompt_path')}"
+      @out.puts "Preparation verifies pushed heads and pinned prompt guidance; local source objects for worktree creation remain unverified until launch."
+      @out.puts "Worker-only tools remain unverified until startup. Launch rechecks local roots, source objects, CLI/authentication, configuration and sandbox before execution."
+      if CheckpointPolicy.required?(prepared.fetch("task"))
+        @out.puts "Worker milestone: authorized implementation, focused checks and canonical candidate; first transfer to operator for checkpoint record/verify and required host gates."
+      else
+        @out.puts "Worker milestone: authorized exempt task report; first transfer to operator for review and remaining host checks; no implementation checkpoint."
+      end
+      @out.puts "Write scope grants no publication authority; operator must review any configured automatic delivery before launch."
       prepared.fetch("write_collisions").each do |collision|
         repositories = collision.fetch("repositories")
         noun = repositories.length == 1 ? "repository" : "repositories"
@@ -1477,6 +1497,8 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+          checkpoint export TASK --workspace PATH --base SHA --artifact PATH [--remote NAME]
+                              canonical-format-check candidate; no host state writes or test attestation
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH | --attempt NUMBER]
           checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]

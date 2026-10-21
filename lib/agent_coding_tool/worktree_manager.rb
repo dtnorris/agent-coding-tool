@@ -38,6 +38,18 @@ module AgentCodingTool
       @inventory_written = inventory_written
     end
 
+    # Checks only sources consumed by imminent worktree creation, without writes
+    # or fetching. Returns repository/object identities; unsafe or missing parents
+    # raise InvalidState. Manual preparation/start need not consume these objects.
+    def creation_readiness!(task:, snapshot:)
+      task.fetch("repositories").keys.map do |name|
+        source = snapshot.fetch(name)
+        parent_identity!(source, name)
+        { "repository" => name, "path" => source.fetch("path"),
+          "object" => source.fetch("pushed_sha"), "action" => "worktree creation", "status" => "verified" }
+      end
+    end
+
     # Creates exact prepared writer/read-only worktrees and returns the verified
     # inventory. Refuses collisions/foreign authority; errors retain every marker,
     # resource and branch without repair, including interrupted native additions.
@@ -256,7 +268,9 @@ module AgentCodingTool
       raise InvalidState, "worktrees: ambiguous parent repository" unless File.realpath(top) == File.realpath(parent) && common == admin
       safe_path!(common)
       raise InvalidState, "worktrees: remote identity changed" unless git!(parent, "remote", "get-url", source.fetch("remote")) == source.fetch("remote_url")
-      raise InvalidState, "worktrees: prepared object missing" unless git(parent, "cat-file", "-e", "#{source.fetch('pushed_sha')}^{commit}", allow_failure: true).last
+      raise InvalidState, "worktrees: #{name}: prepared object missing #{source.fetch('pushed_sha')} at #{parent}; blocked action: worktree creation; operator must supply the object locally; no fetch or repair performed" unless
+        git(parent, "--no-replace-objects", "cat-file", "-e", "#{source.fetch('pushed_sha')}^{commit}",
+            allow_failure: true, env: { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }).last
       [parent, common]
     end
 
@@ -303,8 +317,10 @@ module AgentCodingTool
       true
     end
 
-    def git(path, *args, allow_failure: false)
-      stdout, stderr, status = Open3.capture3("git", *args, chdir: path)
+    def git(path, *args, allow_failure: false, env: {})
+      command = ["git", *args]
+      command.unshift(env) unless env.empty?
+      stdout, stderr, status = Open3.capture3(*command, chdir: path)
       [stdout.strip, stderr.strip, status.success?]
     end
 

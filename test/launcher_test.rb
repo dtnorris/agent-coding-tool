@@ -51,7 +51,7 @@ class LauncherTest < Minitest::Test
       prompt = File.binread(state.fetch("prompt_path"))
       consumed = File.binread(File.join(@root, "stdin"))
       assert consumed.start_with?(prompt + "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---")
-      assert_includes consumed, "no ChatGPT connected GitHub integration"
+      assert_includes consumed, "Worker-only tools, including connected GitHub integration, are unverified before startup"
       assert_includes consumed, "not a CLI refresh"
       assert_includes @out.string, "progress"
       assert_includes @err.string, "stderr progress"

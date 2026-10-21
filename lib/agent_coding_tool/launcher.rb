@@ -6,6 +6,7 @@ require "securerandom"
 require "open3"
 require "rbconfig"
 require "tmpdir"
+require "shellwords"
 
 module AgentCodingTool
   # Execution evidence is deliberately separate from canonical lifecycle state.
@@ -161,12 +162,13 @@ module AgentCodingTool
       FileUtils.mkdir_p(task_root, mode: 0o700)
       attempt = Dir.children(task_root).length + 1
       run_dir = File.join(task_root, "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{SecureRandom.hex(6)}")
-      Dir.mkdir(run_dir, 0o700)
       @report_path = File.join(run_dir, "handoff.json")
       invocation_id = SecureRandom.uuid
       manager = WorktreeManager.new(root: config.worktree_root, record_path: File.join(run_dir, "worktrees.json"),
                                     attempt_paths: true, invocation_id: invocation_id,
                                     inventory_written: -> { @report["worktree_creation"] = "inventory_persisted"; save_report })
+      sources = manager.creation_readiness!(task: task, snapshot: state.fetch("snapshot"))
+      Dir.mkdir(run_dir, 0o700)
       @report = {
         "schema_version" => SCHEMA, "task_id" => id, "attempt" => attempt,
         "invocation_id" => invocation_id, "host_pid" => Process.pid,
@@ -188,7 +190,11 @@ module AgentCodingTool
         "codex" => @codex, "model" => model, "reasoning" => reasoning,
         "codex_executable_sha256" => @codex_digest, "exec_help_sha256" => @help_digest,
         "worker_recommendation" => task["worker_recommendation"],
-        "freshness_source" => "host git ls-remote; CLI has no connected GitHub integration"
+        "freshness_source" => "host git ls-remote; worker tools unverified before startup",
+        "checkpoint_required" => CheckpointPolicy.required?(task),
+        "readiness" => { "source_objects" => sources, "worker_tools" => "unverified",
+                         "worker_milestone" => CheckpointPolicy.required?(task) ? "focused checks and canonical candidate; host registration pending" : "authorized exempt task report; no implementation checkpoint",
+                         "first_transfer" => { "owner" => "operator", "action" => "review evidence and perform remaining authorized host checks" } }
       }
       save_report
       begin
@@ -788,10 +794,29 @@ module AgentCodingTool
         "Temporary fixtures: #{JSON.generate(@report.fetch('fixture').fetch('path'))} (TMPDIR). Only this attempt's fixture directory is writable; it contains no private ACT evidence. Contents are retained for operator review.\n" \
         "#{notice}" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
-        "This CLI has no ChatGPT connected GitHub integration. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
+        "Worker-only tools, including connected GitHub integration, are unverified before startup. Inspect the tools actually available in this worker; report absent, observed-present or unverified with the observation used. Availability grants no permission. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
+        "Known launch checks passed: prepared source objects for worktree creation, worktree identity, configured CLI/authentication, prompt bytes, fixture boundary and sandbox probe. These are launch-time observations, not future freshness or acceptance.\n" \
+        "Worker milestone: #{@report.fetch('readiness').fetch('worker_milestone')}. First ownership transfer: operator review and remaining host checks; protected ACTD/checkpoint state is not worker-writable.\n" \
+        "#{candidate_instructions(workspaces)}" \
         "If required external reads, prerequisites or final freshness cannot be established, stop and report that limitation. Do not claim refreshed GitHub refs.\n" \
         "Run one foreground worker only. Do not delegate, commit, stage, push, publish, or change ACT lifecycle/task data. Return a local patch and review handoff.\n" \
         "--- END ACT LOCAL CLI EXECUTION ENVELOPE ---\n"
+    end
+
+    # Supplies concrete candidate/host command identities for a single writer.
+    # Does not run commands or grant lifecycle/delivery authority; multi-writer
+    # checkpoint support retains its existing refusal and separate review path.
+    def candidate_instructions(workspaces)
+      return "Checkpoint exempt: report authorized work and remaining operator checks; do not manufacture an implementation candidate.\n" unless @report.fetch("checkpoint_required")
+      return "Canonical checkpoint export supports exactly one writer; preserve candidates for separate operator review.\n" unless workspaces.length == 1
+
+      name, workspace = workspaces.first
+      base = @report.fetch("preparation").fetch(name)
+      artifact = File.join(@report.fetch("fixture").fetch("path"), "#{@report.fetch('task_id')}.patch")
+      command = ["env", "AGENT_CODING_TOOL_DATA_DIR=#{@data_root}", "act", "checkpoint", "export", @report.fetch("task_id"), "--workspace", workspace,
+                 "--base", base.fetch("pushed_sha"), "--remote", base.fetch("remote"), "--artifact", artifact]
+      "After focused checks, export using the installed ACT implementation (or this checkout's bin/agent-coding-tool when available): #{Shellwords.join(command)}\n" \
+        "Host data root for returned commands: #{JSON.generate(@data_root)}; set AGENT_CODING_TOOL_DATA_DIR to this exact path for export's handoff. Export writes only the candidate artifact, never protected host records. Report actual focused commands/results separately; export cannot attest tests. Stop before host-only gates if host checkpoint registration is pending.\n"
     end
 
     def sandbox_probe!(inventory, workspace, run_dir)

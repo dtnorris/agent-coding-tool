@@ -425,7 +425,8 @@ wraps summaries while keeping each drill-down command intact; a command wider
 than the terminal can overflow just like other unbreakable detail tokens.
 
 Broad dashboards are ordered for scanability: `COMPLETE`, `CANDIDATE`,
-`NEEDS_JUDGMENT`, `IN_FLIGHT`, `READY`, then other active or exceptional
+`NEEDS_JUDGMENT`, clean `IN_FLIGHT`, a separate `IN_FLIGHT (STALE)` subgroup,
+`READY`, then other active or exceptional
 states, then `BLOCKED`, with `ICEBOX` last when explicitly included. Within READY only, ACT-family work ranks ahead
 of all other families. Each tier retains descending immediate collision-aware
 parallel unlock width, immediate unlock count, longest downstream dependency
@@ -477,13 +478,20 @@ heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
 movement preserves the state with a refresh/reconciliation warning.
 With a recorded start and no result, human status and next interventions show
 `IN_FLIGHT (STALE)`: source movement does not establish that execution ended.
-Changed writable repositories show their prepared/current pushed SHAs and remote
-branch identities, with reconciliation and renewed validation required before
-delivery. These warnings and identities remain visible below truncated dashboard
-headlines. Isolation evidence is qualified by its last recorded verification;
-liveness stays unknown. Inspection never probes workers or changes stored state.
-Effective `status` remains `STALE`, preserving ordering, collision policy and
-action eligibility. `next --json` keeps its schema version and adds optional
+Broad stale in-flight rows, including `--all` and `--fam` views, have at most two
+width-bounded detail lines: changed writable sources with eight-character
+prepared/current commit identities and branch, then reconciliation before
+delivery, unknown liveness and qualified isolation evidence. Multiple-source
+summaries give the total and direct operators to `act stat TASK`. Long values
+use the existing ASCII `...` truncation; narrow headlines prioritize `STALE`.
+Independent external-activity warnings retain their full safety contract.
+Explicit `act stat TASK` retains full source identities, remote URLs, branches,
+SHAs and historical execution/overlap evidence, including renewed validation
+before delivery and separate integration/completion authority. Isolation evidence
+is historical; liveness stays unknown. Inspection never probes workers or changes
+stored state. Effective `status` remains `STALE`; only dashboard presentation
+order changes, preserving scheduling order, collision policy and action
+eligibility. `next --json` keeps its schema version and adds optional
 `lifecycle_status` and `writable_source_changes` facts; consumers must continue
 using effective `status` and freshness for eligibility. Existing states need no
 migration. Candidates and explicit outcomes retain their existing labels.

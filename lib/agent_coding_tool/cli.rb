@@ -13,6 +13,7 @@ module AgentCodingTool
       "CANDIDATE" => 10,
       "NEEDS_JUDGMENT" => 20,
       "IN_FLIGHT" => 30,
+      "IN_FLIGHT_STALE" => 35,
       "READY" => 40,
       "PREPARED" => 50,
       "STALE_CANDIDATE" => 60,
@@ -424,6 +425,8 @@ module AgentCodingTool
           selection = coordinator.next_start_set(statuses, statuses)
           next_id = next_status_id(selection, statuses)
         end
+        # Presentation subgroups must not change scheduling or global NEXT.
+        statuses = sort_statuses(statuses, completion_metrics, dashboard: true)
         if options.key?(:family)
           statuses = statuses.select { |item| task_family(item.fetch("id")) == options[:family] }
         elsif !options[:all]
@@ -436,7 +439,7 @@ module AgentCodingTool
       previous_bucket = nil
 
       statuses.each do |item|
-        bucket = status_bucket(item.fetch("status"))
+        bucket = stale_in_flight?(item) ? :stale_in_flight : status_bucket(item.fetch("status"))
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
         if broad_dashboard
@@ -723,8 +726,10 @@ module AgentCodingTool
     # descending unlock/dependency metrics, natural numeric ID ties and finally
     # full-ID ties, then the one-time CL-WLO-01 exception within READY CL slots.
     # Icebox sorts last with natural ID ties; other lifecycle ordering and input
-    # rows are preserved. Missing row/metric fields raise KeyError.
-    def sort_statuses(statuses, completion_metrics)
+    # rows are preserved. dashboard places recorded stale starts after fresh
+    # starts for display only; next/scheduling retain effective-status ranking.
+    # Missing row/metric fields raise KeyError.
+    def sort_statuses(statuses, completion_metrics, dashboard: false)
       ranked = statuses.each_with_index
               .sort_by do |item, index|
                 status = item.fetch("status")
@@ -740,7 +745,8 @@ module AgentCodingTool
                 complete_rank = status == "COMPLETE" ? completion_rank(item) : [0, 0]
                 blocked_rank = status == "BLOCKED" ? blocked_dependency_count(item) : 0
                 icebox_rank = status == "ICEBOX" ? [natural_task_id(id), id] : [[], ""]
-                [STATUS_ORDER.fetch(status, 90), *ready_rank, *complete_rank, blocked_rank, *icebox_rank, index]
+                display_status = dashboard && stale_in_flight?(item) ? "IN_FLIGHT_STALE" : status
+                [STATUS_ORDER.fetch(display_status, 90), *ready_rank, *complete_rank, blocked_rank, *icebox_rank, index]
               end
               .map(&:first)
       prioritize_batch39_cleanup(ranked)
@@ -946,10 +952,16 @@ module AgentCodingTool
     # Eligibility consumers keep using status. Missing status raises KeyError.
     def human_status(item)
       status = item.fetch("status")
-      return colorize_status(status) unless status == "STALE" && item["lifecycle_status"] == "IN_FLIGHT"
+      return colorize_status(status) unless stale_in_flight?(item)
 
       label = "IN_FLIGHT (STALE)"
       color_status? ? "\e[#{STATUS_COLORS.fetch(status)}m#{label}#{ANSI_RESET}" : label
+    end
+
+    # Returns whether an effective stale row has a recorded in-flight lifecycle.
+    # This is presentation evidence only; missing effective status raises KeyError.
+    def stale_in_flight?(item)
+      item.fetch("status") == "STALE" && item["lifecycle_status"] == "IN_FLIGHT"
     end
 
     # Prints verified changed writable identities and reconciliation requirements.
@@ -966,15 +978,47 @@ module AgentCodingTool
       end
     end
 
+    # Prints two bounded stale-start details from existing projection evidence:
+    # short changed-source identities, then reconciliation and qualified safety.
+    # No probes/writes occur; missing source fields/output failures propagate.
+    def display_compact_stale_source(item)
+      sources = item.fetch("writable_source_changes", [])
+      source = sources.first
+      movement = if source
+                   "#{source.fetch('repository')}: #{source.fetch('prepared_sha')[0, 8]} -> " \
+                     "#{source.fetch('observed_sha')[0, 8]} (#{source.fetch('branch')} changed)"
+                 else
+                   "inspect act stat #{item.fetch('id')}"
+                 end
+      movement = "#{sources.length} changed; act stat #{item.fetch('id')}; #{movement}" if sources.length > 1
+      @out.puts compact_detail_line("source", movement)
+      isolation = if item.dig("execution_evidence", "isolation") == "last_verified_at_launch" &&
+                     !item.dig("state", "write_collision_override", "launch", "unverified_manual_conflicts")
+                    "isolation last verified at launch"
+                  else
+                    "isolation unverified"
+                  end
+      @out.puts compact_detail_line("next", "reconcile before delivery; liveness unknown; #{isolation}")
+    end
+
     # Prints one width-aware dashboard row plus its relevant evidence. Accepts
     # an effective status and metrics; missing fields/output errors propagate.
     def display_dashboard_item(item, completion_metrics, next_id:)
       id = item.fetch("id")
       status = item.fetch("status")
       next_marker = id == next_id ? " (NEXT)" : ""
-      colored_prefix = "#{id}: #{human_status(item)}#{next_marker} — "
+      display_id = normalize_dashboard_text(id)
+      colored_prefix = "#{display_id}: #{human_status(item)}#{next_marker} — "
+      if stale_in_flight?(item) && display_width(colored_prefix) > dashboard_width - 3
+        colored_prefix = "#{colorize_status('STALE')}: #{display_id}#{next_marker} — "
+      end
       title = normalize_dashboard_text(item.fetch("title"))
       @out.puts truncate_display_line("#{colored_prefix}#{title}", dashboard_width)
+      if stale_in_flight?(item)
+        display_compact_stale_source(item)
+        display_external_activity(item)
+        return
+      end
       display_stale_source(item)
       display_external_activity(item)
       display_icebox_details(item) if status == "ICEBOX"

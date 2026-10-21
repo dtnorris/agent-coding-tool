@@ -239,8 +239,8 @@
     "StatusNextSummaryTest#test_prepared_task_gets_start_action_without_reprepare": ["coding"],
     "StatusNextSummaryTest#test_candidate_review_and_occupied_capacity_are_not_presented_as_completion": ["coding"],
     "StatusNextSummaryTest#test_running_writer_and_judgment_each_explain_no_available_start": ["coding", "coding"],
-    "StatusNextSummaryTest#test_stale_preparation_and_dependency_wait_are_truthful": ["coding"],
-    "StatusNextSummaryTest#test_width_color_no_color_and_explicit_status_behavior": [],
+    "StatusNextSummaryTest#test_stale_preparation_and_dependency_wait_are_truthful": ["coding", "coding", "coding", "coding", "coding", "coding", "coding", "coding", "coding", "coding", "coding"],
+    "StatusNextSummaryTest#test_width_color_no_color_and_explicit_status_behavior": ["coding"],
     "StatusNextSummaryTest#test_started_stale_source_is_visible_without_changing_eligibility_or_state": ["coding"]
   },
   "test/task_store_test.rb": {

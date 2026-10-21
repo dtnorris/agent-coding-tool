@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "launcher_support"
 require "stringio"
+require_relative "skill_observations"
 
 # Covers the registered-task journey, explicit designation and immutable source
 # refusals. Git history, workers and task/state writes belong only to fixtures.
@@ -243,7 +244,8 @@ class PlanningGuidanceTest < Minitest::Test
   end
 
   # Matching fingerprints cannot excuse bad frontmatter, required metadata,
-  # invalid encoding or empty bodies. Each variant uses genuine pinned Git bytes.
+  # invalid encoding or empty bodies. Finite immutable-source responses leave
+  # ACT's hashing, YAML and refusal decisions real; native reads remain separate.
   def test_integrity_and_metadata_refusal_matrix
     text = CodingSkillSupport::PLANNING_TEXT
     variants = [nil, "not frontmatter\n", "---\nname: [broken\n---\nBody\n",
@@ -254,11 +256,19 @@ class PlanningGuidanceTest < Minitest::Test
                 text.sub("Fixture planning: outcomes, ownership, integration, recovery, acceptance.", ""),
                 text.b + "\xff".b]
     variants.each do |content|
-      with_planning_source(content) do |root, pin|
+      Dir.mktmpdir("act-planning-response-") do |root|
+        FileUtils.mkdir_p(File.join(root, ".git"))
+        pin = { "revision" => "2" * 40, "sha256" => Digest::SHA256.hexdigest(content || "") }
+        coding = SkillObservations.read(root: root, path: AgentCodingTool::PromptRenderer::SKILL_PATH,
+          identity: AgentCodingTool::PromptRenderer::SKILL_IDENTITY, text: CodingSkillSupport::TEXT)
+        planning = SkillObservations.read(root: root, path: AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH,
+          identity: pin, text: content || "", success: !content.nil?, stderr: content.nil? ? "missing object" : "")
+        runner = GitContract::Replay.new([coding, planning])
         error = assert_raises(AgentCodingTool::InvalidState) do
-          AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin).render(planning_task, {})
+          AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin, runner: runner).render(planning_task, {})
         end
         assert_match(/planning skill: (pinned source unavailable|malformed|Psych::|invalid UTF-8)/, error.message)
+        assert runner.verify!
       end
     end
     renderer = AgentCodingTool::PromptRenderer
@@ -267,8 +277,19 @@ class PlanningGuidanceTest < Minitest::Test
      renderer::PLANNING_SKILL_IDENTITY.merge("sha256" => "bad"),
      renderer::PLANNING_SKILL_IDENTITY.merge("revision" => "0" * 40),
      renderer::PLANNING_SKILL_IDENTITY.merge("sha256" => "0" * 64)].each do |pin|
-      error = assert_raises(AgentCodingTool::InvalidState) { renderer.new(planning_skill_identity: pin).render(planning_task, {}) }
+      coding = SkillObservations.read(root: renderer::SKILL_ROOT, path: renderer::SKILL_PATH,
+        identity: renderer::SKILL_IDENTITY, text: CodingSkillSupport::TEXT)
+      observations = [coding]
+      if pin.is_a?(Hash) && [pin["revision"], pin["sha256"]].zip([40, 64]).all? { |value, length|
+           value.is_a?(String) && value.match?(/\A[0-9a-f]{#{length}}\z/) }
+        observations << SkillObservations.read(root: renderer::SKILL_ROOT, path: renderer::PLANNING_SKILL_PATH,
+          identity: pin, text: text, success: pin["revision"] != "0" * 40,
+          stderr: pin["revision"] == "0" * 40 ? "missing object" : "")
+      end
+      runner = GitContract::Replay.new(observations)
+      error = assert_raises(AgentCodingTool::InvalidState) { renderer.new(planning_skill_identity: pin, runner: runner).render(planning_task, {}) }
       assert_match(/planning skill: (malformed pinned identity|pinned source unavailable|SHA-256 integrity mismatch)/, error.message)
+      assert runner.verify!
     end
   end
 

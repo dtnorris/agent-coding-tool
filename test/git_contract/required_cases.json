@@ -1,5 +1,6 @@
 {
   "test/git_contract/native_contract.rb": [
+    "NativeGitContract#test_immutable_skill_object_read",
     "NativeGitContract#test_authoritative_refs_snapshot_and_dirty_state",
     "NativeGitContract#test_commit_contents_modes_and_ref_movement",
     "NativeGitContract#test_concurrent_remote_requests",

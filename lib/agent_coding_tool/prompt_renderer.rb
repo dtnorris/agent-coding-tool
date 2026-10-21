@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "digest"
-require "open3"
 require "yaml"
 
 module AgentCodingTool
@@ -19,13 +18,15 @@ module AgentCodingTool
     }.freeze
     SKILL_ROOT = File.expand_path("../../../agent-skills", __dir__)
 
-    # Uses a sibling Git checkout and immutable pin; optional inputs isolate tests.
+    # Uses a sibling Git checkout and immutable pin; runner accepts CommandRunner's
+    # raw-byte/boolean capture protocol. Optional inputs isolate external reads.
     # Returns a renderer; source errors are deferred until render, not status reads.
     def initialize(skill_root: SKILL_ROOT, skill_identity: SKILL_IDENTITY,
-                   planning_skill_identity: PLANNING_SKILL_IDENTITY)
+                   planning_skill_identity: PLANNING_SKILL_IDENTITY, runner: CommandRunner.new)
       @skill_root = skill_root
       @skill_identity = skill_identity.dup.freeze
       @planning_skill_identity = planning_skill_identity.dup.freeze
+      @runner = runner
     end
 
     # Returns the revision/fingerprint recorded in preparation state; no I/O.
@@ -132,12 +133,12 @@ module AgentCodingTool
       unless File.directory?(@skill_root) && File.exist?(File.join(@skill_root, ".git"))
         raise InvalidState, "#{label}: missing Git checkout: #{@skill_root}"
       end
-      content, error, status = Open3.capture3(
+      content, error, success = @runner.capture(
         { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" },
         "git", "--no-replace-objects", "-C", @skill_root,
         "cat-file", "blob", "#{revision}^{commit}:#{path}"
       )
-      raise InvalidState, "#{label}: pinned source unavailable (#{revision}): #{error.strip}" unless status.success?
+      raise InvalidState, "#{label}: pinned source unavailable (#{revision}): #{error.strip}" unless success
       unless Digest::SHA256.hexdigest(content) == fingerprint
         raise InvalidState, "#{label}: SHA-256 integrity mismatch (#{revision})"
       end

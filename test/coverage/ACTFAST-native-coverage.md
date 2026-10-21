@@ -2,6 +2,56 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## TST-23 ordinary dependency boundary
+
+The executable ordinary scope is [ordinary_cases.json](../ordinary_cases.json):
+230 retained identities plus two boundary controls. Each entry names its exact
+ordered default skill reads, including empty transcripts. This inventory and
+the explicit 71-case `native_default` selection must disjointly partition all
+303 default obligations in [required_cases.json](../required_cases.json).
+All prior default and integration identities remain mandatory. Nine Git
+contracts include a new bounded immutable-source oracle. The native complement
+retains mixed fixtures as well as unique native proofs; membership alone is not
+evidence that every repeated native permutation is necessary. Later program
+reductions still require independent behavioral review.
+
+The [development contract](../../README.md#development) defines execution and
+selection; this section accounts for assertion/effect replacements. Host
+checkpoint, timing, aggregate, YAML and native macOS qualifications remain
+separate acceptance evidence. These source mappings do not claim those gates
+were executed.
+
+| Affected identities / assertions | Ordinary replacement and negative control | Retained native oracle |
+| --- | --- | --- |
+| Every original identity listed in `ordinary_cases.json`, except the specific source matrices below | Original body assertions remain. Shared skill fixture Git initialization/add/commit/revision and per-render `cat-file` calls become real disposable files plus exact, finite `CommandRunner` observations. Pin/hash/UTF-8/YAML/render/lifecycle decisions run unchanged. Extra, missing, reordered or wrong-env/cwd requests fail; teardown verifies complete consumption even after refusal. | `NativeGitContract#test_immutable_skill_object_read`; native coding/planning branch movement and cold launch; public consumed-worker and continuous retry/recovery cases below. |
+| `CodingSkillTest#test_complete_skill_once_with_identity_and_only_offline_git_reads` | Complete bytes, identity, precedence and repeated-prompt equality remain. The former captured-argv equality is enforced by two exact observations and `verify!`, including offline env and immutable revision/path. | Bounded immutable-source contract checks actual argv/env/raw bytes/status, dirty-source immunity and missing-object equivalence. |
+| `CodingSkillTest#test_missing_source_incorrect_revision_and_integrity_mismatch_fail_explicitly` | All four original missing-checkout, missing-object, digest and symbolic-revision refusals remain; empty transcripts prohibit reads on structural failures. Actual checkout-presence filesystem checks remain. | Missing immutable commit exits 128 in the contract; native invalid-material planning case removes a real blob. |
+| `CodingSkillTest#test_malformed_metadata_is_rejected_even_with_matching_fingerprint` | All five original content variants retain matching hashes and exact error assertions. Repeated clone/add/commit/rev-parse setup becomes a directory-presence fixture plus one explicit immutable-byte response per variant, verified after refusal. | Native source contract verifies unchanged Git blob bytes reach the same parser; native planning missing-blob/refusal proof remains. |
+| `PlanningGuidanceTest#test_integrity_and_metadata_refusal_matrix` | All nine content variants and seven identity variants retain original error classifications. Repeated fixture histories become finite coding/planning read pairs, or coding-only transcripts for structurally invalid planning identities. Hashes are computed from actual response bytes; no parser is mocked. | `PlanningGuidanceTest#test_invalid_material_preserves_initial_retry_and_consumption_evidence`, `#test_offline_object_reads_and_cold_regeneration_ignore_branch_and_worktree`, and bounded immutable-source contract. |
+| All six `RepoInspectorTest` identities | Original snapshot, failure, authority, deduplication and bounded-concurrency assertions remain. Permissive response maps become exact finite replays, verified on teardown. Only independent concurrent requests relax ordering; real production threads/rendezvous remain. Unexpected commands cannot masquerade as command failure. | Existing authoritative-ref, failure/exception and concurrent-request Git contracts. |
+| `OrdinaryBoundaryTest#test_dependency_entries_refuse_before_effect` (new) | Direct spawn/system/exec/Open3/pipe/backtick/fork attempts must raise before child/marker creation; ordinary binary file I/O remains real. Native legacy discovery runs this same proof in an owned, bounded guarded child. | `NativeGitContract#test_native_process_observer` retains real bytes/status/signal/deadline/cleanup. |
+| `OrdinaryBoundaryTest#test_strict_source_observations_and_environment` (new) | Environment strings are copied; altered env/cwd/order, duplicate requests and nonconsumption fail. Raw binary streams and original exception identity remain exact. | Native immutable-source and process observer contracts, including exit 7, signal and spawn failure. |
+
+All 30 launcher/fixture decision identities excluded from this ordinary scope
+remain explicitly mandatory in `native_default`: their existing broader
+`Open3` helpers do not constitute finite observations. No ordinary source read
+may fall through that helper into native Git. `RetryLivenessTest` also stays in
+the mandatory complement because its exact-exit-status fixture uses native
+Ruby; no synthetic `Process::Status` replaces it. Delivery policy/native
+validation, parallel and retry/recovery portfolios are retained without
+reduction by this boundary change.
+
+The required `PlanningGuidanceTest#test_public_prepare_to_cold_regeneration_and_fake_worker_handoff`
+still joins public prepare, exact persisted prompt, cold regeneration and actual
+fake-worker stdin with a removed-planning-handoff refusal. The required
+`AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry`
+still joins cold public CLI prepare/launch, exact consumed bytes, checkpoint,
+close/retry, historical verification and exact reconstruction. Its
+`ACT_TST20_BREAK_PROMPT=1` control must fail the consumed-prompt assertions.
+Physical filesystem publication, ownership/backpointer, process/group,
+concurrency and cold recovery proofs retain their native selections and
+deadlines. Fixture success does not replace native macOS sandbox acceptance.
+
 ## TST-22 publisher proof placement
 
 The publisher pilot retains 16 native publisher cases and 16 ordinary publisher

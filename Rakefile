@@ -12,6 +12,11 @@ Rake::TestTask.new do |task|
 end
 
 namespace :test do
+  desc "Run the fixed ordinary behavior scope with external execution prohibited"
+  task :ordinary do
+    TestSuiteRunner.run(:ordinary, root: __dir__)
+  end
+
   desc "Run required Git contracts; fail when their inventory or evidence is missing"
   task :git_contract do
     TestSuiteRunner.run(:git_contract, root: __dir__)

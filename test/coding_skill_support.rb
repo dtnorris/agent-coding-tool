@@ -12,8 +12,9 @@ module CodingSkillSupport
   PLANNING_TEXT = "---\nname: agentic-task-planning\ndescription: Fixture planning instructions.\nlicense: MIT\n---\n\nFixture planning: outcomes, ownership, integration, recovery, acceptance.\n"
 
   # Installs fixture constructor defaults once per process. Child Ruby commands
-  # reuse the parent's source/pin through test-only ENV and RUBYOPT. Git errors
-  # raise; no operator checkout or network is consulted. Returns the fixture root.
+  # reuse the parent's source/pin through test-only ENV and RUBYOPT. Ordinary
+  # setup creates files only; native selections create genuine Git objects.
+  # Git errors raise; no operator checkout/network is used. Returns fixture root.
   def self.install
     unless ENV["ACT_TEST_CODING_SKILL"]
       root = Dir.mktmpdir("act-coding-skill-")
@@ -23,13 +24,20 @@ module CodingSkillSupport
       planning_path = File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH)
       FileUtils.mkdir_p(File.dirname(planning_path))
       File.write(planning_path, PLANNING_TEXT)
-      [%w[init --initial-branch=main], %w[add .],
-       ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "skill fixture"]].each do |args|
-        _out, error, status = Open3.capture3("git", "-C", root, *args)
+      if ENV["ACT_ORDINARY_SUITE"] == "1"
+        # Only the external checkout-presence observation is represented here.
+        # This directory is never used as a native Git repository or oracle.
+        FileUtils.mkdir_p(File.join(root, ".git"))
+        revision = "1" * 40
+      else
+        [%w[init --initial-branch=main], %w[add .],
+         ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "skill fixture"]].each do |args|
+          _out, error, status = Open3.capture3("git", "-C", root, *args)
+          raise error unless status.success?
+        end
+        revision, error, status = Open3.capture3("git", "-C", root, "rev-parse", "HEAD")
         raise error unless status.success?
       end
-      revision, error, status = Open3.capture3("git", "-C", root, "rev-parse", "HEAD")
-      raise error unless status.success?
 
       ENV["ACT_TEST_CODING_SKILL"] = JSON.generate(
         "root" => root, "identity" => { "revision" => revision.strip, "sha256" => Digest::SHA256.hexdigest(TEXT) },

@@ -12,7 +12,8 @@ module GitContract
   class Observation
     attr_reader :argv, :cwd, :stdout, :stderr, :status, :exception
 
-    # Accepts exact argv/cwd and a capture3/capture tuple or an exception.
+    # Accepts exact argv (including a leading environment hash), cwd and a
+    # capture3/capture tuple or an exception. Environment strings are copied.
     # Raises ArgumentError for an ambiguous or incompatible outcome.
     def initialize(argv:, cwd:, result: nil, exception: nil)
       unless (result.nil? != exception.nil?) &&
@@ -20,7 +21,9 @@ module GitContract
               result[1].is_a?(String) && (result[2] == true || result[2] == false || result[2].is_a?(Process::Status))))
         raise ArgumentError, "provide a capture3 result or an exception"
       end
-      @argv = argv.map { |argument| argument.dup.freeze }.freeze
+      @argv = argv.map do |argument|
+        argument.is_a?(Hash) ? argument.to_h { |key, value| [key.dup.freeze, value&.dup&.freeze] }.freeze : argument.dup.freeze
+      end.freeze
       @cwd = cwd&.dup&.freeze
       @stdout, @stderr, @status = result
       @stdout = @stdout&.dup&.freeze
@@ -115,7 +118,9 @@ module GitContract
     def capture3(*argv, chdir: nil)
       options = { pgroup: true }
       options[:chdir] = chdir if chdir
-      result = Open3.popen3(@environment, *argv, **options) do |input, output, error, waiter|
+      command = argv.dup
+      environment = @environment.merge(command.first.is_a?(Hash) ? command.shift : {})
+      result = Open3.popen3(environment, *command, **options) do |input, output, error, waiter|
         input.close
         output.binmode
         error.binmode

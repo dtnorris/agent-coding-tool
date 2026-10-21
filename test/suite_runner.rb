@@ -3,11 +3,13 @@
 require "json"
 require "rbconfig"
 require "tmpdir"
+require "shellwords"
 
 # Runs the task's fixed coverage contract against independent child-test evidence.
 module TestSuiteRunner
   PATTERNS = {
     default: "test/**/*_test.rb",
+    ordinary: "test/**/*_test.rb",
     integration: "test/integration/*_git_integration.rb",
     git_contract: "test/git_contract/**/*_contract.rb"
   }.freeze
@@ -20,7 +22,7 @@ module TestSuiteRunner
     manifest_path = suite == :git_contract ? "test/git_contract/required_cases.json" : "test/required_cases.json"
     abort "#{suite}: missing required inventory #{manifest_path}" unless File.file?(File.join(root, manifest_path))
     inventory = JSON.parse(File.binread(File.join(root, manifest_path)))
-    required = suite == :git_contract ? inventory : inventory.fetch(suite.to_s)
+    required = suite == :git_contract ? inventory : inventory.fetch(suite == :ordinary ? "default" : suite.to_s)
     abort "#{suite}: empty required coverage" unless required.is_a?(Hash) && !required.empty?
     files = Dir.glob(PATTERNS.fetch(suite), base: root).sort
     abort "#{suite}: discovered files differ from required inventory" unless files == required.keys.sort
@@ -29,21 +31,64 @@ module TestSuiteRunner
         abort "#{suite}: invalid required cases for #{path}"
       end
     end
-    groups = suite == :default ? [files] : files.map { |path| [path] }
+    if %i[default ordinary].include?(suite)
+      ordinary = JSON.parse(File.binread(File.join(root, "test/ordinary_cases.json")))
+      abort "ordinary: empty required scope" if ordinary.empty?
+      ordinary.each do |path, cases|
+        unless cases.is_a?(Hash) && !cases.empty? && required.key?(path) &&
+               (cases.keys - required.fetch(path)).empty? && cases.values.all? { |reads|
+                 reads.is_a?(Array) && (reads - %w[coding planning]).empty? }
+          abort "ordinary: invalid scope or source observations for #{path}"
+        end
+      end
+      native = inventory.fetch("native_default")
+      abort "default: empty required native scope" unless native.is_a?(Hash) && !native.empty?
+      native.each do |path, cases|
+        unless cases.is_a?(Array) && !cases.empty? && cases.uniq == cases && required.key?(path) &&
+               (cases - required.fetch(path)).empty? && (cases & ordinary.fetch(path, {}).keys).empty?
+          abort "default: invalid native scope for #{path}"
+        end
+      end
+      unless (ordinary.keys | native.keys).sort == required.keys.sort && required.all? { |path, cases|
+        (ordinary.fetch(path, {}).keys + native.fetch(path, [])).sort == cases.sort }
+        abort "default: ordinary/native scopes must exactly partition required cases"
+      end
+      run_process(ordinary.keys.sort, ordinary.values.flat_map(&:keys), root: root, ordinary: true, selected: true)
+      return true if suite == :ordinary
+
+      run_process(native.keys.sort, native.values.flatten, root: root, selected: true) unless native.empty?
+      return true
+    end
+    groups = files.map { |path| [path] }
     groups.each { |paths| run_process(paths, required.values_at(*paths).flatten, root: root) }
     true
   end
 
   # Executes selected root-relative files in one Ruby process with raw output.
   # Returns true on matching positive results; exits on failed process/evidence.
+  # ordinary preloads the execution guard before setup; selected filters only
+  # the declared identities. SEED retains Minitest's standard environment control.
   # Filesystem/spawn errors propagate; no total integration timeout is imposed.
-  def self.run_process(paths, required_cases, root:)
+  def self.run_process(paths, required_cases, root:, ordinary: false, selected: false)
     Dir.mktmpdir("act-suite-") do |directory|
       evidence_path = File.join(directory, "results.json")
       stdout_path, stderr_path = %w[stdout stderr].map { |name| File.join(directory, name) }
       argv = [RbConfig.ruby, "-Ilib:test", "-r", File.join(root, "test/suite_reporter.rb"),
-              "-e", "ARGV.each { |path| require File.expand_path(path) }", *paths]
-      pid = Process.spawn({ "ACT_SUITE_EVIDENCE" => evidence_path }, *argv,
+              "-e", "paths = ARGV.shift(Integer(ARGV.shift)); paths.each { |path| require File.expand_path(path) }", paths.length.to_s, *paths]
+      if selected
+        argv += ["--name", "/\\A(?:#{required_cases.map { |name| Regexp.escape(name) }.join('|')})\\z/"]
+      end
+      environment = { "ACT_SUITE_EVIDENCE" => evidence_path, "ACT_ORDINARY_SUITE" => nil,
+                      "ACT_TEST_CODING_SKILL" => nil }
+      if ordinary
+        # RUBYOPT is parsed before command-line preloads. Prepending the guard
+        # covers inherited preload/setup code, not merely Minitest test bodies.
+        boundary = File.join(root, "test/ordinary_execution.rb")
+        environment.merge!("ACT_ORDINARY_SUITE" => "1",
+          "RUBYOPT" => Shellwords.join(["-r#{boundary}", *Shellwords.split(ENV.fetch("RUBYOPT", ""))]))
+        argv.insert(2, "-r", File.join(root, "test/ordinary_support.rb"))
+      end
+      pid = Process.spawn(environment, *argv,
                           chdir: root, out: stdout_path, err: stderr_path)
       _child, status = Process.wait2(pid)
       stdout, stderr = [stdout_path, stderr_path].map { |path| File.binread(path) }

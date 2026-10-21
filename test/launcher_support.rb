@@ -231,6 +231,7 @@ module LauncherSupport
       return ['00000000-0000-0000-0000-000000000000', '', Status.new(true)]
     end
     if command[0].is_a?(Hash) && command[1, 2] == ['git', '--no-replace-objects']
+      raise GitContract::UnexpectedObservation, 'ordinary skill read escaped its finite runner' if ENV['ACT_ORDINARY_SUITE'] == '1'
       return @skill_capture.call(*command, **options)
     end
     if command.first.is_a?(Hash)

@@ -558,6 +558,29 @@ semantics remain authoritative.
 
 `bin/agent-coding-tool launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]`
 
+Preparation is a pushed-head/prompt snapshot, not proof that every prepared
+commit object exists locally. Its output declares the implementation worker's
+milestone and first transfer: focused checks and a canonical-format-checked
+candidate, then operator checkpoint registration and host gates. Before native
+worktree creation, launch reuses WorktreeManager's parent identity/object check
+for every repository it will consume. A missing object reports repository,
+exact SHA, local source path and blocked action without fetching or repairing
+the source, reserving a worker or creating a partial attempt. Creation rechecks
+identity at its mutation boundary. Manual preparation/start do not consume
+these objects and retain their existing contracts. Inputs required only for
+later validation/publication do not become universal launch prerequisites.
+
+The launch envelope reports actual host checks (roots, prepared sources,
+worktree identity, prompt, CLI/authentication and sandbox boundary). Worker-only
+tools, including connected GitHub integration, remain **unverified** until
+startup: the worker inspects its actual tools and reports absent,
+observed-present or unverified with its observation. Host Git freshness and
+worker tool observations have separate provenance. Tool availability grants
+no permission and never enables shell network, escalation or publication.
+Before launching a review-only task, the operator must check that no automatic
+delivery contract is configured for it; readiness does not override the
+existing separately authorized delivery behavior.
+
 Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
@@ -1049,6 +1072,40 @@ validation/timing instructions. Existing checkpoint and operator gates still
 apply.
 
 ## Implementation checkpoints
+
+Confined implementation workers stop at a complete candidate when protected
+host checkpoint registration is pending. The local launch envelope supplies
+exact task, workspace, prepared SHA, remote and artifact paths for:
+
+```sh
+act checkpoint export TASK --workspace PATH --base SHA --artifact OUTSIDE_WORKSPACE.patch
+```
+
+Use `--remote NAME` when the prepared remote is not `origin`. Export uses the
+same canonical patch generator and reconstruction check as checkpoint record,
+including new files, full object IDs, binary bytes and no rename detection.
+Its temporary index **and objects** live in disposable temporary storage;
+shared source Git administration is not written. The output artifact must be
+absent, outside the implementation workspace, with an existing real parent.
+Failed export retains any bytes already written for inspection; choose a fresh
+path on retry. An applicable review diff can have different bytes and cannot
+stand in for this canonical artifact.
+
+Export reads no host task/run state and writes no checkpoint/lifecycle record.
+It checks the declared local base, content, inventory and reconstruction;
+`canonical_format_checked` does not verify prepared authority, pushed freshness
+or test success. Set `AGENT_CODING_TOOL_DATA_DIR` to the actual host data root
+from the envelope when exporting, so returned commands address that host.
+The JSON binds task/workspace/artifact, base SHA, byte count, SHA-256 and changed
+files, and returns shell-escaped `host_commands.record`, `verify` and
+`gate_prefix`. These are macOS shell-compatible commands; the operator runs
+record then verify and appends each required validation argv to gate_prefix.
+No test command is guessed. Workers report actual focused checks/results
+separately; host checkpoint status remains pending until independently recorded.
+Host gated tests, renewed freshness, integration, acceptance and publication
+are distinct owner actions. Export never grants protected ACTD writes or
+initiates delivery. Exactly one writer is supported by host checkpoint record;
+multi-writer candidates retain the existing separate review boundary.
 
 After focused validation of a coherent implementation, the operator can run
 `act checkpoint record TASK --workspace PATH` on a local Git checkout whose

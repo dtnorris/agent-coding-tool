@@ -119,7 +119,8 @@ class WorktreeManagerTest < Minitest::Test
           "--show-toplevel", "--git-common-dir", "--absolute-git-dir",
           stdout: "#{@ordinary}\n#{@ordinary}/.git\n#{@ordinary}/.git\n".b),
         recovery_observation(@ordinary, "git", "remote", "get-url", "origin", stdout: "#{@remote}\n".b),
-        recovery_observation(@ordinary, "git", "cat-file", "-e", "#{'f' * 40}^{commit}",
+        recovery_observation(@ordinary, { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" },
+          "git", "--no-replace-objects", "cat-file", "-e", "#{'f' * 40}^{commit}",
           stderr: "fatal: Not a valid object name #{'f' * 40}^{commit}\n".b, exit_code: 128)
       ]
       with_recovery_observations(observations) do

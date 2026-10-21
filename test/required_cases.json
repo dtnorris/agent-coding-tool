@@ -355,6 +355,10 @@
     ]
   },
   "integration": {
+    "test/integration/readiness_git_integration.rb": [
+      "ReadinessTest#test_missing_imminent_object_blocks_launch_without_fetch_or_worker",
+      "ReadinessTest#test_public_journey_exports_canonical_candidate_and_transfers_to_host"
+    ],
     "test/integration/icebox_git_integration.rb": [
       "IceboxGitIntegrationTest#test_public_cli_journey",
       "IceboxGitIntegrationTest#test_guard_removal_negative_control",

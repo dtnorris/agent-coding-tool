@@ -27,6 +27,10 @@ module LauncherSupport
     end
 
     def inspect! = true
+
+    # External source observations are synthetic in ordinary decision tests.
+    # Native launch tests use the production read-only prerequisite check.
+    def creation_readiness!(task:, snapshot:) = []
   end
 
   class Inspector < TestHelpers::FakeInspector
@@ -77,6 +81,8 @@ module LauncherSupport
       #!#{RbConfig.ruby}
       require 'json'
       require 'tmpdir'
+      require 'open3'
+      require 'shellwords'
       if ARGV == ['--version']
         puts 'codex-cli 0.162.1'
         exit
@@ -144,6 +150,20 @@ module LauncherSupport
       end
       File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
       File.write('worker-change.txt', 'worker')
+      if mode.start_with?('journey-')
+        # Finite external worker boundary: consume the real envelope command,
+        # check the fake implementation and export through the public CLI.
+        abort 'focused check failed' unless File.binread('worker-change.txt') == 'worker'
+        command = input.lines.find { |line| line.start_with?('After focused checks, export using') }
+        abort 'missing candidate handoff' unless command
+        output, error, status = Open3.capture3(*Shellwords.split(command.split(': ', 2).last))
+        abort error unless status.success?
+        result = JSON.parse(output)
+        result['focused_checks'] = [{ 'command' => 'finite fake worker content check', 'result' => 'PASS' }]
+        result['startup_tools'] = mode.delete_prefix('journey-')
+        File.write(path, JSON.generate(result))
+        exit
+      end
       puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
       puts 'progress'
       STDOUT.flush

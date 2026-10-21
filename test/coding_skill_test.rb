@@ -2,9 +2,10 @@
 
 require_relative "test_helper"
 require "minitest/mock"
+require_relative "skill_observations"
 
-# Exercises real local Git objects with synthetic skills, independent of the
-# operator's checkout, network and canonical skill wording.
+# Exercises immutable-source decisions against finite external responses. The
+# branch/worktree case separately retains actual Git objects as a native oracle.
 class CodingSkillTest < Minitest::Test
   include TestHelpers
 
@@ -16,21 +17,15 @@ class CodingSkillTest < Minitest::Test
   # Verifies complete byte-preserving inclusion, pin identity and offline-only
   # object access. Local Git errors propagate rather than bypassing verification.
   def test_complete_skill_once_with_identity_and_only_offline_git_reads
-    renderer = AgentCodingTool::PromptRenderer.new
-    capture = Open3.method(:capture3)
-    calls = []
-    prompt = Open3.stub(:capture3, lambda { |*args|
-      calls << args
-      capture.call(*args)
-    }) { renderer.render(task, {}) }
+    runner = SkillObservations.defaults(%w[coding coding])
+    renderer = AgentCodingTool::PromptRenderer.new(runner: runner)
+    prompt = renderer.render(task, {})
     assert_equal 1, prompt.scan(CodingSkillSupport::TEXT).length
     assert_includes prompt, "Revision: #{renderer.skill_identity.fetch('revision')}\n"
     assert_includes prompt, "SHA-256: #{Digest::SHA256.hexdigest(CodingSkillSupport::TEXT)}\n"
     assert_includes prompt, "Git restrictions and acceptance criteria take precedence."
-    assert_equal [[{ "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" },
-                   "git", "--no-replace-objects", "-C", AgentCodingTool::PromptRenderer::SKILL_ROOT,
-                   "cat-file", "blob", "#{renderer.skill_identity.fetch('revision')}^{commit}:#{AgentCodingTool::PromptRenderer::SKILL_PATH}"]], calls
     assert_equal prompt, renderer.render(task, {})
+    assert runner.verify!
   end
 
   # Covers read-only and explicit non-coding exemptions without title heuristics.
@@ -53,9 +48,18 @@ class CodingSkillTest < Minitest::Test
       [{ skill_identity: renderer::SKILL_IDENTITY.merge("sha256" => "0" * 64) }, /integrity mismatch/],
       [{ skill_identity: { "revision" => "main", "sha256" => "0" * 64 } }, /malformed pinned identity/]
     ]
-    variants.each do |options, message|
-      error = assert_raises(AgentCodingTool::InvalidState) { renderer.new(**options).render(task, {}) }
+    variants.each_with_index do |(options, message), index|
+      observations = if [1, 2].include?(index)
+        [SkillObservations.read(root: renderer::SKILL_ROOT, path: renderer::SKILL_PATH,
+          identity: options.fetch(:skill_identity), text: CodingSkillSupport::TEXT,
+          success: index == 2, stderr: index == 1 ? "missing pinned object" : "")]
+      else
+        []
+      end
+      runner = GitContract::Replay.new(observations)
+      error = assert_raises(AgentCodingTool::InvalidState) { renderer.new(**options, runner: runner).render(task, {}) }
       assert_match message, error.message
+      assert runner.verify!
     end
   end
 
@@ -65,11 +69,16 @@ class CodingSkillTest < Minitest::Test
      CodingSkillSupport::TEXT.sub("license: MIT", "license: false"),
      CodingSkillSupport::TEXT.sub("Fixture coding instructions.", ""),
      CodingSkillSupport::TEXT.sub("Fixture instructions: inspect, change, verify.", "")].each do |text|
-      with_skill_source(text) do |root, identity|
+      Dir.mktmpdir("act-skill-response-") do |root|
+        FileUtils.mkdir_p(File.join(root, ".git"))
+        identity = { "revision" => "2" * 40, "sha256" => Digest::SHA256.hexdigest(text) }
+        runner = GitContract::Replay.new([SkillObservations.read(root: root,
+          path: AgentCodingTool::PromptRenderer::SKILL_PATH, identity: identity, text: text)])
         error = assert_raises(AgentCodingTool::InvalidState) do
-          AgentCodingTool::PromptRenderer.new(skill_root: root, skill_identity: identity).render(task, {})
+          AgentCodingTool::PromptRenderer.new(skill_root: root, skill_identity: identity, runner: runner).render(task, {})
         end
         assert_match(/coding skill: (malformed|Psych::)/, error.message)
+        assert runner.verify!
       end
     end
   end

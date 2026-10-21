@@ -49,7 +49,8 @@ inspector = AgentCodingTool::RepoInspector.new(config, runner: runner)
 runner.verify!
 ```
 
-`Observation` takes exact string argv, exact cwd (including `nil`), and either
+`Observation` takes exact string argv with an optional leading material
+environment hash, exact cwd (including `nil`), and either
 `result:` or `exception:`. A result contains raw stdout/stderr and either a
 boolean success or a genuine `Process::Status`. Boolean fixtures need no native
 setup and are supported by `Replay#capture`, the `CommandRunner` seam.
@@ -73,7 +74,10 @@ fixture into a successful refusal.
 and spawn exceptions. It uses a two-second deadline per owned process group,
 with concurrent pipe draining and a watchdog that kills only that group and
 joins its waiter/readers. Timeout is a fixture `IOError`, never a recorded Git
-response. `environment:` isolates child configuration; `seconds:` is for narrow
+response. `environment:` isolates child configuration; a command's explicit
+leading environment hash overrides those defaults and remains part of its exact
+replay input. Environment strings are copied and frozen with the observation.
+`seconds:` is for narrow
 observer qualification and does not alter production deadlines. Native recording
 is contract support, not a command emulator or production replacement.
 
@@ -101,6 +105,7 @@ observations are separate negative controls, followed by restored positives.
 | `strict_replay` | Exact argv/cwd, raw bytes and false success at the declared observation boundary | Unexpected argv/cwd, missing, duplicate and wrong-order requests fail; boolean raw-status fabrication is refused |
 | `concurrent_remote_requests` | Real `RepoInspector` worker scheduling, deduplication and unordered strict matching | Bounded rendezvous fails if execution becomes serial; missing/duplicate captures fail |
 | `native_process_observer` | Production `CommandRunner` preserves binary stdout/stderr, exit 7 and signal termination through native and replay paths | Owned sleeping child exceeds its deadline, is killed/reaped and yields no fabricated observation |
+| `immutable_skill_object_read` | `PromptRenderer` through the native runner: exact offline environment, immutable blob bytes, genuine exit status and replay through the same parser | Dirty working text is ignored; missing pinned commit exits 128 and preserves the same `InvalidState` classification through replay |
 
 Diagnostics, temporary paths, object IDs, registry order and Git version text
 may vary by platform/version. They are obtained from the native invocation and

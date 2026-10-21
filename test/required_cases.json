@@ -1,5 +1,9 @@
 {
   "default": {
+    "test/ordinary_boundary_test.rb": [
+      "OrdinaryBoundaryTest#test_dependency_entries_refuse_before_effect",
+      "OrdinaryBoundaryTest#test_strict_source_observations_and_environment"
+    ],
     "test/launcher_fixture_test.rb": [
       "LauncherFixtureTest#test_scoped_fixture_environment_permissions_and_retention",
       "LauncherFixtureTest#test_foreign_container_refuses_without_repair",
@@ -441,6 +445,99 @@
       "PublisherTest#test_status_is_read_only_and_repository_operation_blocks_publish",
       "PublisherTest#test_remote_push_race_preserves_local_commit_without_reconciliation",
       "PublisherTest#test_external_observations_are_structurally_outside_all_public_selections"
+    ]
+  },
+  "native_default": {
+    "test/launcher_fixture_test.rb": [
+      "LauncherFixtureTest#test_scoped_fixture_environment_permissions_and_retention",
+      "LauncherFixtureTest#test_foreign_container_refuses_without_repair",
+      "LauncherFixtureTest#test_protected_paths_cannot_be_inside_fixture_container",
+      "LauncherFixtureTest#test_occupied_invocation_directory_is_never_reused",
+      "LauncherFixtureTest#test_denied_fixture_probe_refuses_worker",
+      "LauncherFixtureTest#test_root_identity_change_before_reservation_refuses_worker",
+      "LauncherFixtureTest#test_worker_failure_retains_fixture_and_evidence"
+    ],
+    "test/coding_skill_test.rb": [
+      "CodingSkillTest#test_branch_movement_and_dirty_source_do_not_change_prepare_or_cold_launch"
+    ],
+    "test/external_activity_test.rb": [
+      "ExternalActivityTest#test_lock_serialization_and_cross_task_identity_races",
+      "ExternalActivityTest#test_same_task_report_and_manual_start_races"
+    ],
+    "test/launcher_test.rb": [
+      "LauncherTest#test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout",
+      "LauncherTest#test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory",
+      "LauncherTest#test_unavailable_coding_skill_refuses_launch_before_reservation_or_handoff",
+      "LauncherTest#test_dependency_blockers_and_previous_outcomes_do_not_get_erased",
+      "LauncherTest#test_dependencies_are_rechecked_after_preparation",
+      "LauncherTest#test_stale_input_and_changed_remote_authority_fail_closed",
+      "LauncherTest#test_collision_is_not_implicitly_overridden",
+      "LauncherTest#test_stale_manual_in_flight_reservation_requires_judgment",
+      "LauncherTest#test_missing_binary_auth_and_unsupported_help_fail_without_preparation",
+      "LauncherTest#test_unsupported_sandbox_version_and_legacy_help_refuse_worker_launch",
+      "LauncherTest#test_zero_writers_malformed_task_and_unsupported_branch",
+      "LauncherTest#test_prompt_tampering_and_missing_freshness",
+      "LauncherTest#test_foreign_dirty_partial_or_symlinked_evidence_is_never_repaired",
+      "LauncherTest#test_private_checkpoint_evidence_coexists_with_worker_reports",
+      "LauncherTest#test_regular_finder_metadata_coexists_with_valid_worker_evidence",
+      "LauncherTest#test_finder_metadata_does_not_hide_unknown_worker_liveness",
+      "LauncherTest#test_only_regular_top_level_finder_metadata_is_ignored",
+      "LauncherTest#test_replaced_or_nonprivate_checkpoint_namespace_fails_closed",
+      "LauncherTest#test_unexpected_directory_and_malformed_worker_report_still_fail_closed",
+      "LauncherTest#test_process_failure_and_invalid_final_preserve_real_exit_and_reservation",
+      "LauncherTest#test_child_start_failure_retains_recoverable_evidence",
+      "LauncherTest#test_ctrl_c_targets_child_group_preserves_status_and_does_not_orphan",
+      "LauncherTest#test_simulated_host_crash_blocks_relaunch_even_after_manual_prepare_erases_marker",
+      "LauncherTest#test_cli_requires_opt_in_and_rejects_provider_sandbox_and_collision_overrides",
+      "LauncherTest#test_exit_provenance_exposes_midflight_head_movement_without_rewriting_preparation",
+      "LauncherTest#test_exit_freshness_unavailable_is_reported_without_losing_worker_status",
+      "LauncherTest#test_read_only_movement_preserves_original_snapshot_and_discloses_refreshed_heads",
+      "LauncherTest#test_start_gate_failure_never_delivers_prompt_or_starts_child",
+      "LauncherTest#test_incompatible_snapshot_and_foreign_project_configuration_block_worker",
+      "LauncherTest#test_cli_returns_real_nonzero_worker_code_using_fake_path",
+      "LauncherTest#test_launch_fails_before_reservation_if_sandbox_can_write_private_evidence",
+      "LauncherTest#test_sandbox_probe_uses_private_config_home_and_supported_root_flags",
+      "LauncherTest#test_launch_handoff_pins_read_only_dependency_and_probes_its_boundary",
+      "LauncherTest#test_two_writable_worktrees_keep_separate_prepared_authorities",
+      "LauncherTest#test_external_conflicts_refuse_launch_even_with_override_and_namespace_is_strict",
+      "LauncherTest#test_external_report_after_worker_handoff_blocks_automatic_and_multi_delivery"
+    ],
+    "test/parallel_launch_test.rb": [
+      "ParallelLaunchTest#test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
+      "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
+      "ParallelLaunchTest#test_advanced_main_makes_parallel_prepared_baselines_incompatible",
+      "ParallelLaunchTest#test_manual_in_flight_worker_remains_unverified_with_launch_flag",
+      "ParallelLaunchTest#test_manual_start_waits_for_launch_reservation_boundary"
+    ],
+    "test/planning_guidance_test.rb": [
+      "PlanningGuidanceTest#test_public_prepare_to_cold_regeneration_and_fake_worker_handoff",
+      "PlanningGuidanceTest#test_ordinary_controls_ignore_missing_or_corrupt_planning_source",
+      "PlanningGuidanceTest#test_designation_and_pin_drift_require_evidence_preserving_reset_reprepare",
+      "PlanningGuidanceTest#test_invalid_material_preserves_initial_retry_and_consumption_evidence",
+      "PlanningGuidanceTest#test_offline_object_reads_and_cold_regeneration_ignore_branch_and_worktree"
+    ],
+    "test/preflight_recovery_test.rb": [
+      "PreflightRecoveryTest#test_explicit_abandonment_removes_only_clean_owned_worktrees_and_preserves_evidence",
+      "PreflightRecoveryTest#test_recovery_resumes_after_one_native_removal_without_erasing_evidence",
+      "PreflightRecoveryTest#test_second_failed_preflight_can_be_abandoned_after_fresh_preparation",
+      "PreflightRecoveryTest#test_dirty_foreign_changed_active_and_worker_started_attempts_refuse_removal"
+    ],
+    "test/retry_liveness_test.rb": [
+      "RetryLivenessTest#test_hostname_rename_requires_same_boot_and_user",
+      "RetryLivenessTest#test_time_machine_warning_is_scoped_and_diagnostic",
+      "RetryLivenessTest#test_negative_host_pid_group_heartbeat_and_tool_matrix"
+    ],
+    "test/state_store_test.rb": [
+      "StateStoreTest#test_cold_readers_at_controlled_publication_boundaries"
+    ],
+    "test/worktree_manager_test.rb": [
+      "WorktreeManagerTest#test_visible_branch_exact_base_and_dirty_divergent_ordinary_checkout",
+      "WorktreeManagerTest#test_pinned_detached_reader_and_cleanup_blocker",
+      "WorktreeManagerTest#test_foreign_paths_partial_metadata_missing_object_and_changed_branch_fail_closed",
+      "WorktreeManagerTest#test_symlinked_root_and_interrupted_add_preserve_evidence",
+      "WorktreeManagerTest#test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate",
+      "WorktreeManagerTest#test_attempt_container_cannot_reuse_an_existing_resource",
+      "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource"
     ]
   }
 }

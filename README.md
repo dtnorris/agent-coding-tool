@@ -1301,13 +1301,14 @@ The test commands have distinct contracts:
 | Command | Required behavior |
 | --- | --- |
 | `bundle exec rake` | Validate configured ACTD YAML, then enforce the full `test:all` aggregate. |
-| `bundle exec rake test` | Fast `test/**/*_test.rb` selection only, without ACTD YAML validation or native integrations. |
+| `bundle exec rake test` | Unchanged `test/**/*_test.rb` selection, including mixed/native cases, without ACTD YAML validation or native integrations. |
+| `bundle exec rake test:ordinary` | Fixed ordinary identities with finite external observations and subprocess execution prohibited from startup. |
 | `bundle exec rake test:git_contract` | Required Git-contract inventory and strict real-Git comparison. |
 | `bundle exec rake test:integration` | All eight required offline native Git suites, in separate Ruby processes. |
 | `bundle exec rake test:all` | Git contracts, eight native integrations and verified default test coverage; missing or extra cases fail closed. |
 
 The default `rake` command validates ACTD YAML before the full required aggregate.
-The standalone fast `test` command does not establish complete acceptance.
+Neither standalone `test` nor `test:ordinary` establishes complete acceptance.
 The aggregate uses real Rake prerequisites: a failed prerequisite stops the task,
 and each prerequisite runs once per invocation. Tests use explicit temporary
 data directories and do not depend on personal task data. The publisher tests
@@ -1347,9 +1348,35 @@ the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
 replayed unchanged; a child's nonzero exit status is preserved (signals map to
 128 plus signal number). Evidence records completed `Class#test_method` identities
 and assertion counts independently of the human-readable summary. The default
-selection runs together; native and Git-contract files run separately to avoid
-Minitest class collisions. Existing fixture deadlines remain authoritative;
+selection is partitioned into two interpreters: the ordinary cases listed in
+`test/ordinary_cases.json` and the explicit `native_default` inventory in
+`test/required_cases.json`. Their disjoint union must equal the complete default
+inventory; an omission cannot silently escape into native execution. Native
+integrations and Git-contract files run separately to avoid Minitest class
+collisions. Existing fixture deadlines remain authoritative;
 there is no total integration runtime ceiling.
+
+The ordinary runner preloads `test/ordinary_execution.rb` before inherited
+`RUBYOPT`, helper initialization and test setup. It refuses native Ruby process
+entries, including Git, workers/providers, host tools, forks, Ruby children and
+implicit subprocess pipes. The outer Ruby test runner is permitted; an ordinary
+test cannot create descendants. Contract/integration and mixed/native selections
+retain their real effects in separate interpreters. This is a test dependency
+boundary for the repository's Ruby paths, not an OS sandbox against arbitrary
+native extensions or FFI.
+
+Ordinary skill setup writes only disposable files. Each case declares its finite
+coding/planning read sequence in `test/ordinary_cases.json`; exact argv (including
+the offline Git environment), cwd, bytes, outcome and ordering are checked by
+the shared observations, with consumption verified after teardown. Tests that
+vary source bytes/pins supply their own finite transcripts. The production
+`PromptRenderer` defaults to the native `CommandRunner`; it still validates every
+pin, hash, UTF-8 document, YAML field and prompt handoff on every render. There
+is no production skill cache or native fallback in ordinary tests. Preserve the
+bounded immutable-object contract, public cold prompt/consumed-worker journey
+and continuous checkpoint/retry/recovery integration when changing this seam.
+Use Minitest's standard `SEED=2300` environment setting for comparable runs;
+the runner does not impose a new runtime ceiling or seed policy.
 
 For the TST-15 handoff, put genuine contract suites in
 `test/git_contract/**/*_contract.rb` and supply

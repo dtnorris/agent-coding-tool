@@ -372,4 +372,51 @@ class NativeGitContract < Minitest::Test
     assert_match(/exceeded/, error.message)
     assert_empty bounded.observations
   end
+
+  # Proves the renderer's boolean runner seam against a bounded immutable Git
+  # blob read, including material environment, dirty-source immunity, replay and
+  # missing-object refusal. No test-only source defaults are installed here.
+  def test_immutable_skill_object_read
+    fixture do |native, parent, _remote, _base|
+      text = "---\nname: karpathy-manning-dtnorris-guidelines\ndescription: Native fixture.\nlicense: MIT\n---\n\nInspect and verify.\n"
+      path = AgentCodingTool::PromptRenderer::SKILL_PATH
+      FileUtils.mkdir_p(File.dirname(File.join(parent, path)))
+      File.binwrite(File.join(parent, path), text)
+      git(native, parent, "add", path)
+      git(native, parent, "-c", "core.hooksPath=/dev/null", "commit", "-m", "immutable source")
+      pin = { "revision" => git(native, parent, "rev-parse", "HEAD").strip,
+              "sha256" => Digest::SHA256.hexdigest(text) }
+      File.binwrite(File.join(parent, path), "malformed dirty source")
+      task = { "id" => "T", "title" => "Native source", "repositories" => {} }
+      before = native.observations.length
+      actual = AgentCodingTool::PromptRenderer.new(skill_root: parent, skill_identity: pin, runner: native).render(task, {})
+      observation = native.observations.drop(before).fetch(0)
+      assert_equal 1, native.observations.length - before
+      assert_equal text.b, observation.stdout
+      assert_equal "".b, observation.stderr
+      assert_equal 0, observation.status.exitstatus
+      assert_equal({ "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }, observation.argv.first)
+      assert_equal ["git", "--no-replace-objects", "-C", parent, "cat-file", "blob",
+                    "#{pin.fetch('revision')}^{commit}:#{path}"], observation.argv.drop(1)
+      replay = GitContract::Replay.new([observation])
+      assert_equal actual, AgentCodingTool::PromptRenderer.new(skill_root: parent, skill_identity: pin, runner: replay).render(task, {})
+      assert replay.verify!
+      assert_includes actual, text
+      refute_includes actual, "malformed dirty source"
+
+      missing = pin.merge("revision" => "0" * 40)
+      error = assert_raises(AgentCodingTool::InvalidState) do
+        AgentCodingTool::PromptRenderer.new(skill_root: parent, skill_identity: missing, runner: native).render(task, {})
+      end
+      assert_match(/pinned source unavailable/, error.message)
+      failure = native.observations.last
+      assert_equal 128, failure.status.exitstatus
+      replay = GitContract::Replay.new([failure])
+      replayed = assert_raises(AgentCodingTool::InvalidState) do
+        AgentCodingTool::PromptRenderer.new(skill_root: parent, skill_identity: missing, runner: replay).render(task, {})
+      end
+      assert_equal error.message, replayed.message
+      assert replay.verify!
+    end
+  end
 end

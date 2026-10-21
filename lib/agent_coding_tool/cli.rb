@@ -194,9 +194,15 @@ module AgentCodingTool
         opts.on("--destination PATH") { |value| options[:destination] = value }
         opts.on("--confirm-disconnected") { options[:confirm_disconnected] = true }
         opts.on("--attempt NUMBER", Integer) { |value| options[:attempt] = value }
+        opts.on("--requested-seed NUMBER", Integer) { |value| options[:seed] = value }
+        opts.on("--requested-selection TEXT") { |value| options[:selection] = value }
+        opts.on("--observations PATH") { |value| options[:observations] = value }
       end
       parser.order!(argv)
-      checkpoint = Checkpoint.new(data_root: @data_root)
+      if action != "gate" && options.keys.any? { |key| %i[seed selection observations].include?(key) }
+        raise Error, "checkpoint: requested settings and observations are gate-only options"
+      end
+      checkpoint = Checkpoint.new(data_root: @data_root, err: @err)
       result = case action
                when "record"
                  raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination] && !options[:attempt]
@@ -206,7 +212,8 @@ module AgentCodingTool
                  checkpoint.verify(id, workspace: options[:workspace], attempt: options[:attempt])
                when "gate"
                  raise Error, "checkpoint gate requires --workspace PATH -- COMMAND" unless options[:workspace] && argv.any? && !options[:artifact] && !options[:destination] && !options[:attempt]
-                 checkpoint.gate(id, workspace: options.fetch(:workspace), command: argv)
+                 checkpoint.gate(id, workspace: options.fetch(:workspace), command: argv,
+                                 requested: options.slice(:seed, :selection), observations: options[:observations])
                when "recover"
                  raise Error, "checkpoint recover requires --destination and --confirm-disconnected" unless
                    options[:destination] && options[:confirm_disconnected] && argv.empty? && !options[:workspace] && !options[:artifact]
@@ -1473,6 +1480,9 @@ module AgentCodingTool
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH | --attempt NUMBER]
           checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]
+                              records private invocation receipts; optional gate flags:
+                              --requested-seed NUMBER --requested-selection TEXT
+                              --observations PATH (fresh private command-report JSON)
           checkpoint recover TASK --destination PATH --confirm-disconnected [--attempt NUMBER]
           worktrees TASK      verify and show task-owned worktree ownership
           cleanup TASK [--dry-run]

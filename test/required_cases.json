@@ -379,6 +379,13 @@
       "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle"
     ],
     "test/integration/checkpoint_git_integration.rb": [
+      "CheckpointTest#test_exempt_gate_receipt_setup_is_best_effort_without_following_symlinks",
+      "CheckpointTest#test_gate_receipt_setup_failure_retains_required_candidate_binding",
+      "CheckpointTest#test_gate_receipt_setup_cannot_bypass_required_symlink_verification",
+      "CheckpointTest#test_public_gate_receipts_bind_candidate_and_distinguish_conditions",
+      "CheckpointTest#test_gate_receipts_preserve_process_failures_and_candidate_checks",
+      "CheckpointTest#test_gate_receipt_write_failure_cannot_mask_primary_failure_or_claim_durability",
+      "CheckpointTest#test_gate_observation_inputs_are_fresh_private_and_narrow",
       "CheckpointTest#test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace",
       "CheckpointTest#test_incomplete_and_symlinked_artifacts_cannot_replace_good_checkpoint",
       "CheckpointTest#test_stale_checkpoint_blocks_expensive_command_then_refreshes",

@@ -20,12 +20,18 @@ module AgentCodingTool
   # artifacts and manifests live in the operator's private run-evidence root.
   class Checkpoint
     SCHEMA = "agent-coding-tool-checkpoint/v1"
+    GATE_SCHEMA = "agent-coding-tool-checkpoint-gate/v1"
+    OBSERVATION_SCHEMA = "agent-coding-tool-gate-observation/v1"
+    INVOCATION_SETTINGS = %w[TMPDIR TMP TEMP SEED TESTOPTS].freeze
 
-    def initialize(data_root:)
+    # Binds the operator-owned task/evidence roots and receipt diagnostics stream;
+    # construction performs no I/O. Filesystem failures arise at operation time.
+    def initialize(data_root:, err: $stderr)
       @data_root = File.expand_path(data_root)
       @tasks = TaskStore.new(File.join(@data_root, "tasks"))
       @states = StateStore.new(File.join(@data_root, "state"))
       @root = "#{@data_root}-runs"
+      @err = err
     end
 
     def record(id, workspace:, artifact: nil)
@@ -121,15 +127,74 @@ module AgentCodingTool
         "workspace_checked" => !!workspace }
     end
 
-    def gate(id, workspace:, command:)
+    # Runs the unchanged inherited-environment system call between candidate
+    # checks, returning its exit code or propagating the original failure.
+    # Optional requested settings are declarations, never command overrides.
+    # A fresh private observation file may report supported facts; receipts are
+    # best effort and persistence failures warn without replacing primary errors.
+    def gate(id, workspace:, command:, requested: {}, observations: nil)
       raise InvalidState, "checkpoint: validation command required" if command.empty?
-      context!(id, require_in_flight: true)
-      verify(id, workspace: workspace)
-      success = system(*command, chdir: workspace)
-      exit_code = $?.exitstatus if $?
-      verify(id, workspace: workspace)
-      raise InvalidState, "checkpoint: validation command failed (#{exit_code || 'unavailable'})" unless success
-      exit_code
+      _task, state, name, base = context!(id, require_in_flight: true)
+      directory = gate_directory(id, state, workspace)
+      record = directory && current_record(directory, id, state, name, base, optional: true)
+      token = SecureRandom.uuid
+      receipt = {
+        "schema_version" => GATE_SCHEMA, "invocation_id" => token,
+        "task_id" => id, "attempt" => attempt(state), "repository" => name,
+        "authority" => base.slice("remote_url", "branch", "pushed_sha"),
+        "candidate" => record && record.slice("record_file", "sha256", "implementation_sha256", "artifact", "launch_invocation"),
+        "workspace_argument" => workspace, "cwd" => nil, "argv" => command,
+        "settings" => INVOCATION_SETTINGS.to_h { |key| [key, ENV[key]] },
+        "requested" => { "source" => "operator_declaration", "seed" => requested[:seed], "selection" => requested[:selection] },
+        "observed" => { "status" => "not_observed", "seed" => nil, "selection" => nil, "summary" => nil },
+        "output" => { "status" => "not_captured" },
+        "started_at" => Time.now.utc.iso8601(6), "finished_at" => nil,
+        "pre_check" => "not_checked", "post_check" => "not_checked",
+        "receipt_phase" => "started", "command_outcome" => { "status" => "incomplete_or_unknown" }, "candidate_validation" => "unknown"
+      }
+      persist_gate(directory, "gate-#{token}.started.json", receipt)
+      receipt["command_outcome"] = { "status" => "not_run" }
+      phase = "pre_check"
+      begin
+        before = verify(id, workspace: workspace)
+        # Receipt setup is optional; verification still supplies the binding when
+        # storage setup failed, and the post-check must match that exact record.
+        record = before["record"] unless directory
+        verify_gate_binding!(before, record)
+        receipt["pre_check"] = "verified"
+        phase = "observation_input"
+        observation_path!(observations, directory) if observations
+        receipt["cwd"] = File.realpath(workspace)
+        phase = "command"
+        receipt["command_outcome"] = { "status" => "incomplete_or_unknown" }
+        success = system(*command, chdir: workspace)
+        status = $?
+        exit_code = status.exitstatus if status
+        receipt["command_outcome"] = {
+          "status" => success.nil? ? "failed_to_start" : status&.signaled? ? "signal" : status&.exited? ? "exited" : "incomplete_or_unknown",
+          "success" => success, "exit_code" => exit_code, "signal" => status&.termsig
+        }
+        phase = "post_check"
+        after = verify(id, workspace: workspace)
+        verify_gate_binding!(after, record)
+        receipt["post_check"] = "verified"
+        receipt["candidate_validation"] = success ? (record ? "passed" : "not_applicable") : "failed"
+        phase = "complete"
+        raise InvalidState, "checkpoint: validation command failed (#{exit_code || 'unavailable'})" unless success
+        exit_code
+      rescue Exception => error # Also retain evidence for Interrupt; never swallow it.
+        receipt[phase] = "failed" if %w[pre_check post_check].include?(phase)
+        receipt["command_outcome"]["status"] = "failed_to_start" if phase == "command" && error.is_a?(SystemCallError)
+        receipt["exception_class"] = error.class.name
+        receipt["failure_phase"] = phase
+        receipt["candidate_validation"] = "failed"
+        raise
+      ensure
+        receipt["observed"] = gate_observations(observations, id, state) if observations && receipt["command_outcome"]["status"] != "not_run"
+        receipt["receipt_phase"] = "finished"
+        receipt["finished_at"] = Time.now.utc.iso8601(6)
+        persist_gate(directory, "gate-#{token}.finished.json", receipt)
+      end
     end
 
     # Reconstructs current or closed-attempt bytes in a new independent clone;
@@ -162,6 +227,81 @@ module AgentCodingTool
     end
 
     private
+
+    # Ensures both checks used this invocation's checkpoint, including its record
+    # identity. Exempt checks have no candidate; pointer replacement raises.
+    def verify_gate_binding!(verification, record)
+      raise InvalidState, "checkpoint: candidate changed during validation" unless verification["record"] == record
+    end
+
+    # Accepts only a new direct child of the private attempt directory. Returns
+    # its absolute path; reused files, symlinks and foreign locations raise.
+    def observation_path!(path, directory)
+      absolute = File.expand_path(path)
+      unless path == absolute && File.dirname(absolute) == directory && File.basename(absolute).match?(/\A[A-Za-z0-9][A-Za-z0-9_.-]*\.observation\.json\z/) &&
+             !File.exist?(absolute) && !File.symlink?(absolute)
+        raise InvalidState, "checkpoint: observations require a fresh NAME.observation.json in the private attempt directory"
+      end
+      absolute
+    end
+
+    # Reads a bounded, private, command-reported JSON sidecar without inspecting
+    # console output or shell internals. Returns explicit unknowns on unavailable
+    # or invalid data; no report or observation error changes command success.
+    def gate_observations(path, id, state)
+      unknown = { "status" => "unavailable_or_invalid", "seed" => nil, "selection" => nil, "summary" => nil,
+                  "source" => { "kind" => "command_report", "path" => File.expand_path(path) } }
+      return unknown unless File.dirname(path) == directory!(id, state, create: false)
+      bytes = File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |file|
+        stat = file.stat
+        return unknown unless stat.file? && stat.uid == Process.uid && (stat.mode & 0o077).zero? && stat.size <= 8192
+        file.binmode.read(8193)
+      end
+      return unknown unless bytes && bytes.bytesize <= 8192
+      report = JSON.parse(bytes)
+      return unknown unless report.is_a?(Hash) && report["schema_version"] == OBSERVATION_SCHEMA &&
+        (report.keys - %w[schema_version seed selection summary]).empty? &&
+        (report["seed"].nil? || report["seed"].is_a?(Integer)) &&
+        (report["selection"].nil? || (report["selection"].is_a?(String) && report["selection"].bytesize <= 1024))
+      summary = report["summary"]
+      return unknown unless summary.nil? || (summary.is_a?(Hash) && !summary.empty? &&
+        (summary.keys - %w[tests assertions failures errors skips]).empty? &&
+        summary.values.all? { |value| value.is_a?(Integer) && value >= 0 })
+      unknown.merge("status" => "reported", "seed" => report["seed"], "selection" => report["selection"], "summary" => summary,
+                    "source" => unknown.fetch("source").merge("sha256" => Digest::SHA256.hexdigest(bytes)))
+    rescue StandardError
+      unknown
+    end
+
+    # Prepares private receipt storage for an invocation, returning nil with a
+    # durability warning on failure. Mandatory verification remains in gate;
+    # unsafe paths are never canonicalized to bypass evidence ancestry checks.
+    def gate_directory(id, state, workspace)
+      directory = directory!(id, state)
+      raise InvalidState, "checkpoint: evidence overlaps disposable workspace" if
+        directory == File.expand_path(workspace) || directory.start_with?("#{File.expand_path(workspace)}/")
+      directory
+    rescue StandardError, NotImplementedError => error
+      @err.puts "Checkpoint gate receipt setup failed (#{error.class}); crash durability unconfirmed; inspect private evidence before retrying"
+      nil
+    end
+
+    # Writes immutable invocation evidence through the checkpoint's existing
+    # sync boundary, rechecking private ancestry. Returns a path on success;
+    # failures report crash-durability uncertainty without masking gate errors.
+    def persist_gate(directory, filename, receipt)
+      return unless directory
+      _task, state, = context!(receipt.fetch("task_id"))
+      raise InvalidState, "checkpoint: attempt changed during validation" unless
+        directory!(receipt.fetch("task_id"), state, create: false) == directory
+      path = File.join(directory, filename)
+      write_once!(path, JSON.pretty_generate(receipt) + "\n")
+      @err.puts "Checkpoint gate receipt: #{path}"
+      path
+    rescue StandardError, NotImplementedError => error
+      @err.puts "Checkpoint gate receipt write failed (#{error.class}); crash durability unconfirmed; inspect private evidence before retrying"
+      nil
+    end
 
     # Resolves current or explicitly bound original task/state/writer/base context.
     # Unsupported writer counts, missing preparation or execution identity raise

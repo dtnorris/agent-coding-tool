@@ -189,7 +189,7 @@ class IceboxTest < Minitest::Test
       assert_equal before, File.binread(store.state_path("TST-A"))
       open_file = File.method(:open)
       File.stub(:open, lambda { |path, *args, **options, &block|
-        next open_file.call(path, *args, **options, &block) unless path == File.dirname(store.state_path("TST-A")) && block
+        next open_file.call(path, *args, **options, &block) unless path == File.dirname(File.realdirpath(store.state_path("TST-A"))) && block
 
         open_file.call(path, *args, **options) do |file|
           file.stub(:fsync, -> { raise Errno::EIO }) { block.call(file) }
@@ -207,7 +207,7 @@ class IceboxTest < Minitest::Test
       end
       assert_equal published, store.load("TST-A")
       File.stub(:open, lambda { |path, *args, **options, &block|
-        next open_file.call(path, *args, **options, &block) unless path == File.dirname(store.state_path("TST-A")) && block
+        next open_file.call(path, *args, **options, &block) unless path == File.dirname(File.realdirpath(store.state_path("TST-A"))) && block
 
         open_file.call(path, *args, **options) do |file|
           file.stub(:fsync, -> { raise Errno::EIO }) { block.call(file) }

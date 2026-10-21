@@ -2,6 +2,24 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## TST-24 covered and bounded feedback
+
+TST-24 retains all 303 default obligations (232 ordinary, 71 native complement)
+and all 75 integration cases. It adds thirteen direct verifier controls to the
+Git-contract inventory, alongside the nine genuine Git/adapter cases: 400
+required cases in complete offline acceptance. These additions qualify bytes,
+status/signal/exception preservation, owned-tree timeout and unrelated sentinel
+survival, unloaded-file/branch coverage, missing/stale/reduced evidence,
+nested compile-only fixture isolation and changed-production-source rejection,
+fixed-reference budget/advisory distinctions, real Rake alias/default/YAML
+behavior, broken aggregate layers and delivery's refusal of partial feedback.
+They use small finite fixture commands, not nested product-suite invocations.
+The original public prompt/recovery and immutable/native proof identities below
+remain mandatory. [README Development](../../README.md#development) defines the
+intentional ordinary/default versus complete command change and operator-owned
+qualification/threshold acceptance. These mappings alone claim no full gate,
+runtime/coverage qualification or host checkpoint execution.
+
 ## TST-23 ordinary dependency boundary
 
 The executable ordinary scope is [ordinary_cases.json](../ordinary_cases.json):

@@ -1,4 +1,19 @@
 {
+  "test/git_contract/feedback_contract.rb": [
+    "FeedbackContract#test_bytes_exit_and_signal",
+    "FeedbackContract#test_spawn_exception_and_invalid_deadline",
+    "FeedbackContract#test_hung_owned_descendant_and_unrelated_sentinel",
+    "FeedbackContract#test_outer_timer_includes_startup",
+    "FeedbackContract#test_unloaded_denominator_branch_and_coverage_violation",
+    "FeedbackContract#test_nested_layout_isolation_and_changed_source_refusal",
+    "FeedbackContract#test_missing_stale_and_contradictory_coverage",
+    "FeedbackContract#test_cold_child_visibility_and_missing_instrumentation",
+    "FeedbackContract#test_fixed_reference_noncomparable_advisory_and_budget",
+    "FeedbackContract#test_required_case_summary_and_freshness_refusals",
+    "FeedbackContract#test_complete_alias_once_and_broken_layer",
+    "FeedbackContract#test_default_yaml_then_ordinary_and_bad_yaml_refusal",
+    "FeedbackContract#test_delivery_requires_complete_act_feedback"
+  ],
   "test/git_contract/native_contract.rb": [
     "NativeGitContract#test_immutable_skill_object_read",
     "NativeGitContract#test_authoritative_refs_snapshot_and_dirty_state",

@@ -1308,15 +1308,20 @@ The test commands have distinct contracts:
 
 | Command | Required behavior |
 | --- | --- |
-| `bundle exec rake` | Validate configured ACTD YAML, then enforce the full `test:all` aggregate. |
-| `bundle exec rake test` | Unchanged `test/**/*_test.rb` selection, including mixed/native cases, without ACTD YAML validation or native integrations. |
-| `bundle exec rake test:ordinary` | Fixed ordinary identities with finite external observations and subprocess execution prohibited from startup. |
-| `bundle exec rake test:git_contract` | Required Git-contract inventory and strict real-Git comparison. |
-| `bundle exec rake test:integration` | All eight required offline native Git suites, in separate Ruby processes. |
-| `bundle exec rake test:all` | Git contracts, eight native integrations and verified default test coverage; missing or extra cases fail closed. |
+| `bundle exec rake` | Validate configured ACTD YAML, then run the same covered ordinary feedback as `test`. |
+| `bundle exec rake test` | Fixed ordinary identities with line/branch coverage, runtime reporting, accepted budget and a separate hard hang deadline. |
+| `bundle exec rake test:ordinary` | Alias for `test`; the same finite observations and startup execution prohibition apply. |
+| `bundle exec rake test:git_contract` | Bounded genuine Git/adapter contracts and direct feedback-verifier controls, with native coverage contribution. |
+| `bundle exec rake test:native_integration` | Retained eight native-only offline Git suites, in separate Ruby processes. |
+| `bundle exec rake test:all` | Mandatory complete offline acceptance: ordinary, Git contracts, native default complement, then native integrations; each layer once. |
+| `bundle exec rake test:integration` | Alias for exactly the same complete gate as `test:all`. |
 
-The default `rake` command validates ACTD YAML before the full required aggregate.
-Neither standalone `test` nor `test:ordinary` establishes complete acceptance.
+**Ordinary/default success is insufficient for final integration or delivery
+acceptance. Run `test:all` (or its `test:integration` alias) before integration.**
+This intentionally replaces the former bare-Rake full aggregate; ACTD YAML
+validation remains part of the default. `test:verified_default` retains the
+complete default population (ordinary plus native complement). The internal
+`test:native_default` task is that complement alone, not an acceptance gate.
 The aggregate uses real Rake prerequisites: a failed prerequisite stops the task,
 and each prerequisite runs once per invocation. Tests use explicit temporary
 data directories and do not depend on personal task data. The publisher tests
@@ -1327,7 +1332,8 @@ gate when changing Git staging, delivery, checkpoint or retry behavior:
 bundle exec rake test:integration
 ```
 
-The eight required suites can also be run individually for diagnosis:
+Use `test:native_integration` for native-only diagnosis. The eight required
+suites can also be run individually for diagnosis:
 
 ```sh
 ruby -Ilib:test test/integration/publisher_git_integration.rb
@@ -1354,18 +1360,23 @@ missing/malformed summary or case evidence, inconsistent counts, zero assertions
 and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
 the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
 replayed unchanged; a child's nonzero exit status is preserved (signals map to
-128 plus signal number). Evidence records completed `Class#test_method` identities
-and assertion counts independently of the human-readable summary. The default
-selection is partitioned into two interpreters: the ordinary cases listed in
+128 plus signal number). Evidence binds the fresh invocation and exact selection
+to completed `Class#test_method` identities, observed Minitest seed and assertion
+counts, independently of the human-readable summary. The complete default
+population is partitioned into two interpreters: the ordinary cases listed in
 `test/ordinary_cases.json` and the explicit `native_default` inventory in
 `test/required_cases.json`. Their disjoint union must equal the complete default
 inventory; an omission cannot silently escape into native execution. Native
 integrations and Git-contract files run separately to avoid Minitest class
-collisions. Existing fixture deadlines remain authoritative;
-there is no total integration runtime ceiling.
+collisions. Existing fixture deadlines remain authoritative. The reviewed
+feedback policy supplies a separate, generous hard hang deadline; this is not
+the completed ordinary-run budget or an advisory growth threshold.
 
-The ordinary runner preloads `test/ordinary_execution.rb` before inherited
-`RUBYOPT`, helper initialization and test setup. It refuses native Ruby process
+The ordinary runner puts `test/ordinary_execution.rb` first among command-line
+preloads, followed by coverage, before helpers and setup. It also prepends the
+guard to inherited `RUBYOPT` for cold children. Ruby 4 executes command-line
+`-r` before `RUBYOPT`; relying on the environment alone is insufficient.
+The guard refuses native Ruby process
 entries, including Git, workers/providers, host tools, forks, Ruby children and
 implicit subprocess pipes. The outer Ruby test runner is permitted; an ordinary
 test cannot create descendants. Contract/integration and mixed/native selections
@@ -1384,7 +1395,102 @@ is no production skill cache or native fallback in ordinary tests. Preserve the
 bounded immutable-object contract, public cold prompt/consumed-worker journey
 and continuous checkpoint/retry/recovery integration when changing this seam.
 Use Minitest's standard `SEED=2300` environment setting for comparable runs;
-the runner does not impose a new runtime ceiling or seed policy.
+the report records the independently observed seed as well as the request.
+
+### Covered and bounded feedback
+
+`test/feedback_coverage.rb` uses Ruby line and branch coverage. The production
+denominator is **every `lib/**/*.rb` file and `bin/agent-coding-tool`** (22 files
+at the TST-24 successor baseline). Ruby compiles the complete denominator
+without evaluating it; unloaded files retain executable zero-hit nodes. The
+outer runner independently compiles the layout and rejects reduced/changed
+child layouts. Dependencies, harness code and fixture implementations are
+excluded. Case inventories remain separate behavior obligations.
+
+The preload runs before helpers in each suite interpreter and is inherited by
+cold Ruby/CLI processes. The icebox CLI fixture preserves it when adding its
+own preloads. The checkpoint cold recovery script requires production in its
+body, after inherited hooks. A late hook refuses already-loaded production.
+Copied production files contribute only after exact byte matching.
+Per-interpreter startup/result and first-production-line markers make a killed
+ACT-executing interpreter incomplete evidence. Killed fixture-only interpreters
+contribute no coverage; their incomplete outcome remains visible. External
+non-Ruby programs and fake worker implementations are outside this denominator.
+
+Each invocation retains fresh evidence under the configured temporary directory;
+the console prints its location. `report.json` records HEAD/source hashes,
+invocation, child argv/cwd/selection, requested relevant environment, observed
+seed/status/signal/exception, phase times, sampled owned processes and
+instrumented Ruby process counts.
+Raw suite stdout/stderr are retained. Native Git internals and arbitrary
+descendant command counts are not observed. Ordinary, native contribution and
+fresh combined coverage are distinct unions: a source node counts once.
+Uncovered coordinates and zero-hit files remain visible. Aggregate test totals
+and standard `Line Coverage` output appear only for accepted complete evidence.
+
+The supervisor reads Darwin kernel process birth/parent/group identities through
+`libproc` using the locked Fiddle gem. Outer elapsed includes bundle/Rake startup
+and advances monotonically after initialization through final report preparation.
+Independent host command timing corroborates the remaining final output/exit
+overhead. Phase durations are separate. Unsupported or denied native inspection
+fails qualification; YAML validation and task listing do not require it.
+
+Each suite starts in a new invocation-owned group. An independent watchdog
+tracks observed descendants by birth identity, including other groups, and kills
+only that owned group/tree on deadline or interruption. Regular output files
+avoid inherited-pipe reader hangs; direct-child reaping has bounded cleanup.
+Unfinished stages never establish verification. Arbitrary daemonization that
+escapes before ownership observation is not qualified by these controls; host
+descendant-containment acceptance remains separate. Production launcher and
+ownership checks retain their existing semantics.
+
+David owns acceptance of coverage floors, the fixed runtime reference, completed
+ordinary budget and separate generous hang deadline. No production thresholds
+are invented by this implementation. `ACT_TEST_POLICY` selects a reviewed JSON
+policy; otherwise the runner reads `test/feedback_policy.json`. Missing policy
+fails closed. This shape contains **unaccepted placeholders**, not defaults:
+
+```json
+{
+  "accepted_by": null,
+  "hard_deadline_seconds": null,
+  "ordinary_budget_seconds": null,
+  "coverage": {
+    "ordinary": { "line": null, "branch": null },
+    "combined": { "line": null, "branch": null }
+  },
+  "reference": null
+}
+```
+
+After qualified measurements and David's review, `accepted_by` is `David`,
+floors are measured percentages, and budget/deadline are positive finite seconds.
+The reference contains `qualified: true`, the accepted report's `conditions`,
+`source_sha256` and `outer_seconds`; runs never update it. Runtime, platform,
+lockfile, relevant environment, actual selection/seed, fixture policy, workers
+and Rake arguments must match for comparable deltas. Unknown contention stays
+explicitly unknown; comparison is limited to recorded conditions. Missing
+qualification or changed conditions cannot pass an ordinary budget. Growth of
+at least 1 second **and** 10%, or at least 3 seconds, remains an independent
+advisory, distinct from budget failure and the hang deadline.
+
+For measurement only, `ACT_TEST_QUALIFY=1` with an explicitly chosen positive
+`ACT_TEST_HANG_SECONDS` collects evidence and exits nonzero as unaccepted
+qualification. It cannot qualify delivery. David must accept a safe initial
+hang bound before using this mode; the ten-second ordinary program goal is not
+a deadline. Run the accepted ordinary budget gate and mandatory complete/YAML
+gates through the checkpoint workflow after preserving the implementation.
+Never raise limits or narrow the denominator simply to obtain a pass.
+
+The operator must review private ACT validation contracts using bare `rake`,
+`rake test`, `test:ordinary` or native-only commands, and require
+`bundle exec rake test:all` (or `test:integration`) with an accessible accepted
+policy and full aggregate minima. Delivery refuses this feedback harness's
+output without its successful complete-gate marker, including otherwise passing
+ordinary totals. Other repositories' validation semantics stay unchanged. The
+worker does not edit private contracts; that path remains unaccepted until the
+operator verifies it. Offline fixtures do not qualify installed-Codex/macOS
+sandbox enforcement.
 
 For the TST-15 handoff, put genuine contract suites in
 `test/git_contract/**/*_contract.rb` and supply

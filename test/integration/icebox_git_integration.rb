@@ -223,7 +223,7 @@ class IceboxGitIntegrationTest < Minitest::Test
   def cli(*args, environment: {})
     environment = { "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
                     "GIT_CEILING_DIRECTORIES" => @root,
-                    "RUBYOPT" => "-I#{@tool}/lib -r#{@tool}/test/coding_skill_support.rb -r#{@preload}" }.merge(environment)
+                    "RUBYOPT" => "#{ENV['RUBYOPT']} -I#{@tool}/lib -r#{@tool}/test/coding_skill_support.rb -r#{@preload}" }.merge(environment)
     GitContract::Native.new(environment: environment, seconds: 20)
                        .capture3(RbConfig.ruby, File.join(@tool, "bin/agent-coding-tool"), *args)
   end

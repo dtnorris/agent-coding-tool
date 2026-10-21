@@ -1,38 +1,42 @@
 # frozen_string_literal: true
 
-require "rake/testtask"
+require_relative "test/feedback"
 require "yaml"
 require_relative "lib/agent_coding_tool"
 require_relative "test/suite_runner"
 
-Rake::TestTask.new do |task|
-  task.libs << "lib"
-  task.libs << "test"
-  task.pattern = "test/**/*_test.rb"
+desc "Covered, dependency-isolated ordinary feedback; insufficient for final acceptance"
+task :test do
+  TestFeedback.run(:ordinary, root: __dir__)
 end
 
 namespace :test do
   desc "Run the fixed ordinary behavior scope with external execution prohibited"
-  task :ordinary do
-    TestSuiteRunner.run(:ordinary, root: __dir__)
-  end
+  task ordinary: "test"
 
   desc "Run required Git contracts; fail when their inventory or evidence is missing"
   task :git_contract do
-    TestSuiteRunner.run(:git_contract, root: __dir__)
+    TestFeedback.run(:git_contract, root: __dir__)
   end
 
-  desc "Run all five required offline native Git suites in separate Ruby processes"
-  task :integration do
-    TestSuiteRunner.run(:integration, root: __dir__)
+  desc "Run all required offline native Git suites in separate Ruby processes"
+  task :native_integration do
+    TestFeedback.run(:native_integration, root: __dir__)
   end
 
-  task :verified_default do
-    TestSuiteRunner.run(:default, root: __dir__)
+  task :native_default do
+    TestFeedback.run(:native_default, root: __dir__)
   end
 
-  desc "Require Git contracts, native integrations and verified default test coverage"
-  task all: [:git_contract, :integration, :verified_default]
+  task verified_default: ["test", :native_default]
+
+  desc "Mandatory complete offline acceptance: ordinary first, each native layer once"
+  task all: ["test", :git_contract, :native_default, :native_integration] do
+    TestFeedback.complete!
+  end
+
+  desc "Alias for the same mandatory complete offline gate as test:all"
+  task integration: :all
 end
 
 namespace :actd do
@@ -56,4 +60,4 @@ namespace :actd do
   end
 end
 
-task default: ["actd:validate_yaml", "test:all"]
+task default: ["actd:validate_yaml", "test"]

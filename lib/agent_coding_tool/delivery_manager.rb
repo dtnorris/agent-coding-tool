@@ -367,6 +367,9 @@ module AgentCodingTool
       outputs = [stdout_path, stderr_path].map { |path| File.binread(path).force_encoding("UTF-8") }
       raise InvalidState, "delivery: non-UTF-8 validation output" unless outputs.all?(&:valid_encoding?)
       combined = outputs.join("\n")
+      if combined.include?("ACT feedback evidence: ") && !combined.lines.any? { |line| line.chomp == "ACT complete offline acceptance: PASS" }
+        raise InvalidState, "delivery: ordinary or partial ACT feedback cannot qualify complete offline acceptance"
+      end
       counts = combined.scan(/(\d+) tests?, (\d+) assertions?, (\d+) failures?, (\d+) errors?, (\d+) skips?/).last
       unless status.value.exitstatus == 0 && counts && counts[0].to_i >= contract.fetch("min_tests") &&
              counts[1].to_i >= contract.fetch("min_assertions") && counts[2..].all? { |n| n.to_i.zero? }

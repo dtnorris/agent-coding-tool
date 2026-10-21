@@ -125,11 +125,12 @@ class CheckpointTest < Minitest::Test
       assert_raises(AgentCodingTool::InvalidState) { fresh.recover("T", destination: destination) }
       refute File.exist?(destination)
       reconstruction = <<~'RUBY'
+        require "agent_coding_tool"
         puts JSON.generate(AgentCodingTool::Checkpoint.new(data_root: ARGV.fetch(0)).recover(
           "T", destination: ARGV.fetch(1), confirm_disconnected: true))
       RUBY
       stdout, stderr, status = GitContract::Native.new.capture3(
-        RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), "-ragent_coding_tool",
+        RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__),
         "-e", reconstruction, data, destination
       )
       assert status.success?, stderr

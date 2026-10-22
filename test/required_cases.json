@@ -1,5 +1,8 @@
 {
   "default": {
+    "test/attempt_recovery_test.rb": [
+      "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection"
+    ],
     "test/ordinary_boundary_test.rb": [
       "OrdinaryBoundaryTest#test_dependency_entries_refuse_before_effect",
       "OrdinaryBoundaryTest#test_strict_source_observations_and_environment"

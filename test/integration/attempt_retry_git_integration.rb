@@ -265,17 +265,19 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # Proves the complete public handoff for all supported non-complete outcomes.
-  # Removing closeout makes preparation fail; execution success never completes.
+  # Proves all non-complete outcomes in one successive public retry chain, with
+  # one native resource per access role. Every earlier attempt remains protected;
+  # removing closeout makes preparation fail and execution never completes work.
   def test_public_exit_zero_closeout_fresh_retry_preserves_both_attempts
-    %w[blocked failed needs_judgment].each do |outcome|
-      fixture(readers: outcome == "blocked" ? 7 : 0) do
-        succeeds("launch", "T", "--codex", "--reasoning", "high")
-        first = reports.fetch(0)
-        assert_equal [1, "exited", 0, true, "fresh_at_exit"], first.values_at("attempt", "status", "exit_status", "final_valid", "writable_freshness")
+    fixture(readers: 1) do
+      succeeds("launch", "T", "--codex", "--reasoning", "high")
+      %w[blocked failed needs_judgment].each_with_index do |outcome, index|
+        first = reports.fetch(index)
+        assert_equal [index + 1, "exited", 0, true, "fresh_at_exit"], first.values_at("attempt", "status", "exit_status", "final_valid", "writable_freshness")
+        assert_equal %w[write read_only], first.fetch("worktrees").fetch("entries").map { |entry| entry.fetch("access") }
         first_fixture = first.fetch("fixture").fetch("path")
         File.binwrite(File.join(first_fixture, "retained.bin"), "\x00\xfffixture".b)
-        old = bytes(File.dirname(first.fetch("worktrees_path")))
+        old = reports.each_with_object({}) { |report, retained| retained.merge!(bytes(File.dirname(report.fetch("worktrees_path")))) }
         original_state = first.fetch("execution_state")
         succeeds("record", "T", outcome, "--summary", "No candidate.", "--next", "Explicit closeout and retry.")
         before = bytes
@@ -291,13 +293,13 @@ class AttemptRecoveryTest < Minitest::Test
         succeeds("prepare", "T", "--retry")
         refute_equal first.fetch("prepared_at"), @states.load("T").fetch("prepared_at")
         succeeds("launch", "T", "--codex", "--reasoning", "high")
-        second = reports.fetch(1)
+        second = reports.fetch(index + 1)
         second_fixture = second.fetch("fixture").fetch("path")
         refute_equal first_fixture, second_fixture
         assert_equal "\x00\xfffixture".b, File.binread(File.join(first_fixture, "retained.bin"))
         assert_includes second.fetch("argv"), "sandbox_workspace_write.writable_roots=#{JSON.generate([second_fixture])}"
         refute_includes second.fetch("argv"), "sandbox_workspace_write.writable_roots=#{JSON.generate([first_fixture])}"
-        assert_equal 2, second.fetch("attempt")
+        assert_equal index + 2, second.fetch("attempt")
         refute_equal first.fetch("invocation_id"), second.fetch("invocation_id")
         assert_equal first.fetch("execution_state"), original_state
         first.fetch("worktrees").fetch("entries").zip(second.fetch("worktrees").fetch("entries")).each do |earlier, later|
@@ -305,23 +307,18 @@ class AttemptRecoveryTest < Minitest::Test
           assert File.directory?(earlier.fetch("path"))
           assert_equal @base, git("rev-parse", "HEAD", directory: earlier.fetch("path"))
           assert_equal @base, git("rev-parse", "HEAD", directory: later.fetch("path"))
+          expected_branch = later.fetch("access") == "write" ? "act/T/attempt-#{index + 2}" : ""
+          assert_equal expected_branch, git("branch", "--show-current", directory: later.fetch("path"))
         end
-        assert_operator second.fetch("sandbox_probe").fetch("protected_paths"), :>=, first.fetch("worktrees").fetch("entries").length
-        assert_equal 2, JSON.parse(succeeds("worktrees", "T")).fetch("attempts").length
+        assert_operator second.fetch("sandbox_probe").fetch("protected_paths"), :>=, (index + 1) * first.fetch("worktrees").fetch("entries").length
+        assert_equal index + 2, JSON.parse(succeeds("worktrees", "T")).fetch("attempts").length
         assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
         assert_nil @states.load("T")["result"]
         refute @states.load("T")["checkpoint"]
         assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
         assert_equal 2, cli("cleanup", "T").first
-        if outcome == "blocked"
-          succeeds("record", "T", "failed")
-          succeeds("close-attempt", "T")
-          succeeds("prepare", "T", "--retry")
-          succeeds("launch", "T", "--codex")
-          assert_equal [1, 2, 3], reports.map { |report| report.fetch("attempt") }
-          assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
-        end
       end
+      assert_equal [1, 2, 3, 4], reports.map { |report| report.fetch("attempt") }
     end
   end
 
@@ -720,8 +717,9 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # Foreign identity, native branch, task access, delivery and reservation races
-  # refuse at preflight with byte-for-byte retention of the refused state.
+  # Attempt/invocation identity requires the real native inventory. Early report identity
+  # refusals live in AttemptRecoveryDecisionTest; delivery and reservation races
+  # retain this physical fixture and byte-for-byte preservation checks.
   def test_ownership_delivery_candidate_and_changed_state_refusals
     fixture do
       succeeds("launch", "T", "--codex")
@@ -729,7 +727,7 @@ class AttemptRecoveryTest < Minitest::Test
       first = reports.first
       report_path = File.join(File.dirname(first.fetch("worktrees_path")), "handoff.json")
       report_bytes = File.binread(report_path)
-      %w[task_id attempt invocation_id prepared_at preparation execution_state].each do |key|
+      %w[attempt invocation_id].each do |key|
         altered = JSON.parse(report_bytes)
         altered[key] = key == "attempt" ? 17 : "foreign"
         File.write(report_path, JSON.generate(altered))

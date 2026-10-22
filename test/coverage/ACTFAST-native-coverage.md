@@ -2,6 +2,25 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## TST-25 retry/recovery proof placement
+
+The mappings below supersede only the named retry permutations in the historical
+inventory. Production recovery, public gates, native crash/removal boundaries,
+checkpoint receipts and the continuous consumed-prompt/historical reconstruction
+journey retain their existing owners. Timing and host acceptance belong in the
+candidate handoff, not this safety inventory.
+
+| Original assertion/effect | Current owner and equivalent checks | Falsifier / retained physical oracle |
+| --- | --- | --- |
+| `AttemptRecoveryTest#test_public_exit_zero_closeout_fresh_retry_preserves_both_attempts`: independent blocked/failed/needs_judgment fixtures, seven launches and a third blocked attempt | Same identity now follows all three outcomes through four successive cold public launches in one fixture. Each outcome still requires early-retry refusal with unchanged bytes, read-only inspection/dry-run, durable/idempotent closeout, fresh preparation, distinct invocation/path/fixture, retained source bases, cleared result/checkpoint, absent delivery and cleanup refusal. All prior run bytes are checked on every retry. | Omitting closeout must reject preparation. One writer and one detached reader exercise both native access roles on every attempt, including branch/pin checks and probes protecting all earlier resources. `test_legacy_fixed_path_mixed_history_is_accurately_classified` retains the exact historical eight-worktree ordering; duplicate current reader roles no longer require twenty extra creations. |
+| `AttemptRecoveryTest#test_ownership_delivery_candidate_and_changed_state_refusals`: task_id, preparation, prepared_at and execution_state corruption | `AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection` executes real closeout against private filesystem state/report files. All four exact error classifications and complete file inventories/bytes must remain unchanged. Empty finite observations reject every external request; ordinary setup/body execution is prohibited. | Removing the identity refusal must fail its exact-reason assertion; an unexpected external read fails the strict transcript. No native ownership is claimed by this fixture. |
+| Same native refusal identity: positive foreign attempt number, invocation_id, delivery evidence, candidate outcome and state race | These permutations remain native in the original identity. Attempt/invocation binding needs actual inventory inspection; delivery/candidate/race controls retain their real resources and unchanged-byte/no-closeout checks. | Wrong inventory binding or unsafe closeout must fail. `test_dirty_resources_refuse_before_any_closeout_or_retry_mutation` retains tracked/staged/untracked/ignored and late-change physical refusals. |
+
+`RecoveryObservations.status` still launches a genuine native child and is not
+used by the new ordinary case. Liveness, checkpoint and preflight portfolios
+retain their native placement. There is no boolean/status conversion, production
+recovery shortcut or relaxed runtime/coverage boundary in this consolidation.
+
 ## TST-24 covered and bounded feedback
 
 TST-24 retains all 303 default obligations (232 ordinary, 71 native complement)

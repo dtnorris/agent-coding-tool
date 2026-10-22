@@ -1,4 +1,7 @@
 {
+  "test/attempt_recovery_test.rb": {
+    "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection": []
+  },
   "test/icebox_test.rb": {
     "IceboxTest#test_idempotency_optional_reason_and_metadata_preservation": [],
     "IceboxTest#test_strict_mapping_validation_and_legacy_state": [],

@@ -2,6 +2,24 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## TST-26 delivery refusal proof placement
+
+These two `DeliveryManagerTest` identities retain their mandatory native suite
+placement and names. Only redundant complete worlds are removed; there is no
+ordinary reclassification, new external observation seam or production change.
+Measurement and host acceptance remain separate handoff evidence.
+
+| Original assertion/effect | Consolidated proof | Falsifier / retained physical oracle |
+| --- | --- | --- |
+| `test_tampering_with_log_or_source_blocks_recovery`: two lost-push fixture worlds | One real validation/commit/lost-response handoff, with separate log and source corruptions. Each requires its exact refusal, unchanged other candidate/index/HEAD/task/private bytes, one prior push and no PR. Only injected bytes are restored; valid recovery then creates one draft without another push. | Corrupt worker handoff bytes must break the retained successful-delivery journey before publication. Missing log validation must break this refusal test. `test_crash_after_remote_push_or_pr_recovers_without_duplicates` keeps distinct push/PR crash worlds. |
+| `test_stale_main_competing_feature_ref_and_forged_worker_artifact_block`: three worlds | One candidate first refuses stale authority and a forged worker artifact with exact reasons, restored fixture inputs, unchanged source/task/base and absent validation/delivery records. Competing ref runs last, after genuine validation/staging/commit; publication and guard calls remain absent. | Removing the artifact handoff check must fail its exact refusal. `test_live_git_push_adapter_creates_only_absent_feature_ref` retains actual absent-ref creation and non-overwrite in a disposable local remote. |
+
+Parallel launch/delivery ownership, reservation serialization, manual candidate
+preservation, both delivery orders, running siblings, cross-repository validation,
+interrupted cleanup and public cold retry/recovery retain their existing native
+owners and required inventories. No provider double establishes those physical
+effects; native macOS/installed-Codex qualification remains operator-owned.
+
 ## TST-25 retry/recovery proof placement
 
 The mappings below supersede only the named retry permutations in the historical

@@ -68,6 +68,7 @@ module AgentCodingTool
     def run(argv)
       command = argv.shift
       case command
+      when "apply" then return apply_command(argv)
       when "status" then status_command(argv)
       when "next" then next_command(argv)
       when "external" then external_command(argv)
@@ -98,6 +99,13 @@ module AgentCodingTool
     end
 
     private
+
+    # Applies one downloaded JSON proposal with independent terminal confirmations;
+    # returns the handler status. Invalid CLI arguments raise without mutation.
+    def apply_command(argv)
+      raise Error, "usage: agent-coding-tool apply FILE.json" unless argv.length == 1 && !argv.first.start_with?("-")
+      ApplyHandoff.new(config: Config.load(File.join(@data_root, "config.yml")), out: @out, err: @err).run(argv.first)
+    end
 
     # Public explicit observation commands. Show is read-only; report/end acquire
     # the existing shared reservation lock internally and print private JSON.
@@ -1476,6 +1484,8 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          apply FILE.json     review a patch; separately confirm apply, validation and local commit
+                              terminal consent required; each defaults to no; no publication
           status [TASK] [--all | --active]
           status --fam FAMILY [--all | --active]
                               show the complete READY family; global NEXT only

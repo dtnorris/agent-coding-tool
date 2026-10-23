@@ -239,36 +239,77 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Reuses one genuinely committed, lost-response delivery for independent log
+  # and source corruption. Each row restores only its injected bytes; all other
+  # candidate/index/private bytes must survive. Valid recovery still publishes once.
   def test_tampering_with_log_or_source_blocks_recovery
-    fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, _data|
+    fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, data|
       provider.fail_after_push = true
       assert_raises(AgentCodingTool::RepositoryError) { manager.deliver("TASK", run_dir: run_dir) }
-      File.write(File.join(run_dir, "validation-0.stdout"), "forged")
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
-    end
-    fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, _data|
-      provider.fail_after_push = true
-      assert_raises(AgentCodingTool::RepositoryError) { manager.deliver("TASK", run_dir: run_dir) }
-      File.write(File.join(workspace, "file.txt"), "changed again")
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+      provider.fail_after_push = false
+      admin = git(workspace, "rev-parse", "--absolute-git-dir").strip
+      paths = Dir.glob(File.join(run_dir, "**", "*")).select { |path| File.file?(path) } +
+        [File.join(workspace, "file.txt"), File.join(data, "state", "TASK.yml"),
+         File.join(admin, "index"), File.join(admin, "HEAD")]
+      preserved = paths.to_h { |path| [path, File.binread(path)] }
+      [
+        [File.join(run_dir, "validation-0.stdout"), "forged", "delivery: missing validation evidence"],
+        [File.join(workspace, "file.txt"), "changed again", "delivery: commit changed"]
+      ].each do |path, altered, reason|
+        begin
+          File.binwrite(path, altered)
+          error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+          assert_equal reason, error.message
+          assert_equal preserved.merge(path => altered), paths.to_h { |entry| [entry, File.binread(entry)] }
+          assert_equal ["act/TASK/attempt-1"], provider.pushes
+          assert_empty provider.creations
+        ensure
+          File.binwrite(path, preserved.fetch(path))
+        end
+        assert_equal preserved, paths.to_h { |entry| [entry, File.binread(entry)] }
+      end
+      assert_equal "draft_pr", manager.deliver("TASK", run_dir: run_dir).fetch("stage")
+      assert_equal ["act/TASK/attempt-1"], provider.pushes
+      assert_equal provider.pushes, provider.creations
     end
   end
 
+  # Stale authority and forged artifacts refuse before validation, so they share
+  # one native candidate with exact fixture-input restoration. The competing-ref
+  # row runs last because it must really validate and commit before refusing.
   def test_stale_main_competing_feature_ref_and_forged_worker_artifact_block
-    fixture do |manager, provider, _guard, coordinator, _workspace, run_dir, _data|
+    fixture do |manager, provider, guard, coordinator, workspace, run_dir, data|
+      candidate = File.binread(File.join(workspace, "file.txt"))
+      state = File.binread(File.join(data, "state", "TASK.yml"))
+      base = coordinator.head
       coordinator.head = "a" * 40
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+      assert_equal "delivery: STALE INPUT", error.message
       assert_empty provider.pushes
-    end
-    fixture do |manager, provider, _guard, _coordinator, _workspace, run_dir, _data|
+      coordinator.head = base
+      artifact = File.join(run_dir, "final_path")
+      original = File.binread(artifact)
+      begin
+        File.write(artifact, "worker changed this")
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+        assert_equal "delivery: missing/altered worker artifact", error.message
+        assert_empty provider.pushes
+      ensure
+        File.binwrite(artifact, original)
+      end
+      assert_equal base, git(workspace, "rev-parse", "HEAD").strip
+      assert_equal candidate, File.binread(File.join(workspace, "file.txt"))
+      assert_equal state, File.binread(File.join(data, "state", "TASK.yml"))
+      refute File.exist?(File.join(run_dir, "delivery.json"))
+      refute File.exist?(File.join(run_dir, "validation-0.stdout"))
       provider.set_branch("act/TASK/attempt-1", "b" * 40)
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
+      assert_equal "delivery: competing feature ref", error.message
       assert_empty provider.pushes
-    end
-    fixture do |manager, provider, _guard, _coordinator, _workspace, run_dir, _data|
-      File.write(File.join(run_dir, "final_path"), "worker changed this")
-      assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
-      assert_empty provider.pushes
+      assert_empty provider.creations
+      assert_empty guard.checks
+      assert_equal candidate, git(workspace, "show", "HEAD:file.txt")
+      assert_equal state, File.binread(File.join(data, "state", "TASK.yml"))
     end
   end
 

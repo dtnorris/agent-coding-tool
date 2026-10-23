@@ -1,5 +1,15 @@
 {
   "default": {
+    "test/apply_handoff_test.rb": [
+      "ApplyHandoffTest#test_contract_binds_repositories_and_downloaded_bytes",
+      "ApplyHandoffTest#test_invalid_contracts_are_refused_before_native_inspection",
+      "ApplyHandoffTest#test_validation_actions_translate_to_exact_argv_cwd_and_environment",
+      "ApplyHandoffTest#test_validation_scope_and_injection_attempts_are_refused",
+      "ApplyHandoffTest#test_paths_refuse_traversal_control_bytes_and_symlink_components",
+      "ApplyHandoffTest#test_artifact_rechecks_manifest_patch_hash_and_regular_file",
+      "ApplyHandoffTest#test_each_confirmation_defaults_to_no_and_requires_terminal_yes",
+      "ApplyHandoffTest#test_public_cli_refuses_invalid_arguments_and_malformed_json"
+    ],
     "test/attempt_recovery_test.rb": [
       "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection"
     ],
@@ -358,6 +368,19 @@
     ]
   },
   "integration": {
+    "test/integration/apply_handoff_git_integration.rb": [
+      "ApplyHandoffGitIntegrationTest#test_public_cli_new_task_sibling_validation_and_target_commit",
+      "ApplyHandoffGitIntegrationTest#test_independent_default_no_eof_and_noninteractive_consent",
+      "ApplyHandoffGitIntegrationTest#test_invalid_contracts_and_injection_leave_bytes_index_and_head_unchanged",
+      "ApplyHandoffGitIntegrationTest#test_preflight_artifact_git_and_symlink_refusals_are_read_only",
+      "ApplyHandoffGitIntegrationTest#test_validation_failure_preserves_binary_output_status_and_stops",
+      "ApplyHandoffGitIntegrationTest#test_confirmation_races_and_repeat_applied_target_refuse",
+      "ApplyHandoffGitIntegrationTest#test_validation_source_changes_refuse_and_generated_output_is_bounded",
+      "ApplyHandoffGitIntegrationTest#test_commit_failure_retains_only_proposal_in_index",
+      "ApplyHandoffGitIntegrationTest#test_validation_spawn_error_and_signal_status",
+      "ApplyHandoffGitIntegrationTest#test_interrupt_during_validation_preserves_output_and_candidate",
+      "ApplyHandoffGitIntegrationTest#test_bundle_rake_and_mixed_file_patch"
+    ],
     "test/integration/readiness_git_integration.rb": [
       "ReadinessTest#test_missing_imminent_object_blocks_launch_without_fetch_or_worker",
       "ReadinessTest#test_public_journey_exports_canonical_candidate_and_transfers_to_host"

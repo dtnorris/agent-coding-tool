@@ -1,4 +1,14 @@
 {
+  "test/apply_handoff_test.rb": {
+    "ApplyHandoffTest#test_contract_binds_repositories_and_downloaded_bytes": [],
+    "ApplyHandoffTest#test_invalid_contracts_are_refused_before_native_inspection": [],
+    "ApplyHandoffTest#test_validation_actions_translate_to_exact_argv_cwd_and_environment": [],
+    "ApplyHandoffTest#test_validation_scope_and_injection_attempts_are_refused": [],
+    "ApplyHandoffTest#test_paths_refuse_traversal_control_bytes_and_symlink_components": [],
+    "ApplyHandoffTest#test_artifact_rechecks_manifest_patch_hash_and_regular_file": [],
+    "ApplyHandoffTest#test_each_confirmation_defaults_to_no_and_requires_terminal_yes": [],
+    "ApplyHandoffTest#test_public_cli_refuses_invalid_arguments_and_malformed_json": []
+  },
   "test/attempt_recovery_test.rb": {
     "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection": []
   },

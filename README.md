@@ -82,6 +82,174 @@ The public repository also ignores legacy/local `config.yml`, `tasks/`,
 `state/`, and `data/` paths as a fail-safe against accidentally committing
 operational data.
 
+## Apply a worker handoff
+
+A worker supplies a handoff with two download links, for example:
+
+```markdown
+[Download patch](PATCH_DOWNLOAD_URL)
+[Download companion JSON](JSON_DOWNLOAD_URL)
+```
+
+Save both in the same directory, then run from any working directory:
+
+```sh
+act apply ~/Downloads/new-task.json
+```
+
+ACT resolves repositories under `repo_root` from its existing data configuration,
+checks the proposal without changing the repository, and displays the target,
+baseline and file summary. **Apply patch?**, **Run validation?**, and **Stage these
+files and commit?** each independently default to no and require terminal input.
+A manifest supplies no authority. EOF, blank input and redirected stdin decline;
+there is no automatic yes option. The optional commit always belongs to the
+patch target, even when checks run in a sibling repository. Normal local Git
+commit hooks still run. Nothing pushes, opens a PR, launches a worker or updates
+ACT lifecycle state.
+
+Declining validation leaves an applied, unvalidated change; declining commit
+leaves a validated, unstaged change. Failed checks stop the sequence, retain raw
+stdout/stderr and the child exit status (signals use 128 plus signal), and report
+unrun checks. An executable that cannot start returns 127. Refusals return 2;
+interrupt returns 130. A declined workflow returns zero, so inspect its printed
+phase outcome rather than treating zero as validation/commit evidence. Errors
+and interrupts preserve applied changes and any staged files for inspection;
+there is no rollback, cleanup, automatic retry or resume engine. Reinvocation
+against applied/dirty files or a different HEAD refuses.
+
+### Companion JSON v1 contract
+
+`agent-coding-tool-apply/v1` is the only supported schema. Every field below is
+required, and unknown fields/actions are rejected. V1 has one patch target and
+explicitly declared validation/data repositories. It supports ordinary file
+additions, modifications and deletions, including Git binary patches and
+executable file modes; symlinks, submodules and rename-form patches are outside
+the contract (producers should use `--no-renames`).
+
+| Field | Contract |
+| --- | --- |
+| `schema` | Exact version string above. |
+| `target` | Key in `repositories` for the only patch target. |
+| `repositories` | Nonempty object keyed by portable repository names. Every entry has `path` relative to configured `repo_root`, `remote_url` identity, and exact 40-character lowercase `baseline` HEAD. ACT checks the configured default remote using its existing identity normalization; it does no remote freshness/network check. Roots must exist, be distinct and not overlap. |
+| `patch` | Object with companion `file` basename and exact lowercase 64-character `sha256`. Resolved relative to the JSON directory, never caller cwd. Embedded patches/download URLs are unsupported. |
+| `paths` | Nonempty unique array of exact root-relative changed paths, checked against native patch inspection and resulting changes. |
+| `validation` | Nonempty array of ordered required actions, described below. All must pass before commit can be offered. |
+| `commit_message` | Nonempty single-line suggested local commit message, always passed as one argv element. |
+
+Relative paths use ASCII letters, digits, spaces, underscores, hyphens, dots and
+slashes. Empty components, `.`/`..`, `.git` in any case, shell/pathspec syntax,
+absolute paths and symlink components are refused. Validation `cwd` alone may
+be `.` for the repository root. The patch must be a regular nonsymlink file.
+All declared repositories must initially have clean tracked files, index and
+untracked files according to existing Git ignore rules. An occupied addition,
+ignored patch destination, changed artifact, wrong identity/baseline or failing
+`git apply --check` refuses before mutation. Confirmed application rechecks the
+reviewed repository snapshots/artifact and uses ordinary atomic `git apply`.
+Hidden index flags (`assume-unchanged`/`skip-worktree`) are unsupported and refused.
+There is no fetch, rebase, force, partial apply, stash or index repair.
+
+Every validation action has `action`, `repository` (a declared key), `cwd`
+(existing directory relative to that repository), and `env` (an object):
+
+| Action | Additional required field | Exact argv |
+| --- | --- | --- |
+| `bundle_rake` | `tasks`: nonempty array of task names using letters/digits/underscore/colon, starting with a letter/digit/underscore | `bundle exec rake <tasks...>` |
+| `ruby_test` | `files`: array containing one root-of-cwd relative `.rb` test path | Current Ruby, `-Ilib:test -- <file>` |
+| `git_diff_check` | None | `git diff --check` |
+
+`env` permits only `AGENT_CODING_TOOL_DATA_DIR`, whose value names a declared
+repository and resolves to its verified absolute root; `{}` changes nothing.
+No executable override, shell string, Ruby flags/code, arbitrary environment or
+hook is accepted from JSON. Existing process environment is otherwise inherited;
+ambient `GIT_*` overrides other than pager/terminal-prompt settings are refused.
+The displayed argv/cwd/environment scope requires separate operator consent.
+**These actions execute repository code with operator privileges and are not a
+sandbox.** Review the patch and referenced repository code before approving.
+
+ACT compares file bytes/modes, HEAD, branch, remote identity and index across
+every declared repository before/after each step and before staging. Unexpected
+edits refuse commit. Only untracked, Git-ignored output under `coverage/`, `tmp/`,
+`test/tmp/` and `test/version_tmp/` is excluded from source comparisons; tracked
+files there remain protected, as do other ignored files. A tool that rewrites
+`Gemfile.lock` or ACTD state fails this check even if it exits zero. New files
+are included in staging; only declared paths may be staged. Concurrent changes
+refuse rather than being silently adapted. Rechecks detect observed changes;
+they cannot lock out arbitrary external writers or contain trusted tests/hooks.
+
+### Producing a handoff
+
+Generate a complete root-relative patch against the intended baseline, including
+new files, using the existing [checkpoint export workflow](#implementation-checkpoints)
+where applicable. Otherwise inspect `git diff --binary --full-index --no-renames`
+and include each new file's root-relative diff explicitly. Check application and
+reconstruction in a disposable repository at that baseline. Compute SHA-256 over
+the final downloaded patch bytes, list exact changed paths, and bind each sibling
+repository's current identity and HEAD. Supply only the required checks in order,
+with explicit ACTD selection for sibling ACT checks. Link both artifacts; worker
+test claims and a manifest do not establish operator acceptance or publication.
+
+For example, the following complete JSON describes a task-registration proposal
+for sibling directories `agent-coding-tool-data` and `agent-coding-tool`. Replace
+both example baselines/identities/paths with the intended local repositories and
+regenerate the hash if the patch changes. The hash shown matches exactly this
+UTF-8 patch, with LF line endings and a final newline:
+
+```diff
+diff --git a/tasks/NEW.yml b/tasks/NEW.yml
+new file mode 100644
+--- /dev/null
++++ b/tasks/NEW.yml
+@@ -0,0 +1,9 @@
++---
++id: NEW
++title: Example inspection
++repositories:
++  agent-coding-tool:
++    access: read_only
++goal: Inspect the example.
++acceptance:
++  - Report findings.
+```
+
+This new file includes the [required task fields](#task-shape). The native public CLI test
+exercises this same patch/hash with disposable local remotes, real terminal
+confirmations and sibling checks.
+
+```json
+{
+  "schema": "agent-coding-tool-apply/v1",
+  "target": "data",
+  "repositories": {
+    "data": {
+      "path": "agent-coding-tool-data",
+      "remote_url": "git@github.com:dtnorris/agent-coding-tool-data.git",
+      "baseline": "322d7f43b0963bc94723555744ef00f3caea077c"
+    },
+    "tool": {
+      "path": "agent-coding-tool",
+      "remote_url": "git@github.com:dtnorris/agent-coding-tool.git",
+      "baseline": "f099845176db0b6cc0bffe370d7547203ad24d09"
+    }
+  },
+  "patch": {
+    "file": "new-task.patch",
+    "sha256": "4775f89ea64cbab54b94987dd3add1ef60097c017ec76bdac8265a435143ae7c"
+  },
+  "paths": ["tasks/NEW.yml"],
+  "validation": [
+    {
+      "action": "bundle_rake",
+      "repository": "tool",
+      "cwd": ".",
+      "env": {"AGENT_CODING_TOOL_DATA_DIR": "data"},
+      "tasks": ["actd:validate_yaml", "test:all"]
+    },
+    {"action": "git_diff_check", "repository": "data", "cwd": ".", "env": {}}
+  ],
+  "commit_message": "Register NEW task"
+}
+```
+
 ## Task shape
 
 Copy `examples/tasks/EXAMPLE.yml` into the external data directory's `tasks/`
@@ -1442,7 +1610,7 @@ The test commands have distinct contracts:
 | `bundle exec rake test` | Fixed ordinary identities with line/branch coverage, runtime reporting, accepted budget and a separate hard hang deadline. |
 | `bundle exec rake test:ordinary` | Alias for `test`; the same finite observations and startup execution prohibition apply. |
 | `bundle exec rake test:git_contract` | Bounded genuine Git/adapter contracts and direct feedback-verifier controls, with native coverage contribution. |
-| `bundle exec rake test:native_integration` | Retained eight native-only offline Git suites, in separate Ruby processes. |
+| `bundle exec rake test:native_integration` | Required native-only offline Git suites, in separate Ruby processes. |
 | `bundle exec rake test:all` | Mandatory complete offline acceptance: ordinary, Git contracts, native default complement, then native integrations; each layer once. |
 | `bundle exec rake test:integration` | Alias for exactly the same complete gate as `test:all`. |
 
@@ -1462,7 +1630,7 @@ gate when changing Git staging, delivery, checkpoint or retry behavior:
 bundle exec rake test:integration
 ```
 
-Use `test:native_integration` for native-only diagnosis. The eight required
+Use `test:native_integration` for native-only diagnosis. The required
 suites can also be run individually for diagnosis:
 
 ```sh
@@ -1474,6 +1642,7 @@ ruby -Ilib:test test/integration/attempt_retry_git_integration.rb
 ruby -Ilib:test test/integration/manual_parallel_launch_git_integration.rb
 ruby -Ilib:test test/integration/parallel_delivery_git_integration.rb
 ruby -Ilib:test test/integration/icebox_git_integration.rb
+ruby -Ilib:test test/integration/apply_handoff_git_integration.rb
 ```
 
 The retry integration exercises cold public CLI handoffs, native Git ownership,

@@ -91,10 +91,10 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     File.write(@json, JSON.pretty_generate(@manifest))
   end
 
-  # Returns HEAD, index entries and all non-Git file bytes for mutation assertions.
+  # Returns HEAD, index entries and non-Git file bytes/modes for preservation checks.
   def state(path)
     files = Dir.glob("**/*", File::FNM_DOTMATCH, base: path).reject { |entry| entry == ".git" || entry.start_with?(".git/") }
-    [git(path, "rev-parse", "HEAD"), git(path, "ls-files", "--stage"), files.select { |entry| File.file?(File.join(path, entry)) }.sort.to_h { |entry| [entry, File.binread(File.join(path, entry))] }]
+    [git(path, "rev-parse", "HEAD"), git(path, "ls-files", "--stage"), files.select { |entry| File.file?(File.join(path, entry)) }.sort.to_h { |entry| [entry, [File.stat(File.join(path, entry)).mode & 0o777, File.binread(File.join(path, entry))]] }]
   end
 
   # Runs the actual CLI from unrelated cwd, using a PTY for stdin only. Each
@@ -142,33 +142,74 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     end
   end
 
-  # Removing application, sibling validation/ACTD binding or commit breaks this
-  # composed journey. The sibling and lifecycle stay byte-identical throughout.
+  # Exercises exact baseline, drift, untracked files and both through real
+  # consent/validation/commit. Initial sibling files, modes and index stay intact;
+  # declared provenance may name an absent object or an older existing commit.
   def test_public_cli_new_task_sibling_validation_and_target_commit
-    fixture do
-      sibling = state(@b)
-      lifecycle = File.binread(File.join(@a, "state", "EXISTING.yml"))
-      @manifest["commit_message"] = "Register NEW $(touch injected)"
-      save_manifest
-      stdout, stderr, status = cli(%w[y y y])
-      assert_equal 0, status.exitstatus, stderr + stdout
-      assert_includes stdout, "sibling validation passed"
-      assert_includes stdout, "committed locally"
-      assert_equal TASK, git(@a, "show", "HEAD:tasks/NEW.yml")
-      assert_equal "NEW", AgentCodingTool::TaskStore.new(File.join(@a, "tasks")).load("NEW").fetch("id")
-      assert_equal "tasks/NEW.yml\n", git(@a, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
-      assert_empty git(@a, "status", "--porcelain")
-      assert_equal @bases[0], git(@a, "rev-parse", "HEAD^").strip
-      assert_equal sibling, state(@b)
-      assert_equal lifecycle, File.binread(File.join(@a, "state", "EXISTING.yml"))
-      assert_equal "Register NEW $(touch injected)\n", git(@a, "log", "-1", "--format=%s")
-      refute File.exist?(File.join(@a, "injected"))
-      # Reinvocation must neither apply twice nor make another commit.
-      before = state(@a)
-      _out, error, repeated = cli(%w[y y y])
-      assert_equal 2, repeated.exitstatus
-      assert_includes error, "baseline"
-      assert_equal before, state(@a)
+    [[true, false], [false, false], [false, true], [true, true]].each do |drift, untracked|
+      fixture do
+        if drift
+          [@a, @b].each do |repo|
+            File.write(File.join(repo, "current-only.txt"), "actual initial tree\n")
+            git(repo, "add", "current-only.txt")
+            git(repo, "commit", "-m", "advance actual HEAD")
+          end
+          unless untracked
+            @manifest.fetch("repositories").each_value { |spec| spec["baseline"] = "a" * 40 }
+            [@a, @b].each do |repo|
+              _out, _err, status = Open3.capture3("git", "cat-file", "-e", "#{'a' * 40}^{commit}", chdir: repo)
+              refute status.success?, "declared baseline must be absent"
+            end
+          end
+        end
+        if untracked
+          [@a, @b].each do |repo|
+            FileUtils.mkdir_p(File.join(repo, "local notes", ".nested"))
+            File.binwrite(File.join(repo, "local notes", ".nested", "-keep.bin"), "unrelated\x00\xff".b)
+            File.chmod(0o755, File.join(repo, "local notes", ".nested", "-keep.bin"))
+          end
+        end
+        initial = state(@a)
+        sibling = state(@b)
+        lifecycle = File.binread(File.join(@a, "state", "EXISTING.yml"))
+        @manifest["commit_message"] = "Register NEW $(touch injected)"
+        save_manifest
+        stdout, stderr, status = cli(["y", -> { assert_equal initial[1], state(@a)[1]; "y" }, "y"])
+        assert_equal 0, status.exitstatus, stderr + stdout
+        warnings, preview = stdout.split("Apply patch?", 2)
+        refute_nil preview
+        assert_equal 3, stdout.scan("[y/N]").length
+        @manifest.fetch("repositories").each do |name, spec|
+          actual_head = name == "data" ? initial[0].strip : sibling[0].strip
+          if drift
+            assert_includes warnings, "WARN: #{name}: baseline differs; expected #{spec.fetch('baseline')}; actual #{actual_head}"
+          end
+          assert_includes warnings, "WARN: #{name}: preserving initial untracked files:" if untracked
+        end
+        refute_includes stdout, "WARN:" unless drift || untracked
+        assert_includes stdout, "sibling validation passed"
+        assert_includes stdout, "committed locally"
+        assert_equal TASK, git(@a, "show", "HEAD:tasks/NEW.yml")
+        assert_equal "NEW", AgentCodingTool::TaskStore.new(File.join(@a, "tasks")).load("NEW").fetch("id")
+        assert_equal "tasks/NEW.yml\n", git(@a, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+        assert_equal initial[0].strip, git(@a, "rev-parse", "HEAD^").strip
+        assert_equal initial[2], state(@a)[2].reject { |path, _value| path == "tasks/NEW.yml" }
+        assert_equal sibling, state(@b)
+        expected_untracked = untracked ? ["local notes/.nested/-keep.bin"] : []
+        [@a, @b].each do |repo|
+          assert_equal expected_untracked, git(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+          assert_empty git(repo, "diff", "--cached", "--name-only")
+        end
+        assert_equal lifecycle, File.binread(File.join(@a, "state", "EXISTING.yml"))
+        assert_equal "Register NEW $(touch injected)\n", git(@a, "log", "-1", "--format=%s")
+        refute File.exist?(File.join(@a, "injected"))
+        # Reinvocation must neither apply twice nor make another commit.
+        before = state(@a)
+        _out, error, repeated = cli(%w[y y y])
+        assert_equal 2, repeated.exitstatus
+        assert_match(/already exists|already occupied/, error)
+        assert_equal before, state(@a)
+      end
     end
   end
 
@@ -212,9 +253,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         -> { @manifest["patch"]["file"] = "../new task.patch" },
         -> { @manifest["patch"]["sha256"] = "z" * 64 },
         -> { @manifest["repositories"]["data"]["baseline"] = "x" },
-        -> { @manifest["repositories"]["data"]["baseline"] = "a" * 40 },
         -> { @manifest["repositories"]["data"]["remote_url"] = "#{@b}.git" },
-        -> { @manifest["repositories"]["tool"]["baseline"] = "a" * 40 },
+        -> { @manifest["repositories"]["tool"]["remote_url"] = "#{@a}.git" },
         -> { @manifest["repositories"]["data"]["path"] = "../A" },
         -> { @manifest["validation"][0]["action"] = "sh; touch injected" },
         -> { @manifest["validation"][0]["cwd"] = "../B" },
@@ -241,15 +281,19 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     end
   end
 
-  # Native Git rejects dirty tracked/staged/untracked targets, patch tampering,
+  # Native Git rejects tracked/staged edits, occupied destinations, patch tampering,
   # applicability errors, occupied additions and unsafe symlink destinations.
   def test_preflight_artifact_git_and_symlink_refusals_are_read_only
     mutations = [
       -> { File.write(File.join(@a, "file.txt"), "dirty\n") },
       -> { File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "file.txt") },
+      -> { File.write(File.join(@b, "verify.rb"), "dirty\n") },
+      -> { File.write(File.join(@b, "verify.rb"), "staged\n"); git(@b, "add", "verify.rb") },
       -> { git(@a, "update-index", "--assume-unchanged", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
-      -> { File.write(File.join(@a, "untracked"), "occupied") },
       -> { File.write(@task, "occupied") },
+      -> { FileUtils.rmdir(File.dirname(@task)); File.write(File.dirname(@task), "occupied parent") },
+      -> { FileUtils.mkdir_p(@task); File.write(File.join(@task, "nested.txt"), "occupied child") },
+      -> { File.write(File.join(@a, ".git", "info", "exclude"), "tasks/NEW.yml\n") },
       -> { File.binwrite(@patch_path, @patch + "tamper") },
       -> { File.unlink(@patch_path) },
       -> { File.rename(@patch_path, "#{@patch_path}.original"); File.symlink("#{@patch_path}.original", @patch_path) },
@@ -259,12 +303,12 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       -> { @patch = @patch.sub("100644", "120000"); File.binwrite(@patch_path, @patch); @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch); save_manifest },
       -> { FileUtils.rmdir(File.dirname(@task)); File.symlink(@b, File.dirname(@task)) }
     ]
-    mutations.each do |mutation|
+    mutations.each_with_index do |mutation, index|
       fixture do
         mutation.call
         before = [state(@a), state(@b)]
         _stdout, stderr, status = cli(%w[y y y], terminal: false)
-        assert_equal 2, status.exitstatus, stderr
+        assert_equal 2, status.exitstatus, "preflight mutation #{index}: #{stderr}"
         assert_equal before, [state(@a), state(@b)]
       end
     end
@@ -274,6 +318,10 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # later check and never offers commit. The applied candidate remains unstaged.
   def test_validation_failure_preserves_binary_output_status_and_stops
     fixture(script: '$stdout.binmode.write("out\\x00\\xff".b); $stderr.binmode.write("err\\x00\\xfe".b); exit 23') do
+      [@a, @b].each { |repo| File.binwrite(File.join(repo, "local.bin"), "keep\x00\xff".b) }
+      @manifest.fetch("repositories").each_value { |spec| spec["baseline"] = "a" * 40 }
+      save_manifest
+      sibling = state(@b)
       stdout, stderr, status = cli(%w[y y y])
       assert_equal 23, status.exitstatus
       assert_includes stdout, "out\x00\xff".b
@@ -284,6 +332,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       assert File.exist?(@task)
       assert_empty git(@a, "diff", "--cached", "--name-only")
       assert_equal @bases[0], git(@a, "rev-parse", "HEAD").strip
+      assert_equal "keep\x00\xff".b, File.binread(File.join(@a, "local.bin"))
+      assert_equal sibling, state(@b)
     end
   end
 
@@ -307,19 +357,48 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         assert_equal phase > 1, File.exist?(@task)
       end
     end
+    # Reuse each preview-only fixture, restoring only the injected change after
+    # each refusal. Every callback runs after preview, before application consent.
+    fixture do
+      [@a, @b].each do |repo|
+        local = File.join(repo, "local notes.bin")
+        File.binwrite(local, "keep\x00\xff".b)
+        mutations = [
+          -> { File.write(local, "concurrent") },
+          -> { File.chmod(0o755, local) },
+          -> { File.unlink(local) },
+          -> { File.write(File.join(repo, "unexpected.bin"), "concurrent") }
+        ]
+        mutations.each do |mutation|
+          stdout, stderr, status = cli([-> { mutation.call; "y" }])
+          assert_equal 2, status.exitstatus, stdout + stderr
+          assert_includes stderr, "changed since review"
+          refute File.exist?(@task)
+          assert_empty git(@a, "diff", "--cached", "--name-only")
+          assert_empty git(@b, "diff", "--cached", "--name-only")
+          File.binwrite(local, "keep\x00\xff".b)
+          File.chmod(0o644, local)
+          unexpected = File.join(repo, "unexpected.bin")
+          File.unlink(unexpected) if File.exist?(unexpected)
+        end
+      end
+    end
     fixture do
       cli(%w[y n])
       before = state(@a)
       _stdout, stderr, status = cli(%w[y y y])
       assert_equal 2, status.exitstatus
-      assert_includes stderr, "not clean"
+      assert_includes stderr, "already occupied"
       assert_equal before, state(@a)
     end
-    fixture do
-      _stdout, stderr, status = cli([-> { git(@a, "commit", "--allow-empty", "-m", "concurrent"); "y" }])
-      assert_equal 2, status.exitstatus
-      assert_includes stderr, "baseline"
-      refute File.exist?(@task)
+    ["data", "tool"].each do |name|
+      fixture do
+        repo = name == "data" ? @a : @b
+        _stdout, stderr, status = cli([-> { git(repo, "commit", "--allow-empty", "-m", "concurrent"); "y" }])
+        assert_equal 2, status.exitstatus
+        assert_includes stderr, "changed"
+        refute File.exist?(@task)
+      end
     end
     fixture do
       File.write(File.join(@b, ".gitignore"), "/tmp/\n")
@@ -344,8 +423,13 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   def test_validation_source_changes_refuse_and_generated_output_is_bounded
     ['File.write("verify.rb", "changed")',
      'File.write(File.join(ENV.fetch("AGENT_CODING_TOOL_DATA_DIR"), "file.txt"), "changed")',
+     'File.write("local.bin", "changed")',
+     'File.unlink("local.bin")',
+     'File.chmod(0o755, "local.bin")',
+     'File.write("unexpected.bin", "changed")',
      'File.write("verify.rb", "changed"); exit 23'].each do |script|
       fixture(script: script) do
+        File.binwrite(File.join(@b, "local.bin"), "keep\x00\xff".b)
         stdout, stderr, status = cli(%w[y y y])
         assert_equal script.include?("exit 23") ? 23 : 2, status.exitstatus
         assert_includes stderr, "validation changed"

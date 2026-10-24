@@ -99,7 +99,9 @@ act apply ~/Downloads/new-task.json
 
 ACT resolves repositories under `repo_root` from its existing data configuration,
 checks the proposal without changing the repository, and displays the target,
-baseline and file summary. **Apply patch?**, **Run validation?**, and **Stage these
+actual HEAD and file summary. Manifest baseline drift and initial unrelated
+untracked files produce **WARN** diagnostics before consent, including in sibling
+validation repositories. **Apply patch?**, **Run validation?**, and **Stage these
 files and commit?** each independently default to no and require terminal input.
 A manifest supplies no authority. EOF, blank input and redirected stdin decline;
 there is no automatic yes option. The optional commit always belongs to the
@@ -115,7 +117,7 @@ interrupt returns 130. A declined workflow returns zero, so inspect its printed
 phase outcome rather than treating zero as validation/commit evidence. Errors
 and interrupts preserve applied changes and any staged files for inspection;
 there is no rollback, cleanup, automatic retry or resume engine. Reinvocation
-against applied/dirty files or a different HEAD refuses.
+against an already applied patch still refuses ordinary applicability checks.
 
 ### Companion JSON v1 contract
 
@@ -130,7 +132,7 @@ the contract (producers should use `--no-renames`).
 | --- | --- |
 | `schema` | Exact version string above. |
 | `target` | Key in `repositories` for the only patch target. |
-| `repositories` | Nonempty object keyed by portable repository names. Every entry has `path` relative to configured `repo_root`, `remote_url` identity, and exact 40-character lowercase `baseline` HEAD. ACT checks the configured default remote using its existing identity normalization; it does no remote freshness/network check. Roots must exist, be distinct and not overlap. |
+| `repositories` | Nonempty object keyed by portable repository names. Every entry has `path` relative to configured `repo_root`, `remote_url` identity, and a 40-character lowercase `baseline` SHA recording producer provenance. A different actual HEAD warns with expected/actual SHA; equality, ancestry and local availability of the declared object are not required. ACT checks the configured default remote using its existing identity normalization; it does no remote freshness/network check. Roots must exist, be distinct and not overlap. |
 | `patch` | Object with companion `file` basename and exact lowercase 64-character `sha256`. Resolved relative to the JSON directory, never caller cwd. Embedded patches/download URLs are unsupported. |
 | `paths` | Nonempty unique array of exact root-relative changed paths, checked against native patch inspection and resulting changes. |
 | `validation` | Nonempty array of ordered required actions, described below. All must pass before commit can be offered. |
@@ -140,9 +142,11 @@ Relative paths use ASCII letters, digits, spaces, underscores, hyphens, dots and
 slashes. Empty components, `.`/`..`, `.git` in any case, shell/pathspec syntax,
 absolute paths and symlink components are refused. Validation `cwd` alone may
 be `.` for the repository root. The patch must be a regular nonsymlink file.
-All declared repositories must initially have clean tracked files, index and
-untracked files according to existing Git ignore rules. An occupied addition,
-ignored patch destination, changed artifact, wrong identity/baseline or failing
+All declared repositories must initially have clean tracked files and index.
+Initial nonignored untracked files warn and are preserved by path, bytes and mode;
+they may coexist with the proposal only when destinations do not collide.
+An occupied addition, file/directory prefix collision,
+ignored patch destination, changed artifact, wrong identity or failing
 `git apply --check` refuses before mutation. Confirmed application rechecks the
 reviewed repository snapshots/artifact and uses ordinary atomic `git apply`.
 Hidden index flags (`assume-unchanged`/`skip-worktree`) are unsupported and refused.
@@ -166,14 +170,18 @@ The displayed argv/cwd/environment scope requires separate operator consent.
 **These actions execute repository code with operator privileges and are not a
 sandbox.** Review the patch and referenced repository code before approving.
 
-ACT compares file bytes/modes, HEAD, branch, remote identity and index across
+ACT inventories the actual initial HEAD/tree and compares file bytes/modes,
+HEAD, branch, remote identity and index across
 every declared repository before/after each step and before staging. Unexpected
 edits refuse commit. Only untracked, Git-ignored output under `coverage/`, `tmp/`,
 `test/tmp/` and `test/version_tmp/` is excluded from source comparisons; tracked
 files there remain protected, as do other ignored files. A tool that rewrites
 `Gemfile.lock` or ACTD state fails this check even if it exits zero. New files
-are included in staging; only declared paths may be staged. Concurrent changes
-refuse rather than being silently adapted. Rechecks detect observed changes;
+are included in staging; only declared paths may be staged. The optional commit
+parents the actual reviewed target HEAD and leaves initial unrelated untracked
+files unstaged and intact. Later HEAD movement, edits/additions/deletions,
+including changes to initial untracked files or sibling repositories, refuse
+progression rather than producing another advisory warning. Rechecks detect observed changes;
 they cannot lock out arbitrary external writers or contain trusted tests/hooks.
 
 ### Producing a handoff
@@ -184,7 +192,10 @@ where applicable. Otherwise inspect `git diff --binary --full-index --no-renames
 and include each new file's root-relative diff explicitly. Check application and
 reconstruction in a disposable repository at that baseline. Compute SHA-256 over
 the final downloaded patch bytes, list exact changed paths, and bind each sibling
-repository's current identity and HEAD. Supply only the required checks in order,
+repository's current identity and HEAD as provenance. Warning-only preflight
+does not establish semantic compatibility with a different actual HEAD or grant
+automatic acceptance; review the current source and validation scope.
+Supply only the required checks in order,
 with explicit ACTD selection for sibling ACT checks. Link both artifacts; worker
 test claims and a manifest do not establish operator acceptance or publication.
 

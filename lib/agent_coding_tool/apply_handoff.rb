@@ -26,26 +26,33 @@ module AgentCodingTool
     # or 2 for refusal. Interrupt returns 130; failures never roll back changes.
     def run(path)
       load_manifest!(path)
-      before = repository_states!
-      raise Error, "target index/worktree is not clean (including untracked files)" unless clean?(@target)
-      @repositories.each_value do |repo|
-        raise Error, "validation repository index/worktree is not clean" unless repo.equal?(@target) || clean?(repo)
+      @initial = nil
+      @initial = repository_states!
+      @initial_untracked = @repositories.to_h do |name, repo|
+        raise Error, "#{name}: tracked index/worktree is not clean" unless clean?(repo)
+        head = @initial.fetch(name).fetch(:head)
+        if head != repo.fetch(:baseline)
+          @out.puts "WARN: #{name}: baseline differs; expected #{repo.fetch(:baseline)}; actual #{head}"
+        end
+        paths = git!(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+        @out.puts "WARN: #{name}: preserving initial untracked files: #{paths.map(&:dump).join(', ')}" unless paths.empty?
+        [name, paths]
       end
       @patch = artifact!
       check_patch!
-      @out.puts "Target: #{@target.fetch(:path)} at #{@target.fetch(:baseline)}"
+      @out.puts "Target: #{@target.fetch(:path)} at #{@initial.fetch(@manifest.fetch('target')).fetch(:head)}"
       @out.puts "Files: #{@paths.join(', ')}"
       @out.write git!(@target, "apply", "--stat", input: @patch)
       return declined("application") unless confirm?("Apply patch?")
 
-      unchanged!(before)
+      unchanged!(@initial)
       raise Error, "artifact changed after preview" unless artifact! == @patch
       check_patch!
       @phase = "application started; result unverified; validation and commit not run"
       git!(@target, "apply", input: @patch)
       @phase = "applied; validation pending; commit pending"
       applied = repository_states!
-      expected_changes!
+      expected_changes!(applied)
       report
       @steps.each_with_index do |step, index|
         @out.puts "Validation #{index + 1}: #{Shellwords.join(step.fetch(:argv))}"
@@ -114,13 +121,12 @@ module AgentCodingTool
       end
 
       raise Error, "commit left unexpected changes" unless clean?(@target)
-      raise Error, "commit parent changed" unless git!(@target, "rev-parse", "HEAD^").strip == @target.fetch(:baseline)
+      raise Error, "commit parent changed" unless git!(@target, "rev-parse", "HEAD^").strip == @initial.fetch(@manifest.fetch("target")).fetch(:head)
       unless git!(@target, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD").split("\0").sort == @paths.sort
         raise Error, "commit files differ from proposal"
       end
       raise Error, "committed tree differs from validated index" unless git!(@target, "rev-parse", "HEAD^{tree}").strip == tree
-      head = git!(@target, "rev-parse", "HEAD").strip
-      after = repository_states!(target_head: head)
+      after = repository_states!
       unless after.all? { |name, state|
         keys = name == @manifest.fetch("target") ? %i[head index index_diff] : []
         state.reject { |key, _| keys.include?(key) } == applied.fetch(name).reject { |key, _| keys.include?(key) }
@@ -283,6 +289,11 @@ module AgentCodingTool
       raise Error, "patch paths differ from manifest" unless actual.sort == @paths.sort
       @paths.each do |path|
         absolute = contained!(@target.fetch(:path), path)
+        parent = File.dirname(absolute)
+        until parent == @target.fetch(:path)
+          raise Error, "patch parent is already occupied: #{path}" if File.exist?(parent) && !File.directory?(parent)
+          parent = File.dirname(parent)
+        end
         if File.exist?(absolute) && git!(@target, "ls-files", "-z", "--", path).empty?
           raise Error, "patch path is already occupied: #{path}"
         end
@@ -292,10 +303,11 @@ module AgentCodingTool
       git!(@target, "apply", "--check", input: @patch)
     end
 
-    # Captures identity, baseline, empty-or-current index and file bytes/modes in
+    # Captures actual HEAD, identity, index and file bytes/modes in
     # every declared repo. Ignored generated output is narrowly excluded only
-    # when untracked; tracked files are always observed. Unsafe entries raise.
-    def repository_states!(target_head: nil)
+    # when untracked; initial tree paths stay observed across deletion/commit.
+    # Returns repository snapshots; unsafe entries raise Error.
+    def repository_states!
       @repositories.to_h do |name, repo|
         root = repo.fetch(:path)
         raise Error, "repository root moved" unless File.realpath(root) == root
@@ -303,16 +315,15 @@ module AgentCodingTool
         identity = RepositoryIdentity.resolve(git!(repo, "remote", "get-url", @config.default_remote).strip)
         raise Error, "wrong repository identity" unless identity == repo.fetch(:identity)
         head = git!(repo, "rev-parse", "HEAD").strip
-        baseline = repo.equal?(@target) && target_head ? target_head : repo.fetch(:baseline)
-        raise Error, "wrong repository baseline" unless head == baseline
         tracked = git!(repo, "ls-files", "-z", "--cached").split("\0")
         flags = git!(repo, "ls-files", "-v", "-z")
         raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless flags.split("\0").all? { |entry| entry.start_with?("H ") }
-        baseline_paths = git!(repo, "ls-tree", "-r", "--name-only", "-z", repo.fetch(:baseline)).split("\0")
+        initial_head = @initial ? @initial.fetch(name).fetch(:head) : head
+        initial_paths = git!(repo, "ls-tree", "-r", "--name-only", "-z", initial_head).split("\0")
         others = git!(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
         ignored = git!(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard").split("\0")
         ignored.reject! { |path| GENERATED.any? { |prefix| path.start_with?(prefix) } }
-        files = (baseline_paths + tracked + others + ignored).uniq.sort.to_h do |path|
+        files = (initial_paths + tracked + others + ignored).uniq.sort.to_h do |path|
           absolute = contained!(root, path)
           value = if File.file?(absolute)
                     [File.stat(absolute).mode & 0o777, Digest::SHA256.file(absolute).hexdigest]
@@ -338,18 +349,30 @@ module AgentCodingTool
       raise Error, "repository changed since review/validation" unless repository_states! == expected
     end
 
-    # Returns whether native Git sees no tracked/staged/untracked target changes.
+    # Returns whether native Git sees no tracked worktree or staged changes.
+    # Unrelated untracked files are protected by snapshots, not cleanliness.
     def clean?(repo)
-      git!(repo, "status", "--porcelain=v1", "--untracked-files=all").empty?
+      git!(repo, "status", "--porcelain=v1", "--untracked-files=no").empty?
     end
 
-    # Requires an empty index and exactly the declared changed paths, including
-    # additions. Raises on unrelated edits or no-op/missing patch effects.
-    def expected_changes!
+    # Requires an empty index and exactly the proposal's changes from the initial
+    # reviewed state, preserving initial untracked files and sibling repositories.
+    # Accepts an optional current snapshot; unrelated/missing effects raise Error.
+    def expected_changes!(states = repository_states!)
       raise Error, "target index is not empty" unless git!(@target, "diff", "--cached", "--name-only").empty?
       paths = git!(@target, "diff", "--name-only", "-z", "HEAD").split("\0") +
-              git!(@target, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+              (git!(@target, "ls-files", "--others", "--exclude-standard", "-z").split("\0") - @initial_untracked.fetch(@manifest.fetch("target")))
       raise Error, "changed paths differ from patch" unless paths.sort == @paths.sort
+      unless states.all? { |name, state|
+        initial = @initial.fetch(name)
+        protected_files = lambda do |files|
+          files.reject { |path, _value| name == @manifest.fetch("target") && @paths.include?(path) }
+        end
+        state.reject { |key, _value| key == :files } == initial.reject { |key, _value| key == :files } &&
+          protected_files.call(state.fetch(:files)) == protected_files.call(initial.fetch(:files))
+      }
+        raise Error, "repository changed outside proposal"
+      end
     end
 
     # Reads explicit yes from a terminal only. EOF, blank and noninteractive input

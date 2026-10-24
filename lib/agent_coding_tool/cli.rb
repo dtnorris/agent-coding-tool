@@ -1486,6 +1486,7 @@ module AgentCodingTool
         Commands:
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
+                              baseline drift/unrelated untracked files warn; later changes refuse
           status [TASK] [--all | --active]
           status --fam FAMILY [--all | --active]
                               show the complete READY family; global NEXT only

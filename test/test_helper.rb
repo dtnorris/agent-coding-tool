@@ -4,9 +4,27 @@ require "fileutils"
 require "minitest/autorun"
 require "tmpdir"
 require "agent_coding_tool"
-require_relative "coding_skill_support"
 
 module TestHelpers
+  # Returns PATH with Apple's selected native Git ahead of its developer-tool
+  # dispatcher, only when PATH currently selects /usr/bin/git on Darwin.
+  # Other Git installations retain precedence. Resolution failures raise; Git
+  # commands, results and ownership checks are never simulated or cached.
+  def self.fixture_command_path
+    path = ENV.fetch("PATH")
+    selected = path.split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "git") }
+                   .find { |candidate| File.file?(candidate) && File.executable?(candidate) }
+    return path unless RbConfig::CONFIG.fetch("host_os").match?(/darwin/) && selected &&
+      File.realpath(selected) == "/usr/bin/git"
+
+    output, error, status = Open3.capture3("/usr/bin/xcrun", "--find", "git")
+    native = output.strip
+    raise "fixture Git resolution failed: #{error}" unless status.success? && native.start_with?("/") &&
+      File.file?(native) && File.executable?(native) && File.realpath(native) != "/usr/bin/git"
+
+    "#{File.dirname(File.realpath(native))}#{File::PATH_SEPARATOR}#{path}"
+  end
+
   def self.git_seed
     return @git_seed if @git_seed
 
@@ -98,3 +116,8 @@ module TestHelpers
     )
   end
 end
+
+# Native suites and their cold CLI children use the same real Git executable.
+# Ordinary feedback cannot execute dependencies, even during helper startup.
+ENV["PATH"] = TestHelpers.fixture_command_path unless ENV["ACT_ORDINARY_SUITE"] == "1"
+require_relative "coding_skill_support"

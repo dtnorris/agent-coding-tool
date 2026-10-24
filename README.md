@@ -1630,6 +1630,12 @@ gate when changing Git staging, delivery, checkpoint or retry behavior:
 bundle exec rake test:integration
 ```
 
+On macOS, shared native test support resolves `/usr/bin/git` through
+`xcrun --find git` once and prepends the selected tool directory to fixture
+`PATH`, including cold CLI children. This avoids repeating Apple's developer-tool
+dispatch while retaining genuine Git processes and checks. A custom Git already
+selected by `PATH` keeps precedence. Ordinary feedback performs no resolution.
+
 Use `test:native_integration` for native-only diagnosis. The required
 suites can also be run individually for diagnosis:
 

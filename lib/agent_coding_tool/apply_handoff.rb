@@ -206,11 +206,22 @@ module AgentCodingTool
       end
     end
 
-    # Resolves an existing or future path under root, refusing symlink components
-    # even when they currently point inside root. Returns the absolute path.
+    # Resolves a portable manifest path (or root cwd) with repository containment.
+    # Returns the absolute path; unsafe syntax or symlink components raise Error.
     def contained!(root, relative)
-      root = File.realpath(root)
       relative!(relative) unless relative == "."
+      repository_path!(root, relative)
+    end
+
+    # Resolves Git-discovered names without imposing manifest portability rules.
+    # Returns an absolute contained path; empty, traversal, Git administration,
+    # NUL or symlink components raise Error. A single dot denotes the root cwd.
+    def repository_path!(root, relative)
+      root = File.realpath(root)
+      unless relative.is_a?(String) && !relative.empty? && !relative.include?("\0") &&
+             (relative == "." || relative.split("/", -1).all? { |component| !["", ".", "..", ".git"].include?(component.downcase) })
+        raise Error, "unsafe relative path"
+      end
       path = root
       relative.split("/").each do |component|
         path = File.join(path, component)
@@ -324,7 +335,7 @@ module AgentCodingTool
         ignored = git!(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard").split("\0")
         ignored.reject! { |path| GENERATED.any? { |prefix| path.start_with?(prefix) } }
         files = (initial_paths + tracked + others + ignored).uniq.sort.to_h do |path|
-          absolute = contained!(root, path)
+          absolute = repository_path!(root, path)
           value = if File.file?(absolute)
                     [File.stat(absolute).mode & 0o777, Digest::SHA256.file(absolute).hexdigest]
                   elsif !File.exist?(absolute)

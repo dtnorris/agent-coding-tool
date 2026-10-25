@@ -152,12 +152,19 @@ class ApplyHandoffTest < Minitest::Test
   # inside-root links and escapes are refused; future regular paths are allowed.
   def test_paths_refuse_traversal_control_bytes_and_symlink_components
     with_proposal do
-      ["", "/absolute", "a//b", "a/", "../escape", "a/./b", ".git/config", "a/.GiT/config", "x\nfile", "x\0file", ":(glob)*", "$(id)"].each do |path|
+      ["", "/absolute", "a//b", "a/", "../escape", "a/./b", ".git/config", "a/.GiT/config", "x\nfile", "x\0file", ":(glob)*", "$(id)",
+       "notes (from PDF).md", "Explorer's_Guide.md", "title & notes.md", "Khazad-dûm.md"].each do |path|
         assert_raises(AgentCodingTool::Error, path.inspect) { @handoff.send(:relative!, path) }
+      end
+      ["", "/absolute", "a//b", "a/", "../escape", "a/./b", ".git/config", "a/.GiT/config", "x\0file"].each do |path|
+        assert_raises(AgentCodingTool::Error, path.inspect) { @handoff.send(:repository_path!, @root, path) }
       end
       assert_equal File.join(@root, "A", ".hidden", "a file.rb"), @handoff.send(:contained!, @root, "A/.hidden/a file.rb")
       File.symlink(File.join(@root, "B"), File.join(@root, "A", "linked"))
       assert_raises(AgentCodingTool::Error) { @handoff.send(:contained!, @root, "A/linked/future.rb") }
+      assert_raises(AgentCodingTool::Error) { @handoff.send(:repository_path!, @root, "A/linked/future.rb") }
+      File.symlink(File.dirname(@root), File.join(@root, "A", "escape"))
+      assert_raises(AgentCodingTool::Error) { @handoff.send(:repository_path!, @root, "A/escape/outside.rb") }
       @manifest["repositories"]["data"]["path"] = "A/linked"
       assert_raises(AgentCodingTool::Error) { load_proposal }
     end

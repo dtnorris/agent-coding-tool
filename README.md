@@ -138,10 +138,14 @@ the contract (producers should use `--no-renames`).
 | `validation` | Nonempty array of ordered required actions, described below. All must pass before commit can be offered. |
 | `commit_message` | Nonempty single-line suggested local commit message, always passed as one argv element. |
 
-Relative paths use ASCII letters, digits, spaces, underscores, hyphens, dots and
+Manifest-supplied relative paths use ASCII letters, digits, spaces, underscores, hyphens, dots and
 slashes. Empty components, `.`/`..`, `.git` in any case, shell/pathspec syntax,
 absolute paths and symlink components are refused. Validation `cwd` alone may
 be `.` for the repository root. The patch must be a regular nonsymlink file.
+Unrelated existing filenames discovered by Git may contain punctuation or
+Unicode; ACT still snapshots their bytes and modes and refuses traversal,
+Git administration and symlink components. This does not expand v1 patch-target
+or manifest-path syntax.
 All declared repositories must initially have clean tracked files and index.
 Initial nonignored untracked files warn and are preserved by path, bytes and mode;
 they may coexist with the proposal only when destinations do not collide.
@@ -183,6 +187,28 @@ files unstaged and intact. Later HEAD movement, edits/additions/deletions,
 including changes to initial untracked files or sibling repositories, refuse
 progression rather than producing another advisory warning. Rechecks detect observed changes;
 they cannot lock out arbitrary external writers or contain trusted tests/hooks.
+
+### Temporary direct-Git workaround
+
+Older ACT versions can refuse an otherwise valid handoff with `unsafe relative
+path` because they apply the manifest's portable allowlist to unrelated existing
+filenames, including apostrophes, parentheses, ampersands and Unicode. Preserve
+the rejection and downloaded artifacts for review. There is no automatic fallback.
+
+For an independently reviewed patch, the operator may apply it directly only
+after inspecting the exact repository root, HEAD, configured remote identity,
+index and worktree (including untracked and ignored files), and checking the
+downloaded patch's SHA-256 against the handoff. Resolve baseline or identity
+uncertainty first; unrelated dirty work blocks this workaround. Review exact
+patch paths and modes and preserve unrelated file bytes/modes and index state.
+From that verified root, run `git apply --check /absolute/path/proposal.patch`,
+then `git apply /absolute/path/proposal.patch` on the same hash-verified bytes
+with no intervening repository changes. Validate separately using the reviewed
+handoff actions, cwd and environment; direct Git does not supply ACT's snapshot
+rechecks or independent consent prompts. Inspect the resulting diff, index and
+unrelated files afterward. Stop on any mismatch or failure; do not stash, reset,
+rename files, implicitly commit or publish. Applying or validating the workaround
+does not establish acceptance of the ACT repair.
 
 ### Producing a handoff
 

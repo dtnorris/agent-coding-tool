@@ -10,6 +10,9 @@ require "timeout"
 class ApplyHandoffGitIntegrationTest < Minitest::Test
   include TestHelpers
   CLI = File.expand_path("../../bin/agent-coding-tool", __dir__)
+  NONPORTABLE_PATHS = ["notes (from PDF).md", "Explorer's_Guide.md",
+                       "title & notes.md", "Moria_Khazad-dûm.md"].freeze
+  IGNORED_PATH = "ignored (notes & dûm's).bin"
   TASK = <<~YAML
     ---
     id: NEW
@@ -32,8 +35,9 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
 
   # Creates sibling repositories, tracked lifecycle bytes and a new-file patch
   # in a download directory containing spaces. Yields with instance fixture paths
-  # bound; native setup failures propagate, and all files are removed afterward.
-  def fixture(script: JOURNEY_SCRIPT)
+  # bound; optional unrelated nonportable files exercise repository snapshots.
+  # Native setup failures propagate, and all files are removed afterward.
+  def fixture(script: JOURNEY_SCRIPT, nonportable: false)
     Dir.mktmpdir("act apply ") do |root|
       @root = File.realpath(root)
       @repos = File.join(@root, "repositories")
@@ -51,6 +55,14 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       File.write(File.join(@a, "config.yml"), YAML.dump("repo_root" => @repos))
       File.write(File.join(@b, "verify.rb"), script)
       [@a, @b].each do |path|
+        if nonportable
+          NONPORTABLE_PATHS.each do |relative|
+            File.binwrite(File.join(path, relative), "unrelated\x00\xff".b)
+            File.chmod(0o755, File.join(path, relative))
+          end
+          File.write(File.join(path, ".git", "info", "exclude"), "/#{IGNORED_PATH}\n")
+          File.binwrite(File.join(path, IGNORED_PATH), "ignored\x00\xfe".b)
+        end
         git(path, "add", ".")
         git(path, "commit", "-m", "fixture")
       end
@@ -147,7 +159,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # declared provenance may name an absent object or an older existing commit.
   def test_public_cli_new_task_sibling_validation_and_target_commit
     [[true, false], [false, false], [false, true], [true, true]].each do |drift, untracked|
-      fixture do
+      fixture(nonportable: true) do
         if drift
           [@a, @b].each do |repo|
             File.write(File.join(repo, "current-only.txt"), "actual initial tree\n")
@@ -217,7 +229,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # later phase leaves the applied file inspectable without a staged/committed file.
   def test_independent_default_no_eof_and_noninteractive_consent
     [[""], [nil], ["y", ""], ["y", nil], ["y", "y", ""], ["y", "y", nil]].each do |answers|
-      fixture do
+      fixture(nonportable: true) do
+        initial, sibling = state(@a), state(@b)
         stdout, stderr, status = cli(answers)
         assert_equal 0, status.exitstatus, stderr
         assert_equal answers.length > 1, File.exist?(@task)
@@ -226,6 +239,17 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         refute_includes stdout, "committed locally"
         refute_includes stdout, "Run validation?" if answers.length == 1
         refute_includes stdout, "Stage these files" if answers.length == 2
+        after = state(@a)
+        assert_equal initial, [*after.first(2), after[2].reject { |path, _value| path == "tasks/NEW.yml" }]
+        assert_equal sibling, state(@b)
+        if answers.length == 3
+          assert_includes stdout, "sibling validation passed"
+          assert_includes stdout, "Validation 2: exit 0"
+          assert_includes stdout, "Commit declined"
+          assert_includes stdout, "publication not performed"
+          assert_equal ["tasks/NEW.yml"], git(@a, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+          assert_empty git(@a, "diff", "HEAD")
+        end
       end
     end
     fixture do
@@ -347,12 +371,13 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       refute File.exist?(@task)
     end
     [1, 2, 3].each do |phase|
-      fixture do
-        answers = Array.new(phase - 1, "y") + [-> { File.write(File.join(@a, "file.txt"), "concurrent"); "y" }]
+      fixture(nonportable: true) do
+        concurrent = File.join(@a, NONPORTABLE_PATHS.fetch(phase - 1))
+        answers = Array.new(phase - 1, "y") + [-> { File.write(concurrent, "concurrent"); "y" }]
         stdout, stderr, status = cli(answers)
         assert_equal 2, status.exitstatus, stdout
         assert_includes stderr, "changed"
-        assert_equal "concurrent", File.read(File.join(@a, "file.txt"))
+        assert_equal "concurrent", File.read(concurrent)
         assert_empty git(@a, "diff", "--cached", "--name-only")
         assert_equal phase > 1, File.exist?(@task)
       end
@@ -361,7 +386,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     # each refusal. Every callback runs after preview, before application consent.
     fixture do
       [@a, @b].each do |repo|
-        local = File.join(repo, "local notes.bin")
+        local = File.join(repo, "local notes (dûm & author's).bin")
         File.binwrite(local, "keep\x00\xff".b)
         mutations = [
           -> { File.write(local, "concurrent") },
@@ -421,14 +446,14 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # Even exit-zero validation cannot modify target/sibling source unnoticed.
   # Ignored generated coverage is narrowly allowed and can coexist with commit.
   def test_validation_source_changes_refuse_and_generated_output_is_bounded
-    ['File.write("verify.rb", "changed")',
+    ["File.write(#{NONPORTABLE_PATHS.last.dump}, 'changed')",
      'File.write(File.join(ENV.fetch("AGENT_CODING_TOOL_DATA_DIR"), "file.txt"), "changed")',
-     'File.write("local.bin", "changed")',
+     "File.write(#{IGNORED_PATH.dump}, 'changed')",
      'File.unlink("local.bin")',
      'File.chmod(0o755, "local.bin")',
      'File.write("unexpected.bin", "changed")',
      'File.write("verify.rb", "changed"); exit 23'].each do |script|
-      fixture(script: script) do
+      fixture(script: script, nonportable: true) do
         File.binwrite(File.join(@b, "local.bin"), "keep\x00\xff".b)
         stdout, stderr, status = cli(%w[y y y])
         assert_equal script.include?("exit 23") ? 23 : 2, status.exitstatus

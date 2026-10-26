@@ -671,6 +671,28 @@ original title and details. Dependency blockers use the compact `waiting on:`
 label. When output is a TTY, status labels are colored; set `NO_COLOR` to
 disable ANSI color.
 
+Use `act stat --min` (`bin/agent-coding-tool status --min`) to scan exactly one
+width-bounded row per displayed task, without blank separators, detail lines,
+family/hidden-count summaries or an Icebox footer. `act stat --min --all` shows
+the existing full inventory. `--min` also combines with TASK, `--active`,
+`--fam FAMILY` and `--icebox` wherever those selectors are already valid. Task
+selection, ordering, effective status, global NEXT, READY compression and
+completed/Icebox visibility stay the same; an empty selection prints nothing.
+
+Rows retain ID, human status (including `IN_FLIGHT (STALE)`), NEXT when present,
+and title as space permits. Inline `[external reported]`, `[external conflict]`,
+`[write collision]`, `[recorded overlap]` and `[read-only refresh]` indicators
+refer to existing evidence, granting no execution authority or assurance of
+fresh source, verified isolation or observed liveness. Omit `--min`, optionally
+with TASK, to recover full warnings, reasons, next steps, checkpoint/downstream
+details and restoration commands. Minimal output normalizes embedded whitespace
+and neutralizes input controls/terminal escapes. It uses the existing terminal
+width, ANSI-aware truncation and redirected-output fallback (`COLUMNS`, otherwise
+100 columns). Status/NEXT and indicators precede the title; long IDs shrink to
+retain them when possible. At extremely narrow widths, even identity, status
+and warning indicators inevitably truncate with the existing ASCII `...`
+convention (one or two dots below three columns).
+
 Recorded `NEEDS_JUDGMENT` rows provide a compact operator handoff: a `reason:`,
 an optional explicitly recorded `next:`, and the mechanical `resume: act
 prepare TASK --retry` command. Each handoff field is normalized to one line and

@@ -56,6 +56,8 @@ class IceboxGitIntegrationTest < Minitest::Test
       refute_match(/^TST-A:/, dashboard)
       assert_equal "1 Icebox task from families (TST)\n", dashboard.lines.last
       assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
+      minimal = cli!("status", "--min")
+      assert_equal dashboard.lines.grep(/\ATST-[A-C]:/), minimal.lines
       all = cli!("status", "--all")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
@@ -71,6 +73,8 @@ class IceboxGitIntegrationTest < Minitest::Test
         assert_includes view, "liveness unknown"
       end
       assert_includes cli!("status"), "TST-A: ICEBOX"
+      minimal = cli!("status", "--icebox", "--min")
+      assert_equal "TST-A: ICEBOX [external reported] [external conflict] — Task\n".b, minimal
       assert_includes cli!("next"), "TST-A (ICEBOX)"
       assert_includes cli!("next"), "act unicebox TST-A"
       reported = JSON.parse(cli!("next", "--json"))

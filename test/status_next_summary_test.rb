@@ -267,6 +267,7 @@ class StatusNextSummaryTest < Minitest::Test
       assert_equal 1, external.scan("source:").length
       assert_equal 1, external.scan("next:").length
       assert_equal external_before, state_bytes("#{dir}-runs")
+      assert_minimal_external_rows(dir, coordinator, inspector)
     end
   end
 
@@ -304,6 +305,47 @@ class StatusNextSummaryTest < Minitest::Test
   end
 
   private
+
+  # Uses real persisted external/overlap evidence and stale projections to check
+  # minimal safety indicators, width/color, identical probes and byte-preserved
+  # task/state/run files. Unexpected CLI errors fail through output_for.
+  def assert_minimal_external_rows(dir, coordinator, inspector)
+    write_task(dir, id: "B")
+    before = [state_bytes(dir), state_bytes("#{dir}-runs")]
+    [%w[status], %w[status --all], %w[status --fam A], %w[status A]].each do |command|
+      inspector.reset_counts
+      full = output_for(dir, coordinator, command.dup)
+      full_probes = inspector.head_batches.dup
+      inspector.reset_counts
+      minimal = output_for(dir, coordinator, [*command, "--min"])
+      assert_equal full_probes, inspector.head_batches
+      assert_empty inspector.snapshot_calls
+      assert_equal full.lines.grep(/\A[A-B]:/).map { |line| line.split(" — ").first },
+                   minimal.lines.map { |line| line.split(" [").first }
+      assert_equal full.lines.grep(/\A[A-B]:/).length, minimal.lines.length
+      assert_includes minimal, "A: IN_FLIGHT (STALE)"
+      assert_includes minimal, "[external reported] [external conflict] [recorded overlap]"
+      assert_includes minimal, "B: READY [external conflict]" unless command.include?("A") || command.include?("--fam")
+      refute_match(/source:|next:|reason:|checkpoint:|downstream:|restore:|liveness|isolation|authorized/, minimal)
+    end
+    previous = ENV.delete("NO_COLOR")
+    begin
+      [false, true].each do |no_color|
+        no_color ? ENV["NO_COLOR"] = "1" : ENV.delete("NO_COLOR")
+        [1, 2, 3, 20, 38, 80, 100].each do |width|
+          minimal = output_for(dir, coordinator, %w[status A --min], out: TTYOutput.new(width))
+          assert_equal 1, minimal.lines.length
+          assert_operator AgentCodingTool::CLI.allocate.send(:display_width, minimal.chomp), :<=, width
+          assert_includes minimal, "IN_FLIGHT (STALE)" if width >= 38
+          assert_includes minimal, "[recorded overlap]" if width >= 80
+          refute_match(/\e\[/, minimal) if no_color
+        end
+      end
+    ensure
+      previous ? ENV["NO_COLOR"] = previous : ENV.delete("NO_COLOR")
+    end
+    assert_equal before, [state_bytes(dir), state_bytes("#{dir}-runs")]
+  end
 
   # Uses public CLI transitions and real projection/sorting/rendering with only
   # Git observations faked. Reads must preserve all evidence bytes and next JSON;

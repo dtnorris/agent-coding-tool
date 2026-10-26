@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "stringio"
 
 class LiveWriteCollisionStatusTest < Minitest::Test
   include TestHelpers
@@ -21,6 +22,16 @@ class LiveWriteCollisionStatusTest < Minitest::Test
       assert_equal expected, statuses.fetch("IG-11C").fetch("write_collisions")
       refute_includes statuses.fetch("IG-07A").fetch("write_collisions").map { |item| item["task_id"] }, "IG-11C"
       refute_includes statuses.fetch("IG-11C").fetch("write_collisions").map { |item| item["task_id"] }, "IG-07A"
+      [[], ["IG-07A"]].each do |selector|
+        out, err = StringIO.new, StringIO.new
+        cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 0, cli.run(["status", *selector, "--min"]), err.string
+        assert_empty err.string
+        assert_equal selector.empty? ? 3 : 1, out.string.lines.length
+        assert_match(/^IG-07A: PREPARED(?: \(NEXT\))? \[write collision\] — Task$/, out.string)
+        refute_includes out.string, "manual overlap warning;"
+      end
     end
   end
 
@@ -174,6 +185,11 @@ class LiveWriteCollisionStatusTest < Minitest::Test
       assert_equal "PREPARED", status.fetch("status")
       assert_includes status.fetch("reason"), "reference"
       assert_equal "A", status.dig("write_collisions", 0, "task_id")
+      out, err = StringIO.new, StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, cli.run(%w[status B --min]), err.string
+      assert_match(/\AB: PREPARED \[write collision\] \[read-only refresh\] — Task\n\z/, out.string)
     end
   end
 

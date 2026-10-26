@@ -76,6 +76,8 @@ class FamilyStatusTest < Minitest::Test
 
   # Covers the exact compression threshold and unchanged-input determinism.
   def test_zero_one_six_and_seven_ready
+    assert_minimal_mixed_status_parity
+
     [0, 1, 6, 7].each do |count|
       tasks = family_tasks("CL" => count)
       coordinator, inspector = build(tasks)
@@ -226,12 +228,17 @@ class FamilyStatusTest < Minitest::Test
   def test_invalid_selectors_and_unsupported_options
     coordinator, inspector = build(family_tasks("CL" => 1))
     [%w[--fam], %w[--fam UNKNOWN], %w[--fam CL --fam CLX], %w[--fam CL --fam CL],
-     %w[CL-01 --fam CL], %w[--all --active], %w[--family CL], %w[--fa CL], %w[--bogus]].each do |args|
-      out, err = StringIO.new, StringIO.new
-      cli = client(coordinator, out:, err:)
-      assert_equal 2, cli.run(["status", *args]), args.inspect
-      assert_empty out.string
-      assert_match(/ERROR: .+/, err.string)
+     %w[CL-01 --fam CL], %w[CL-01 --icebox], %w[--all --active], %w[--family CL], %w[--fa CL],
+     %w[--bogus], %w[--mi], %w[--minimal], %w[--min=true]].each do |args|
+      ordinary_error = nil
+      [[], ["--min"]].each do |presentation|
+        out, err = StringIO.new, StringIO.new
+        cli = client(coordinator, out:, err:)
+        assert_equal 2, cli.run(["status", *presentation, *args]), args.inspect
+        assert_empty out.string
+        assert_match(/ERROR: .+/, err.string)
+        ordinary_error ? assert_equal(ordinary_error, err.string) : ordinary_error = err.string
+      end
     end
     assert_equal 0, inspector.batches
   end
@@ -239,6 +246,8 @@ class FamilyStatusTest < Minitest::Test
   # Width-aware summaries retain a usable command; ANSI/color and NO_COLOR
   # retain the existing headline contract. Long commands remain intact.
   def test_narrow_width_color_no_color_and_shell_escaped_fallback
+    assert_minimal_widths
+
     coordinator, = build(family_tasks("CL" => 7))
     old = ENV.delete("NO_COLOR")
     begin
@@ -405,6 +414,102 @@ class FamilyStatusTest < Minitest::Test
 
   private
 
+  # Characterizes the ordinary mixed-state dashboard before comparing minimal
+  # rows through the public CLI. Both presentations must preserve selection,
+  # status/NEXT, probe counts and immutable task/state inputs; failures assert.
+  def assert_minimal_mixed_status_parity
+    Dir.mktmpdir do |directory|
+      tasks = family_tasks("CL" => 7, "DONE" => 1, "RUN" => 1, "PREP" => 1, "CAND" => 1,
+                           "STALE" => 2, "FAIL" => 1, "JUDGE" => 1, "WAIT" => 1, "ICE" => 1)
+      states = { "DONE-01" => { "result" => { "outcome" => "complete", "recorded_at" => "2026-10-15T00:00:00Z" } },
+                 "RUN-01" => prepared_state("RUN-01").merge("started_at" => "now"),
+                 "PREP-01" => prepared_state("PREP-01"),
+                 "ICE-01" => { "icebox" => { "at" => "2026-10-15T00:00:00Z", "reason" => "later" } } }
+      { "CAND-01" => "candidate_complete", "FAIL-01" => "failed", "JUDGE-01" => "needs_judgment",
+        "WAIT-01" => "blocked", "STALE-02" => "candidate_complete" }.each do |id, outcome|
+        states[id] = prepared_state(id).merge("result" => { "outcome" => outcome, "summary" => "inspect evidence",
+                                                         "next_action" => "ask operator" })
+      end
+      states["STALE-01"] = prepared_state("STALE-01").merge("started_at" => "now")
+      FileUtils.mkdir_p(File.join(directory, "state", "prompts"))
+      store = AgentCodingTool::StateStore.new(File.join(directory, "state"))
+      states.each { |id, state| store.write(id, state) }
+      state_bytes = Dir.glob(File.join(directory, "state", "*.yml")).to_h { |path| [path, File.binread(path)] }
+      coordinator, inspector = build(tasks, state_store: store, prompt_root: File.join(directory, "state", "prompts"))
+      %w[STALE-01 STALE-02].each { |id| inspector.heads[["git@github.com:fixture/#{id}.git", "main"]] = "b" * 40 }
+      before = Marshal.dump([tasks, states])
+      ordinary = output(coordinator, %w[status])
+      assert_includes ordinary, "\n\n"
+      assert_includes ordinary, "    downstream:"
+      assert_includes ordinary, "CL: 7 READY, 4 hidden"
+      assert_includes ordinary, "1 Icebox task from families (ICE)\n"
+      assert_includes ordinary, "STALE-01: IN_FLIGHT (STALE)"
+      assert_includes ordinary, "STALE-02: STALE_CANDIDATE"
+      assert_includes ordinary, "    resume: act prepare JUDGE-01 --retry"
+      refute_includes ordinary, "ICE-01:"
+      assert_equal %w[CL-01 CL-02 CL-03], ready_ids(ordinary)
+      assert_equal 1, ordinary.scan("(NEXT)").length
+
+      [[], %w[--all], %w[--active], %w[--fam CL], %w[--fam CL --all], %w[--fam CL --active],
+       %w[--fam ICE], %w[--icebox], %w[--icebox --all], %w[--icebox --active],
+       %w[--icebox --fam ICE], %w[--icebox --fam ICE --all], %w[--icebox --fam ICE --active],
+       %w[--fam CL --icebox], %w[--fam DONE --active], %w[PREP-01], %w[PREP-01 --all],
+       %w[PREP-01 --active], %w[ICE-01]].each do |selectors|
+        probes_before = [inspector.batches, inspector.authority_calls]
+        full = output(coordinator, ["status", *selectors])
+        probes_between = [inspector.batches, inspector.authority_calls]
+        minimal = output(coordinator, ["status", *selectors, "--min"])
+        probes_after = [inspector.batches, inspector.authority_calls]
+        expected = full.lines.grep(/\A\S+: /).map { |line| line.split(" — ").first }
+        assert_equal expected, minimal.lines.map { |line| line.split(" — ").first }, selectors.inspect
+        assert_equal expected.length, minimal.lines.length
+        refute minimal.lines.any? { |line| line.strip.empty? }
+        assert_equal probes_between.zip(probes_before).map { |after, prior| after - prior },
+                     probes_after.zip(probes_between).map { |after, prior| after - prior }
+      end
+      empty, = build([])
+      assert_equal "", output(empty, %w[status --min])
+      assert_equal before, Marshal.dump([tasks, states])
+      assert_equal state_bytes, state_bytes.keys.to_h { |path| [path, File.binread(path)] }
+    end
+  end
+
+  # Exercises detected/configured widths, Unicode, control text and color using
+  # public status calls. Returns no value; width/row/escape regressions assert.
+  def assert_minimal_widths
+    unusual = task("ACT-" + "1234567890" * 5)
+    unusual["title"] = "\e[35m界e\u0301\e[0m\n\r\t\a\b\0\e[2J\e]0;unsafe\a" + "long title " * 30
+    coordinator, = build([unusual])
+    old_color, old_columns = ENV.delete("NO_COLOR"), ENV.delete("COLUMNS")
+    begin
+      [false, true].each do |no_color|
+        no_color ? ENV["NO_COLOR"] = "1" : ENV.delete("NO_COLOR")
+        [1, 2, 3, 12, 20, 38, 80, 100, 160, 240].each do |width|
+          [Terminal.new(width), StringIO.new].each do |out|
+            ENV["COLUMNS"] = width.to_s
+            text = output(coordinator, %w[status --min], out:)
+            assert_equal 1, text.lines.length
+            line = text.chomp
+            assert_operator AgentCodingTool::CLI.allocate.send(:display_width, line), :<=, width
+            plain = line.gsub(AgentCodingTool::CLI::ANSI_SEQUENCE, "")
+            refute_match(/[[:cntrl:]]/, plain)
+            refute_match(/\e\[(?:2J|35m)/, line)
+            refute_match(/\e/, line) if no_color || !out.tty?
+            assert_includes plain, "READY (NEXT)" if width >= 38
+          end
+        end
+      end
+      ENV.delete("COLUMNS")
+      fallback = output(coordinator, %w[status --min])
+      assert_equal 100, AgentCodingTool::CLI.allocate.send(:display_width, fallback.chomp)
+      ENV.delete("NO_COLOR")
+      assert_match(/\e\[92mREADY\e\[0m/, output(coordinator, %w[status --min], out: Terminal.new(100)))
+    ensure
+      old_color ? ENV["NO_COLOR"] = old_color : ENV.delete("NO_COLOR")
+      old_columns ? ENV["COLUMNS"] = old_columns : ENV.delete("COLUMNS")
+    end
+  end
+
   # Returns synthetic validated-shape task records with recognizable titles.
   def family_tasks(distribution)
     distribution.flat_map { |family, count| (1..count).map { |number| task("#{family}-%02d" % number) } }
@@ -423,11 +528,12 @@ class FamilyStatusTest < Minitest::Test
     { "snapshot" => { name => { "remote_url" => "git@github.com:fixture/#{name}.git", "branch" => "main", "pushed_sha" => "a" * 40 } } }
   end
 
-  # Returns a planner plus inspector with no write interfaces or real data paths.
-  def build(tasks, states: {})
+  # Returns a planner plus inspector using immutable in-memory stores by default;
+  # callers may supply a disposable state store/prompt root for Icebox evidence.
+  def build(tasks, states: {}, state_store: States.new(states), prompt_root: nil)
     inspector = Inspector.new
-    coordinator = AgentCodingTool::Coordinator.new(task_store: TaskRegistry.new(tasks), state_store: States.new(states),
-      repo_inspector: inspector, prompt_renderer: nil, prompt_root: nil, external_activity: NoExternalActivity.new)
+    coordinator = AgentCodingTool::Coordinator.new(task_store: TaskRegistry.new(tasks), state_store: state_store,
+      repo_inspector: inspector, prompt_renderer: nil, prompt_root: prompt_root, external_activity: NoExternalActivity.new)
     [coordinator, inspector]
   end
 

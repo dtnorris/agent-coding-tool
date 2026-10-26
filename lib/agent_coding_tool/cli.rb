@@ -403,7 +403,7 @@ module AgentCodingTool
     end
 
     # Renders explicit details or a broad dashboard from one effective snapshot.
-    # argv accepts completion flags or one family selector; invalid combinations
+    # argv accepts presentation/completion flags or one family selector; invalid combinations
     # raise Error/OptionParser::ParseError before status resolution. Family and
     # compression filters run after global NEXT selection and never change state.
     def status_command(argv)
@@ -417,6 +417,7 @@ module AgentCodingTool
         opts.on("--all", "show every task, including all completed tasks") { options[:all] = true }
         opts.on("--active", "show no completed tasks") { options[:active] = true }
         opts.on("--icebox", "show only intentionally deferred tasks") { options[:icebox] = true }
+        opts.on("--min", "show one width-bounded row per displayed task") { options[:minimal] = true }
       end
       parser.require_exact = true
       parser.parse!(argv)
@@ -466,6 +467,11 @@ module AgentCodingTool
       previous_bucket = nil
 
       statuses.each do |item|
+        if options[:minimal]
+          display_minimal_item(item, next_id:)
+          next
+        end
+
         bucket = stale_in_flight?(item) ? :stale_in_flight : status_bucket(item.fetch("status"))
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
@@ -480,7 +486,7 @@ module AgentCodingTool
         end
         previous_bucket = bucket
       end
-      display_icebox_summary(deferred) if compact_icebox
+      display_icebox_summary(deferred) if compact_icebox && !options[:minimal]
     end
 
     # Prints exactly one final, uncompressed inventory count. Families use the
@@ -1028,6 +1034,43 @@ module AgentCodingTool
       @out.puts compact_detail_line("next", "reconcile before delivery; liveness unknown; #{isolation}")
     end
 
+    # Prints one bounded row from existing projection evidence, without details,
+    # probes or writes. Status/NEXT and warning indicators precede the title;
+    # long IDs shrink first when the remaining prefix fits. At extreme widths
+    # even identity/status/warnings must truncate. Missing fields/output errors
+    # propagate; indicators grant no freshness, isolation, liveness or authority.
+    def display_minimal_item(item, next_id:)
+      indicators = []
+      if item["external_activity"]
+        indicators << "[external reported]"
+        indicators << "[external conflict]" if item.dig("state", "started_at") || item.fetch("status") == "COMPLETE"
+      end
+      indicators << "[external conflict]" if item["external_conflicts"]
+      indicators << "[write collision]" unless write_collisions(item).empty?
+      if item.dig("state", "write_overlap") || !item.dig("state", "write_collision_override", "conflicts").to_a.empty?
+        indicators << "[recorded overlap]"
+      end
+      indicators << "[read-only refresh]" if item["reason"]&.start_with?(READ_ONLY_FRESHNESS_REASON_PREFIX)
+      status = human_status(item)
+      status += " (NEXT)" if item.fetch("id") == next_id
+      status += " #{indicators.uniq.join(' ')}" unless indicators.empty?
+      display_id = normalize_minimal_text(item.fetch("id"))
+      identity_width = dashboard_width - display_width(": #{status}")
+      display_id = truncate_display_line(display_id, identity_width) if identity_width.positive?
+      title = normalize_minimal_text(item.fetch("title"))
+      row = "#{display_id}: #{status}"
+      title_width = dashboard_width - display_width(row) - display_width(" — ")
+      row += " — #{truncate_display_line(title, title_width)}" if title_width.positive?
+      @out.puts truncate_display_line(row, dashboard_width)
+    end
+
+    # Returns normalized single-row input text with terminal escapes and control
+    # characters neutralized. Generated status color is added separately; this
+    # never changes stored text and accepts any value convertible to a string.
+    def normalize_minimal_text(text)
+      normalize_dashboard_text(text.to_s.gsub(ANSI_SEQUENCE, "").gsub(/[[:cntrl:]]/, " "))
+    end
+
     # Prints one width-aware dashboard row plus its relevant evidence. Accepts
     # an effective status and metrics; missing fields/output errors propagate.
     def display_dashboard_item(item, completion_metrics, next_id:)
@@ -1487,11 +1530,13 @@ module AgentCodingTool
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
                               baseline drift/unrelated untracked files warn; later changes refuse
-          status [TASK] [--all | --active]
-          status --fam FAMILY [--all | --active]
+          status [TASK] [--all | --active] [--min]
+          status --fam FAMILY [--all | --active] [--min]
                               show the complete READY family; global NEXT only
-          status --icebox [--fam FAMILY] [--all | --active]
+          status --icebox [--fam FAMILY] [--all | --active] [--min]
                               show only deferred work; --all/--fam include Icebox last
+          --min               one bounded row per displayed task; no details or summaries
+                              omit --min for full warnings; selection and global NEXT unchanged
           icebox TASK [--reason TEXT]
                               defer unstarted READY work; identical reason is a no-op
           unicebox TASK       explicitly restore normal eligibility computation

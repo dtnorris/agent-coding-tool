@@ -1639,6 +1639,78 @@ evidence, original checkout, reader, shared Git administration, external workspa
 and broad temporary roots. Run this command on the Mac host outside Codex;
 ordinary tests and sandbox simulations do not establish native acceptance.
 
+ACT-24's separate host recipe is
+`test/integration/act24_continuity.rb`. It proposes an offline dirty-candidate
+correction experiment; it does not add an ACT continuation command or change
+Launcher, delivery, lifecycle or acceptance policy. Review and separately
+authorize host execution after preserving the complete implementation with
+the checkpoint commands above. Authoring/launch authorization alone does not
+authorize this experiment. Run the focused, non-dispatch authoring checks with
+`ruby test/act24_recipe_checks.rb`; these do not qualify native confinement.
+
+The public `pin` command prints the digest of production and recipe source.
+The public `run` command requires that reviewed digest, the exact installed
+Codex executable/hash, and an **absent** `ACT-24-host-*` directory directly
+inside the existing `agent-coding-tool-data-fixtures` container:
+
+```sh
+ruby test/integration/act24_continuity.rb pin
+# Only after separate host authorization, substitute the reviewed literal pins:
+ruby test/integration/act24_continuity.rb run \
+  --root /absolute/agent-coding-tool-data-fixtures/ACT-24-host-unique \
+  --source-sha256 REVIEWED_SOURCE_SHA256 \
+  --codex /absolute/path/to/installed/codex \
+  --codex-sha256 REVIEWED_EXECUTABLE_SHA256
+```
+
+The independently running supervisor creates a 120-second cumulative lease
+(plus at most two seconds to confirm cleanup), then qualifies the controller,
+worker and test policies before dispatch. These are sibling deny-default macOS
+Seatbelt processes, avoiding nested sandbox creation. Unsupported syntax,
+filesystem/process/network/secret isolation or process-birth inspection refuses
+execution. A live listener and unrelated sentinel qualify denials and owned-only
+deadline/cancellation cleanup. Worker/test code cannot write controller jobs,
+budgets, ACT evidence, verifier source or Git administration. The controller's
+job channel accepts fixed confined fixture operations, never arbitrary host
+shell commands; neither external worker nor candidate test can access it.
+For this bounded ACT-24 experiment, David approved basic BSD process metadata
+visibility. Denial of `proc_pidinfo(..., PROC_PIDTBSDINFO, ...)` is not an
+acceptance requirement; `qualification.json` records that limit. This changes
+no Seatbelt permissions and makes no claim that other process information is
+inaccessible. Foreign signalling, fork, network and protected-file denials remain
+required. Supervised controller and job spawns are tracked as direct children
+before identity inspection or setup.
+Cleanup polls without blocking under one monotonic deadline. Unknown birth or
+liveness remains in supervision evidence and blocks further checks, restoration
+and redispatch; an unqualified birth permits only wait-owned direct-PID cleanup.
+
+The installed Codex 0.162.1 is invoked for version/help only. The only fake is
+the external `exec --json -` / `exec resume --json SESSION_ID -` worker process;
+ACT prepare/start/checkpoint record/verify/gate and Git remain real and local.
+Explicit-session CLI continuation avoids App Server/Goal state; the recipe
+does not qualify native resume, native Goal accounting or real-model judgment.
+It spends zero on inference and never installs dependencies, changes private
+validation/delivery contracts or accesses the operator's ACTD for execution.
+
+The positive journey uses two turns and one correction, retaining the actual
+failed command/output and both replayable candidates, including new files.
+One final no-progress fault uses the third turn/second correction and persists
+a stop. That correction also interrupts its controller after dispatch, retaining
+the pending reservation and proving fresh-process refusal before adopting only
+the supervisor-reaped result. Restart/identity/evidence/test-tampering controls cannot manufacture a
+PASS. A controller restart after preservation re-verifies the existing record;
+unknown dispatch/liveness and human holds refuse redispatch. Public `run`
+never adopts an occupied root or resets counters. Internal modes are test glue,
+not supported operator recovery commands.
+
+All partial bytes remain under the declared root. `journey.json`, `controls.json`,
+`qualification.json`, supervision records, raw captures and immutable ACT
+checkpoint artifacts distinguish experimental proof from operator acceptance;
+`blocked.json` means the journey was not accepted. A successful recipe still
+requires the ordinary implementation's host checkpoint record/verify, required
+gated complete/YAML checks, freshness, review and David's acceptance. It grants
+no real lifecycle transition, integration or publication authority.
+
 The test commands have distinct contracts:
 
 | Command | Required behavior |

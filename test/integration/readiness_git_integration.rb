@@ -38,6 +38,14 @@ class ReadinessTest < Minitest::Test
     output
   end
 
+  # Returns relative file paths and exact bytes under a disposable root, including
+  # Git storage when present. Used to detect refused-launch mutations; I/O raises.
+  def file_bytes(root)
+    Dir.glob("**/*", File::FNM_DOTMATCH, base: root).select do |path|
+      File.file?(File.join(root, path))
+    end.to_h { |path| [path, File.binread(File.join(root, path))] }
+  end
+
   # Keeps preparation/manual start independent of objects used only at launch;
   # launch must diagnose exact missing native input before allocating an attempt.
   # Removing the early check makes this same no-attempt assertion fail.
@@ -50,13 +58,21 @@ class ReadinessTest < Minitest::Test
           setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", future)
           assert_equal 0, cli("prepare", "T")
           assert_includes @out.string, "remain unverified until launch"
-          before = Dir.glob(File.join(@ordinary, ".git", "objects", "**", "*"))
+          before = file_bytes(@ordinary)
           probe = lambda do
             assert_equal 2, cli("launch", "T", "--codex", "--reasoning", "high")
-            assert_includes @err.string, "repo: prepared object missing #{future} at #{@ordinary}"
-            assert_includes @err.string, "blocked action: worktree creation"
             refute File.exist?(File.join(@root, "worker-pid"))
             assert_empty Dir.glob("#{@data}-runs/T/*/handoff.json")
+            refute File.exist?(File.join(@root, "worktrees"))
+            assert_includes @err.string, "Local repo repo is missing required commit #{future} (likely not fetched from remote)"
+            assert_includes @err.string, "ACT creates worker worktrees from existing local Git storage"
+            assert_includes @err.string, "cannot create the worker workspace from #{@ordinary}"
+            assert_includes @err.string, "blocked action: worktree creation"
+            assert_includes @err.string, "Fetch the required commit from the configured remote origin (#{@remote})"
+            assert_includes @err.string, "then retry launch"
+            assert_includes @err.string, "Pulling, resetting or switching the ordinary checkout is unnecessary"
+            assert_includes @err.string, "ACT performed no fetch or repair"
+            assert_equal before, file_bytes(@ordinary)
           end
           if omit_readiness
             constructor = AgentCodingTool::WorktreeManager.method(:new)
@@ -73,10 +89,42 @@ class ReadinessTest < Minitest::Test
             # An independent permitted manual milestone does not need the object.
             assert_equal 0, cli("start", "T")
           end
-          assert_equal before, Dir.glob(File.join(@ordinary, ".git", "objects", "**", "*"))
+          assert_equal before, file_bytes(@ordinary)
           _output, _error, status = Open3.capture3("git", "cat-file", "-e", future, chdir: @ordinary)
           refute status.success?
         end
+      end
+    end
+
+    # Separate recovery: only an explicit test-owned operator fetch supplies the
+    # object. The same prepared launch succeeds without moving ordinary HEAD/files.
+    fixture(git: true, process: true, mutable_remote: true) do
+      public_entries do
+        future = setup_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+          "--git-dir", @remote, "commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "recovery remote only")
+        setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", future)
+        assert_equal 0, cli("prepare", "T")
+        prepared = @store.load("T")
+        assert_equal 2, cli("launch", "T", "--codex", "--reasoning", "high")
+        refute File.exist?(File.join(@root, "worker-pid"))
+        ordinary = file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
+        head = setup_git("rev-parse", "HEAD", chdir: @ordinary)
+        index = File.binread(File.join(@ordinary, ".git", "index"))
+        source = prepared.fetch("snapshot").fetch("repo")
+        setup_git("fetch", "--", source.fetch("remote"), source.fetch("pushed_sha"), chdir: @ordinary)
+        assert_equal head, setup_git("rev-parse", "HEAD", chdir: @ordinary)
+        assert_equal index, File.binread(File.join(@ordinary, ".git", "index"))
+        assert_equal ordinary, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
+        assert_equal prepared, @store.load("T")
+        assert_equal 0, cli("launch", "T", "--codex", "--reasoning", "high"), @err.string
+        report = JSON.parse(File.read(Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0)))
+        entry = report.fetch("worktrees").fetch("entries").fetch(0)
+        assert_equal future, entry.fetch("base_sha")
+        assert_equal future, setup_git("rev-parse", "HEAD", chdir: entry.fetch("path"))
+        assert File.exist?(File.join(@root, "worker-pid"))
+        assert_equal head, setup_git("rev-parse", "HEAD", chdir: @ordinary)
+        assert_equal index, File.binread(File.join(@ordinary, ".git", "index"))
+        assert_equal ordinary, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
       end
     end
   end

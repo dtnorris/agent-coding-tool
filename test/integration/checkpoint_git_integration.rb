@@ -458,7 +458,7 @@ class CheckpointTest < Minitest::Test
             "remote_url" => File.join(root, "remote.git"), "branch" => "main", "pushed_sha" => "f" * 40 } }
         )
       end
-      assert_includes error.message, "prepared object missing"
+      assert_includes error.message, "Local repo repo is missing required commit #{'f' * 40}"
       refute File.exist?(ownership)
       refute File.exist?(File.join(visible, "M", "repo"))
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)

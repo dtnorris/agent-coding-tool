@@ -256,6 +256,9 @@ module AgentCodingTool
 
     def canonical_system_path(path) = self.class.canonical_system_path(path)
 
+    # Returns verified local parent/common Git paths for a snapshot and repo name.
+    # Unsafe paths, changed identity or a missing prepared commit raise without
+    # fetching or repairing; the ordinary checkout need not be at that commit.
     def parent_identity!(source, name)
       raise InvalidState, "worktrees: ordinary checkout path must be absolute" unless source.fetch("path").start_with?("/")
       parent = canonical_system_path(source.fetch("path"))
@@ -268,7 +271,11 @@ module AgentCodingTool
       raise InvalidState, "worktrees: ambiguous parent repository" unless File.realpath(top) == File.realpath(parent) && common == admin
       safe_path!(common)
       raise InvalidState, "worktrees: remote identity changed" unless git!(parent, "remote", "get-url", source.fetch("remote")) == source.fetch("remote_url")
-      raise InvalidState, "worktrees: #{name}: prepared object missing #{source.fetch('pushed_sha')} at #{parent}; blocked action: worktree creation; operator must supply the object locally; no fetch or repair performed" unless
+      raise InvalidState, "Local #{name} repo is missing required commit #{source.fetch('pushed_sha')} (likely not fetched from remote). " \
+        "ACT creates worker worktrees from existing local Git storage and cannot create the worker workspace from #{parent}; " \
+        "blocked action: worktree creation. Fetch the required commit from the configured remote #{source.fetch('remote')} " \
+        "(#{source.fetch('remote_url')}) into that local repository, then retry launch. " \
+        "Pulling, resetting or switching the ordinary checkout is unnecessary for this barrier. ACT performed no fetch or repair." unless
         git(parent, "--no-replace-objects", "cat-file", "-e", "#{source.fetch('pushed_sha')}^{commit}",
             allow_failure: true, env: { "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }).last
       [parent, common]

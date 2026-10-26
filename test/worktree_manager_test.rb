@@ -125,7 +125,21 @@ class WorktreeManagerTest < Minitest::Test
       ]
       with_recovery_observations(observations) do
         error = assert_raises(AgentCodingTool::InvalidState) { manager.create(task_id: "M", attempt: 1, task: @task, snapshot: missing) }
-        assert_includes error.message, "prepared object missing"
+        assert_includes error.message, "Local repo repo is missing required commit #{'f' * 40}"
+      end
+      # Identity failures precede the object probe and keep their own diagnosis.
+      changed_remote = observations.take(1) + [
+        recovery_observation(@ordinary, "git", "remote", "get-url", "origin", stdout: "different-remote\n".b)
+      ]
+      with_recovery_observations(changed_remote) do
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.creation_readiness!(task: @task, snapshot: missing) }
+        assert_equal "worktrees: remote identity changed", error.message
+      end
+      absent = Marshal.load(Marshal.dump(missing))
+      absent["repo"]["path"] = File.join(@root, "absent")
+      with_recovery_observations([]) do
+        error = assert_raises(AgentCodingTool::InvalidState) { manager.creation_readiness!(task: @task, snapshot: absent) }
+        assert_equal "worktrees: ordinary checkout missing #{absent['repo']['path']}", error.message
       end
       refute File.exist?(@record)
       refute File.exist?(File.join(@visible, "M", "repo"))

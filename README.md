@@ -797,6 +797,15 @@ identity at its mutation boundary. Manual preparation/start do not consume
 these objects and retain their existing contracts. Inputs required only for
 later validation/publication do not become universal launch prerequisites.
 
+If launch reports a missing local commit, ACT cannot create the worker workspace
+from the existing local Git storage. The commit may simply not have been fetched;
+this does not establish that the local branch is behind or the repository is
+corrupt. Fetch the full required SHA from the configured remote shown in the
+error into the exact local repository shown, then retry launch. Pulling,
+resetting or switching the ordinary checkout is unnecessary for this barrier;
+its HEAD and files need not match the prepared branch. ACT performs no fetch or
+repair.
+
 The launch envelope reports actual host checks (roots, prepared sources,
 worktree identity, prompt, CLI/authentication and sandbox boundary). Worker-only
 tools, including connected GitHub integration, remain **unverified** until

@@ -100,8 +100,11 @@ act apply ~/Downloads/new-task.json
 ACT resolves repositories under `repo_root` from its existing data configuration,
 checks the proposal without changing the repository, and displays the target,
 actual HEAD and file summary. Manifest baseline drift and initial unrelated
-untracked files produce **WARN** diagnostics before consent, including in sibling
-validation repositories. **Apply patch?**, **Run validation?**, and **Stage these
+staged, unstaged and untracked changes produce **WARN** diagnostics before consent,
+identifying repository, classification and paths, including in sibling validation
+repositories. A partially staged file appears in both tracked classifications.
+Warnings require no extra dirty-state approval and grant no consent.
+**Apply patch?**, **Run validation?**, and **Stage these
 files and commit?** each independently default to no and require terminal input.
 A manifest supplies no authority. EOF, blank input and redirected stdin decline;
 there is no automatic yes option. The optional commit always belongs to the
@@ -109,8 +112,10 @@ patch target, even when checks run in a sibling repository. Normal local Git
 commit hooks still run. Nothing pushes, opens a PR, launches a worker or updates
 ACT lifecycle state.
 
-Declining validation leaves an applied, unvalidated change; declining commit
-leaves a validated, unstaged change. Failed checks stop the sequence, retain raw
+Declining application leaves the reviewed state intact. Declining validation
+leaves an applied, unvalidated proposal; declining commit leaves the validated
+proposal unstaged. Pre-existing index entries remain intact in each case.
+Failed checks stop the sequence, retain raw
 stdout/stderr and the child exit status (signals use 128 plus signal), and report
 unrun checks. An executable that cannot start returns 127. Refusals return 2;
 interrupt returns 130. A declined workflow returns zero, so inspect its printed
@@ -146,10 +151,12 @@ Unrelated existing filenames discovered by Git may contain punctuation or
 Unicode; ACT still snapshots their bytes and modes and refuses traversal,
 Git administration and symlink components. This does not expand v1 patch-target
 or manifest-path syntax.
-All declared repositories must initially have clean tracked files and index.
-Initial nonignored untracked files warn and are preserved by path, bytes and mode;
-they may coexist with the proposal only when destinations do not collide.
-An occupied addition, file/directory prefix collision,
+Initial dirty work may coexist with the proposal when its paths are disjoint.
+ACT preserves unrelated file bytes/modes, deletions, untracked contents and each
+index path/stage/blob/mode entry, including distinct staged and worktree versions
+of a partially staged file. Pre-existing staged or unstaged changes to a proposal
+path refuse, even if native Git could apply different hunks in that same file.
+An occupied addition, file/directory prefix collision, unresolved merge/index entry,
 ignored patch destination, changed artifact, wrong identity or failing
 `git apply --check` refuses before mutation. Confirmed application rechecks the
 reviewed repository snapshots/artifact and uses ordinary atomic `git apply`.
@@ -181,16 +188,21 @@ edits refuse commit. Only untracked, Git-ignored output under `coverage/`, `tmp/
 `test/tmp/` and `test/version_tmp/` is excluded from source comparisons; tracked
 files there remain protected, as do other ignored files. A tool that rewrites
 `Gemfile.lock` or ACTD state fails this check even if it exits zero. New files
-are included in staging; only declared paths may be staged. The optional commit
-parents the actual reviewed target HEAD and leaves initial unrelated untracked
-files unstaged and intact. Later HEAD movement, edits/additions/deletions,
-including changes to initial untracked files or sibling repositories, refuse
+are included in staging; ACT stages only declared paths. The optional path-scoped
+commit parents the actual reviewed target HEAD and contains exactly the validated
+proposal, excluding pre-existing staged changes. ACT verifies committed paths and
+content and preserves unrelated index entries and worktree state; the resulting
+repository may remain dirty. Ordinary Git hooks still run; a hook failure or an
+unexpected hook edit leaves inspectable state and never reports verified success.
+Later HEAD/index movement, artifact changes, edits/additions/deletions,
+including changes to initially dirty files or sibling repositories, refuse
 progression rather than producing another advisory warning. Rechecks detect observed changes;
 they cannot lock out arbitrary external writers or contain trusted tests/hooks.
 
 ### Temporary direct-Git workaround
 
-Older ACT versions can refuse an otherwise valid handoff with `unsafe relative
+Older ACT versions can refuse initial unrelated tracked edits with
+`tracked index/worktree is not clean`, or refuse a valid handoff with `unsafe relative
 path` because they apply the manifest's portable allowlist to unrelated existing
 filenames, including apostrophes, parentheses, ampersands and Unicode. Preserve
 the rejection and downloaded artifacts for review. There is no automatic fallback.
@@ -199,15 +211,22 @@ For an independently reviewed patch, the operator may apply it directly only
 after inspecting the exact repository root, HEAD, configured remote identity,
 index and worktree (including untracked and ignored files), and checking the
 downloaded patch's SHA-256 against the handoff. Resolve baseline or identity
-uncertainty first; unrelated dirty work blocks this workaround. Review exact
-patch paths and modes and preserve unrelated file bytes/modes and index state.
+uncertainty first. Review exact patch paths and modes; refuse any pre-existing
+edit on those paths, occupied addition, prefix collision or ambiguous index.
+Record the initial unrelated file bytes/modes and index entries for comparison;
+unrelated dirty work must be preserved, never discarded to satisfy an older guard.
 From that verified root, run `git apply --check /absolute/path/proposal.patch`,
 then `git apply /absolute/path/proposal.patch` on the same hash-verified bytes
 with no intervening repository changes. Validate separately using the reviewed
 handoff actions, cwd and environment; direct Git does not supply ACT's snapshot
 rechecks or independent consent prompts. Inspect the resulting diff, index and
 unrelated files afterward. Stop on any mismatch or failure; do not stash, reset,
-rename files, implicitly commit or publish. Applying or validating the workaround
+rename files, implicitly commit or publish. Keep an optional commit separate:
+ordinary `git commit` would absorb unrelated staged changes. Use only explicitly
+authorized proposal paths with `git commit --only -- <reviewed paths>` and verify
+its parent, exact committed paths/content and remaining index/worktree state.
+Companion JSON cannot bypass an installed version's unrepaired guard.
+Applying or validating the workaround
 does not establish acceptance of the ACT repair.
 
 ### Producing a handoff

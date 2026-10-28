@@ -370,6 +370,7 @@
   "integration": {
     "test/integration/apply_handoff_git_integration.rb": [
       "ApplyHandoffGitIntegrationTest#test_public_cli_new_task_sibling_validation_and_target_commit",
+      "ApplyHandoffGitIntegrationTest#test_public_incident_warns_and_commits_only_wac_proposal",
       "ApplyHandoffGitIntegrationTest#test_independent_default_no_eof_and_noninteractive_consent",
       "ApplyHandoffGitIntegrationTest#test_invalid_contracts_and_injection_leave_bytes_index_and_head_unchanged",
       "ApplyHandoffGitIntegrationTest#test_preflight_artifact_git_and_symlink_refusals_are_read_only",

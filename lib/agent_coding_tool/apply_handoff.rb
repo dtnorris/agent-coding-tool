@@ -28,15 +28,12 @@ module AgentCodingTool
       load_manifest!(path)
       @initial = nil
       @initial = repository_states!
-      @initial_untracked = @repositories.to_h do |name, repo|
-        raise Error, "#{name}: tracked index/worktree is not clean" unless clean?(repo)
+      @repositories.each do |name, repo|
         head = @initial.fetch(name).fetch(:head)
         if head != repo.fetch(:baseline)
           @out.puts "WARN: #{name}: baseline differs; expected #{repo.fetch(:baseline)}; actual #{head}"
         end
-        paths = git!(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
-        @out.puts "WARN: #{name}: preserving initial untracked files: #{paths.map(&:dump).join(', ')}" unless paths.empty?
-        [name, paths]
+        warn_initial_changes!(name, repo)
       end
       @patch = artifact!
       check_patch!
@@ -45,8 +42,8 @@ module AgentCodingTool
       @out.write git!(@target, "apply", "--stat", input: @patch)
       return declined("application") unless confirm?("Apply patch?")
 
+      @phase = "not applied; validation and commit not run"
       unchanged!(@initial)
-      raise Error, "artifact changed after preview" unless artifact! == @patch
       check_patch!
       @phase = "application started; result unverified; validation and commit not run"
       git!(@target, "apply", input: @patch)
@@ -61,6 +58,7 @@ module AgentCodingTool
       @out.puts "Validation executes repository code with your privileges; it is not a sandbox."
       return declined("validation") unless confirm?("Run validation?")
 
+      @phase = "applied; validation not run; commit not run"
       unchanged!(applied)
       @steps.each_with_index do |step, index|
         raise Error, "validation execution scope changed" unless validation_step!(@manifest.fetch("validation").fetch(index)) == step
@@ -95,6 +93,7 @@ module AgentCodingTool
       @out.puts "Suggested commit message: #{@manifest.fetch('commit_message')}"
       return declined("commit") unless confirm?("Stage these files and commit?")
 
+      @phase = "applied; validated; commit not run"
       unchanged!(applied)
       expected_changes!
       git!(@target, "add", "--", *@paths)
@@ -106,13 +105,16 @@ module AgentCodingTool
       }
         raise Error, "repository content changed during staging"
       end
-      unless git!(@target, "diff", "--cached", "--name-only", "-z").split("\0").sort == @paths.sort
+      unless unrelated_index(staged.fetch(@manifest.fetch("target"))) == unrelated_index(@initial.fetch(@manifest.fetch("target")))
+        raise Error, "unrelated index entries changed during staging"
+      end
+      unless git!(@target, "diff", "--cached", "--name-only", "-z", "--", *@paths).split("\0").sort == @paths.sort
         raise Error, "staged paths differ from proposal"
       end
       tree = git!(@target, "write-tree").strip
       unchanged!(staged)
       @phase = "applied; validated; commit started; result unverified; inspect HEAD/index/worktree"
-      stdout, stderr, status = execute(["git", "commit", "-m", @manifest.fetch("commit_message")], cwd: @target.fetch(:path))
+      stdout, stderr, status = execute(["git", "commit", "--only", "-m", @manifest.fetch("commit_message"), "--", *@paths], cwd: @target.fetch(:path))
       @out.write stdout
       @err.write stderr
       unless status.success?
@@ -120,13 +122,20 @@ module AgentCodingTool
         return status.exitstatus || 128 + status.termsig
       end
 
-      raise Error, "commit left unexpected changes" unless clean?(@target)
       raise Error, "commit parent changed" unless git!(@target, "rev-parse", "HEAD^").strip == @initial.fetch(@manifest.fetch("target")).fetch(:head)
       unless git!(@target, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD").split("\0").sort == @paths.sort
         raise Error, "commit files differ from proposal"
       end
-      raise Error, "committed tree differs from validated index" unless git!(@target, "rev-parse", "HEAD^{tree}").strip == tree
+      unless git!(@target, "diff", "--no-ext-diff", "--no-textconv", tree, "HEAD", "--", *@paths).empty?
+        raise Error, "committed proposal differs from validated index"
+      end
       after = repository_states!
+      target_after = after.fetch(@manifest.fetch("target"))
+      unless unrelated_index(target_after) == unrelated_index(@initial.fetch(@manifest.fetch("target"))) &&
+             target_after.fetch(:index_diff) == @initial.fetch(@manifest.fetch("target")).fetch(:index_diff) &&
+             git!(@target, "diff", "--cached", "--name-only", "--", *@paths).empty?
+        raise Error, "commit left unexpected index changes"
+      end
       unless after.all? { |name, state|
         keys = name == @manifest.fetch("target") ? %i[head index index_diff] : []
         state.reject { |key, _| keys.include?(key) } == applied.fetch(name).reject { |key, _| keys.include?(key) }
@@ -327,6 +336,8 @@ module AgentCodingTool
         raise Error, "wrong repository identity" unless identity == repo.fetch(:identity)
         head = git!(repo, "rev-parse", "HEAD").strip
         tracked = git!(repo, "ls-files", "-z", "--cached").split("\0")
+        unmerged = git!(repo, "ls-files", "--unmerged", "-z").split("\0").map { |entry| entry.split("\t", 2).last }.uniq
+        raise Error, "#{name}: unresolved merge/index entries: #{unmerged.map(&:dump).join(', ')}" unless unmerged.empty?
         flags = git!(repo, "ls-files", "-v", "-z")
         raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless flags.split("\0").all? { |entry| entry.start_with?("H ") }
         initial_head = @initial ? @initial.fetch(name).fetch(:head) : head
@@ -354,26 +365,46 @@ module AgentCodingTool
       end
     end
 
-    # Requires current bytes/identity/index to equal a phase snapshot; returns
-    # nil or raises on concurrent edits, validation mutation or source movement.
+    # Requires current bytes/identity/index to equal a phase snapshot and rechecks
+    # artifact integrity. Returns nil or raises on changed source/artifact state.
     def unchanged!(expected)
       raise Error, "repository changed since review/validation" unless repository_states! == expected
+      raise Error, "artifact changed after preview" unless artifact! == @patch
     end
 
-    # Returns whether native Git sees no tracked worktree or staged changes.
-    # Unrelated untracked files are protected by snapshots, not cleanliness.
-    def clean?(repo)
-      git!(repo, "status", "--porcelain=v1", "--untracked-files=no").empty?
+    # Warns with classified initial dirty paths in a declared repository. Raises
+    # for proposal overlap, including file/directory prefixes; Git errors propagate.
+    def warn_initial_changes!(name, repo)
+      changes = {
+        "staged" => git!(repo, "diff", "--cached", "--name-only", "--no-renames", "-z").split("\0"),
+        "unstaged" => git!(repo, "diff", "--name-only", "--no-renames", "-z").split("\0"),
+        "untracked" => git!(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+      }
+      changes.each do |kind, paths|
+        if repo == @target
+          paths.each do |path|
+            overlap = @paths.find { |proposal| path == proposal || path.start_with?("#{proposal}/") || proposal.start_with?("#{path}/") }
+            raise Error, "#{name}: proposal conflict: #{path.dump} (pre-existing #{kind} change) overlaps #{overlap.dump}" if overlap
+          end
+        end
+        @out.puts "WARN: #{name}: preserving initial #{kind} files: #{paths.map(&:dump).join(', ')}" unless paths.empty?
+      end
     end
 
-    # Requires an empty index and exactly the proposal's changes from the initial
-    # reviewed state, preserving initial untracked files and sibling repositories.
+    # Returns exact raw stage/blob/mode/path entries outside the proposal from a
+    # target snapshot. NUL parsing preserves nonportable names; no I/O occurs.
+    def unrelated_index(state)
+      state.fetch(:index).split("\0").reject { |entry| @paths.include?(entry.split("\t", 2).last) }
+    end
+
+    # Requires exactly the proposal's effects from the initial reviewed state,
+    # preserving the complete original index and unrelated/sibling file state.
     # Accepts an optional current snapshot; unrelated/missing effects raise Error.
     def expected_changes!(states = repository_states!)
-      raise Error, "target index is not empty" unless git!(@target, "diff", "--cached", "--name-only").empty?
-      paths = git!(@target, "diff", "--name-only", "-z", "HEAD").split("\0") +
-              (git!(@target, "ls-files", "--others", "--exclude-standard", "-z").split("\0") - @initial_untracked.fetch(@manifest.fetch("target")))
-      raise Error, "changed paths differ from patch" unless paths.sort == @paths.sort
+      target_name = @manifest.fetch("target")
+      unless @paths.all? { |path| states.fetch(target_name).fetch(:files)[path] != @initial.fetch(target_name).fetch(:files)[path] }
+        raise Error, "changed paths differ from patch"
+      end
       unless states.all? { |name, state|
         initial = @initial.fetch(name)
         protected_files = lambda do |files|

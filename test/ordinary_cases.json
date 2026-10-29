@@ -10,7 +10,9 @@
     "ApplyHandoffTest#test_public_cli_refuses_invalid_arguments_and_malformed_json": []
   },
   "test/attempt_recovery_test.rb": {
-    "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection": []
+    "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection": [],
+    "AttemptRepositoryContractTest#test_changed_task_contract_preserves_history_and_prepares_current_authority": ["coding", "coding", "coding", "coding"],
+    "AttemptRepositoryContractTest#test_tampered_original_contract_refuses_even_when_report_and_inventory_agree": ["coding"]
   },
   "test/icebox_test.rb": {
     "IceboxTest#test_idempotency_optional_reason_and_metadata_preservation": [],

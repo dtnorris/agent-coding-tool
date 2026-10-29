@@ -324,6 +324,47 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
+  # Public cold CLI journey changes both membership and access between attempts.
+  # Native Git ownership remains real; fake worker/sandbox/boot/lsof boundaries
+  # are the same as this suite's other journeys. No inference or host isolation
+  # acceptance is claimed. Old evidence/resources remain protected and unchanged.
+  def test_retry_uses_original_contract_after_repository_and_access_changes
+    fixture(readers: 2) do
+      succeeds("launch", "T", "--codex")
+      first = reports.first
+      succeeds("record", "T", "blocked")
+      task = YAML.safe_load_file(File.join(@data, "tasks", "T.yml"))
+      repositories = task.fetch("repositories")
+      repositories.fetch("writer")["access"] = "read_only"
+      repositories.fetch("reader1")["access"] = "write"
+      repositories["added"] = repositories.delete("reader2").merge("access" => "write")
+      File.write(File.join(@data, "tasks", "T.yml"), YAML.dump(task))
+      old = bytes(File.dirname(first.fetch("worktrees_path")))
+      succeeds("worktrees", "T")
+      status, _output, error = cli("prepare", "T", "--retry")
+      assert_equal 2, status
+      assert_includes error, "explicit close-attempt required"
+      succeeds("close-attempt", "T", "--dry-run")
+      succeeds("close-attempt", "T")
+      succeeds("prepare", "T", "--retry")
+      succeeds("launch", "T", "--codex")
+      second = reports.last
+      assert_equal 2, second.fetch("attempt")
+      assert_equal %w[added reader1 writer], second.fetch("preparation").keys.sort
+      assert_equal %w[added reader1], second.fetch("writable_repositories").sort
+      entries = second.fetch("worktrees").fetch("entries")
+      assert_equal "read_only", entries.find { |entry| entry["name"] == "writer" }.fetch("access")
+      assert_equal %w[added reader1], entries.select { |entry| entry["access"] == "write" }.map { |entry| entry.fetch("name") }.sort
+      assert_equal 2, JSON.parse(succeeds("worktrees", "T")).fetch("attempts").length
+      assert_operator second.fetch("sandbox_probe").fetch("protected_paths"), :>=, first.fetch("worktrees").fetch("entries").length
+      assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
+      first.fetch("worktrees").fetch("entries").each do |entry|
+        assert_equal @base, git("rev-parse", "HEAD", directory: entry.fetch("path"))
+        assert_empty git("--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--ignored", directory: entry.fetch("path"))
+      end
+    end
+  end
+
   # Deleting ownership after a native add never becomes a harmless preflight.
   def test_missing_ownership_after_native_mutation_refuses_without_changes
     fixture do

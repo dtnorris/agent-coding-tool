@@ -69,6 +69,7 @@ module AgentCodingTool
       command = argv.shift
       case command
       when "apply" then return apply_command(argv)
+      when "evidence" then return evidence_command(argv)
       when "status" then status_command(argv)
       when "next" then next_command(argv)
       when "external" then external_command(argv)
@@ -99,6 +100,54 @@ module AgentCodingTool
     end
 
     private
+
+    # Opens finite operator-granted read sessions; select/read use the same closed
+    # reader as MCP. Returns zero or a fixed refusal, never executes evidence.
+    def evidence_command(argv)
+      action = argv.shift
+      options = {}
+      parser = OptionParser.new do |opts|
+        %w[session grant task invocation codex-session handle revision artifact].each do |name|
+          opts.on("--#{name} VALUE") { |value| options[name] = value }
+        end
+        %w[attempt offset length].each do |name|
+          opts.on("--#{name} NUMBER", Integer) { |value| options[name] = value }
+        end
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      allowed = case action
+                when "start" then %w[session grant]
+                when "serve", "status", "stop" then %w[session]
+                when "select" then %w[session task attempt invocation codex-session]
+                when "read" then %w[session task attempt invocation codex-session handle revision artifact offset length]
+                else []
+                end
+      raise RunEvidenceReader::Refused, "cli.fields" unless argv.empty? && !allowed.empty? && options.keys.sort == allowed.sort
+      if action == "start"
+        result = EvidenceSession.start(options.fetch("session"), options.fetch("grant"))
+      else
+        session = EvidenceSession.new(options.fetch("session"))
+        case action
+        when "serve" then return EvidenceAdapter.new(session, err: @err).serve($stdin, @out) || 0
+        when "status" then result = session.status
+        when "stop" then result = session.stop
+        else
+          request = options.reject { |key, _value| key == "session" }.transform_keys do |key|
+            { "task" => "task_id", "invocation" => "invocation_id", "codex-session" => "session_id" }.fetch(key, key)
+          end.merge("operation" => action)
+          session.admit
+          session.charge(wire: JSON.generate(request).bytesize)
+          result = session.call(request)
+          session.charge(wire: JSON.generate(result).bytesize, decoded: result.fetch("data", "").unpack1("m0").bytesize)
+        end
+      end
+      @out.puts JSON.generate(result)
+      0
+    rescue RunEvidenceReader::Refused, SystemCallError, JSON::ParserError, ArgumentError, OptionParser::ParseError
+      @err.puts "ERROR: evidence session refused; check private grant, exact run identity and session status"
+      2
+    end
 
     # Applies one downloaded JSON proposal with independent terminal confirmations;
     # returns the handler status. Invalid CLI arguments raise without mutation.
@@ -1527,6 +1576,12 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          evidence start --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY
+          evidence {serve|status|stop} --session PRIVATE_DIRECTORY
+          evidence select --session DIR --task TASK --attempt N --invocation ID --codex-session ID
+          evidence read --session DIR --task TASK --attempt N --invocation ID --codex-session ID
+                              --handle SHA --revision SHA --artifact NAME --offset N --length N
+                              finite on-demand read only; external ingress requires owner approval
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
                               baseline drift/unrelated untracked files warn; later changes refuse

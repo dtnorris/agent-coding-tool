@@ -281,5 +281,17 @@
   "test/ordinary_boundary_test.rb": {
     "OrdinaryBoundaryTest#test_dependency_entries_refuse_before_effect": [],
     "OrdinaryBoundaryTest#test_strict_source_observations_and_environment": []
+  },
+  "test/run_evidence_test.rb": {
+    "RunEvidenceTest#test_modern_transport_and_lossless_artifacts": [],
+    "RunEvidenceTest#test_metadata_refusals_and_duplicate_json": [],
+    "RunEvidenceTest#test_business_refusals": [],
+    "RunEvidenceTest#test_fresh_run_rollover_and_ambiguity": [],
+    "RunEvidenceTest#test_run_binding_negative_control_and_path_safety": [],
+    "RunEvidenceTest#test_pending_and_missing_evidence": [],
+    "RunEvidenceTest#test_regular_finder_metadata_coexists_with_run_and_checkpoint_selection": [],
+    "RunEvidenceTest#test_inventory_refuses_symlinks_and_unknown_entries": [],
+    "RunEvidenceTest#test_durable_limits_stop_and_expiry": [],
+    "RunEvidenceTest#test_budget_boundaries_and_grant_closure": []
   }
 }

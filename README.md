@@ -1326,6 +1326,132 @@ implementation, but require truthful outcomes and reproducible operator-side
 validation/timing instructions. Existing checkpoint and operator gates still
 apply.
 
+## On-demand run evidence
+
+`act evidence` is a read-only stdio MCP adapter over ACT's existing private
+run and checkpoint records. It has no launch, validation, mutation, event or
+follow-up tools. A worker's recommendation is evidence, not execution authority.
+The human asks the browser manager to review each completed task/run.
+
+Before connecting real data, David must approve the concrete connection endpoint,
+account, effective **whole personal Work workspace** audience, designated manager,
+task set, artifact types, finite limits and teardown. MCP subject/session/context
+fields do not authenticate a conversation. This adapter relies on the approved
+external ingress to enforce that workspace boundary. WAC-03A qualified that
+boundary, not independent per-conversation authentication. Previous trial grants
+cannot be reused. Owner approval and native/hosted qualification remain necessary;
+offline tests do not establish live compatibility or account isolation.
+
+Create a private operator grant outside repositories/ACTD. This example proposes
+30 minutes, 4096 incoming frame attempts, 64 MiB combined incoming/outgoing wire
+bytes and 32 MiB decoded evidence for two runs. These are finite upper bounds,
+not measured resource requirements. Replace the identity/endpoint placeholders
+with owner-approved facts before approval; do not put credentials in the file.
+
+```json
+{
+  "schema": "agent-coding-tool-evidence-grant/v1",
+  "approved": true,
+  "session_path": "/private/read-session",
+  "data_root": "/Users/davidnorris/code/agent-coding-tool-data",
+  "tasks": ["FIRST-APPROVED-TASK", "SECOND-APPROVED-TASK"],
+  "artifacts": ["final", "transcript", "stderr", "checkpoint", "candidate", "validation", "validation_output"],
+  "transport": {
+    "account": "OWNER-APPROVED-ACCOUNT",
+    "workspace": "OWNER-APPROVED-WORKSPACE",
+    "endpoint": "OWNER-APPROVED-CONNECTION-ENDPOINT",
+    "manager": "OWNER-DESIGNATED-MANAGER",
+    "audience": "whole-workspace"
+  },
+  "limits": {"seconds": 1800, "requests": 4096, "wire_bytes": 67108864, "decoded_bytes": 33554432}
+}
+```
+
+The grant binds one exact `session_path`; copying it to another admission path
+cannot reset its budgets. The grant and admission directory must be operator-owned/private (0600 file,
+0700 directory). Use canonical paths: on macOS resolve `/var` to `/private/var`
+with `File.realpath`, rather than comparing aliases. The parent must already
+exist. `start` exclusively creates a new admission; it never overwrites one.
+No ACT lifecycle or checkpoint state changes.
+
+```sh
+act evidence start --grant /private/approved-grant.json --session /private/read-session
+act evidence status --session /private/read-session
+act evidence serve --session /private/read-session
+act evidence stop --session /private/read-session
+```
+
+Run `serve` as the foreground stdio command of the already-supported Work
+tunnel connection (`sample_mcp_stdio_local`, `mcp.commands`, `channel: main`):
+
+```yaml
+mcp:
+  commands:
+    - channel: main
+      command: "/absolute/path/to/act evidence serve --session /private/read-session"
+```
+
+This is a connection configuration fragment, not an instruction to replace shared
+settings. The owner must first serialize shared connection use, record its prior
+configuration, qualify the installed tunnel/Ruby/Bundler and command paths, and
+authorize the exact endpoint. Preserve the existing credential handling; the
+adapter receives no key. One catalog refresh at session setup is sufficient:
+the tool schema does not change when another approved task completes. This code
+does not start or own a tunnel, socket, daemon or hosted service. Stop only this
+session and its foreground adapter; preserve shared infrastructure. The owner
+separately verifies hosted exposure ended and saved settings remained intact.
+
+Select from authoritative `handoff.json` records using **all four** identities;
+the CLI and `read_run_evidence` tool use the same resolver:
+
+```sh
+act evidence select --session /private/read-session --task FIRST-APPROVED-TASK \
+  --attempt 1 --invocation EXACT-INVOCATION --codex-session EXACT-CODEX-SESSION
+```
+
+The response displays the resolved binding, immutable `handle`/`revision`, source
+hashes and artifact statuses. It refuses absent/ambiguous identities; there is
+no global-latest selector or model-supplied source path. For tool calls use
+`operation: select` with `task_id`, numeric `attempt`, `invocation_id`, `session_id`.
+For `operation: read` also supply that handle/revision, `artifact`, integer
+`offset` and `length` (1..16384). `operation: manifest` requires the same binding,
+handle and revision. Business fields are closed. A CLI read uses corresponding
+`--handle`, `--revision`, `--artifact`, `--offset` and `--length` flags plus the
+selection flags above. Explicitly select the second run using the same session;
+an existing first-run handle never rolls forward. At most 16 selections are kept.
+
+Bytes are base64, with whole-source and chunk SHA-256, total size, next offset
+and complete/truncated/pending/missing status. Empty files are complete bytes.
+Files over 4 MiB refuse; task/attempt/session/provenance drift, changed sources,
+symlinks, traversal and nonregular files refuse before release. Transcript means
+the approved ACT `stdout.jsonl`, never unmanaged Codex rollout discovery.
+Checkpoint/candidate evidence comes from an existing launch-bound checkpoint;
+each matching finished gate is exposed as `validation:gate-UUID.finished.json`.
+Gate receipts report recorded command/candidate outcomes, not independent
+revalidation. ACT gate v1 does not capture raw output: `validation_output` stays
+missing. Reading runs no validation and cannot manufacture missing checkpoint
+evidence from worker claims or arbitrary worker paths.
+
+The permanent private admission ledger stores bounded identities, paths and
+hashes, never transcript bodies. It durably reserves requests and byte totals
+before release; reconnecting/restarting cannot reset them. Both absolute wall
+and monotonic deadlines apply; stop remains a tombstone. One foreground server
+holds a kernel owner lock. Stdio EOF/broken output, stop and expiry close it;
+there are no owned children to signal. Waiting I/O polls stop/expiry at 250 ms.
+Retain the admission directory through owner closeout; deleting/recreating it is
+not a restart or renewal. Changed scope or an extended lease needs new approval.
+Fixed bounded stderr stages contain no metadata values, artifact bodies or
+private names/types capture. Unknown metadata refuses; documented hints and
+A's observed call context are type-checked, capped at 4096 bytes and discarded
+before business dispatch. MCP versions 2026-07-28 discovery and the three
+qualified legacy initialize versions are supported.
+
+Focused synthetic qualification: `bundle exec ruby -Ilib:test test/run_evidence_test.rb`.
+The native public-entry case fakes only worker/checkpoint production, exercises
+real stdio/CLI handoffs and compares returned bytes to independent file oracles.
+Actual-host two-run retrieval, account boundary and hosted teardown remain
+separate owner acceptance gates, with original run history retained in place.
+
 ## Implementation checkpoints
 
 Confined implementation workers stop at a complete candidate when protected

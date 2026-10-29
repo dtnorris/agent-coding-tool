@@ -365,6 +365,19 @@
       "WriteCollisionTest#test_prepared_tasks_warn_but_do_not_block_first_start",
       "WriteCollisionTest#test_repository_aliases_collide_by_snapshot_remote_and_branch",
       "WriteCollisionTest#test_cli_override_flag_allows_collision"
+    ],
+    "test/run_evidence_test.rb": [
+      "RunEvidenceTest#test_modern_transport_and_lossless_artifacts",
+      "RunEvidenceTest#test_metadata_refusals_and_duplicate_json",
+      "RunEvidenceTest#test_business_refusals",
+      "RunEvidenceTest#test_fresh_run_rollover_and_ambiguity",
+      "RunEvidenceTest#test_run_binding_negative_control_and_path_safety",
+      "RunEvidenceTest#test_pending_and_missing_evidence",
+      "RunEvidenceTest#test_regular_finder_metadata_coexists_with_run_and_checkpoint_selection",
+      "RunEvidenceTest#test_inventory_refuses_symlinks_and_unknown_entries",
+      "RunEvidenceTest#test_durable_limits_stop_and_expiry",
+      "RunEvidenceTest#test_budget_boundaries_and_grant_closure",
+      "RunEvidenceTest#test_native_public_cli_two_runs_and_owned_eof"
     ]
   },
   "integration": {
@@ -576,6 +589,9 @@
       "WorktreeManagerTest#test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate",
       "WorktreeManagerTest#test_attempt_container_cannot_reuse_an_existing_resource",
       "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource"
+    ],
+    "test/run_evidence_test.rb": [
+      "RunEvidenceTest#test_native_public_cli_two_runs_and_owned_eof"
     ]
   }
 }

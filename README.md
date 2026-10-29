@@ -973,7 +973,11 @@ symlinks within those paths remain forbidden.
 
 `act worktrees TASK` verifies ownership and shows the worktree inventory.
 Each attempt is checked against its original preparation, independently of the
-current lifecycle pointers. Output includes execution status, original bases,
+current lifecycle pointers and repository/access declarations. Historical names,
+bases and access must agree with the original checksum-bound prompt and native
+ownership inventory; an inventory access claim alone is insufficient. Fresh
+preparation and launch still use the current task authority. Output includes
+execution status, original bases,
 resource classification, artifacts, closeout/checkpoint references and blockers.
 Verified failures before creation have no invented inventory. A damaged attempt
 is reported alongside valid history and makes inspection exit nonzero.

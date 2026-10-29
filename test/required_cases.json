@@ -11,7 +11,9 @@
       "ApplyHandoffTest#test_public_cli_refuses_invalid_arguments_and_malformed_json"
     ],
     "test/attempt_recovery_test.rb": [
-      "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection"
+      "AttemptRecoveryDecisionTest#test_foreign_report_identity_refuses_before_native_inspection",
+      "AttemptRepositoryContractTest#test_changed_task_contract_preserves_history_and_prepares_current_authority",
+      "AttemptRepositoryContractTest#test_tampered_original_contract_refuses_even_when_report_and_inventory_agree"
     ],
     "test/ordinary_boundary_test.rb": [
       "OrdinaryBoundaryTest#test_dependency_entries_refuse_before_effect",
@@ -407,7 +409,8 @@
       "AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry",
       "AttemptRecoveryTest#test_sibling_terminal_review_is_independent_in_both_orders",
       "AttemptRecoveryTest#test_ownership_delivery_candidate_and_changed_state_refusals",
-      "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle"
+      "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle",
+      "AttemptRecoveryTest#test_retry_uses_original_contract_after_repository_and_access_changes"
     ],
     "test/integration/checkpoint_git_integration.rb": [
       "CheckpointTest#test_exempt_gate_receipt_setup_is_best_effort_without_following_symlinks",

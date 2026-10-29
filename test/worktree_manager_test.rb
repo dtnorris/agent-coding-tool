@@ -196,17 +196,22 @@ class WorktreeManagerTest < Minitest::Test
       FileUtils.mkdir_p(run, mode: 0o700)
       record = File.join(run, "worktrees.json")
       FileUtils.mkdir_p([File.join(data, "tasks"), File.join(data, "state")])
-      File.write(File.join(data, "tasks", "T.yml"), YAML.dump(
-        "id" => "T", "title" => "Cleanup fixture", "repositories" => @task.fetch("repositories")))
+      task = { "id" => "T", "title" => "Cleanup fixture", "repositories" => @task.fetch("repositories") }
+      File.write(File.join(data, "tasks", "T.yml"), YAML.dump(task))
       AgentCodingTool::StateStore.new(File.join(data, "state")).write("T",
         { "id" => "T", "snapshot" => @snapshot })
       owned = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: record)
       inventory = owned.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot)
       entry = inventory.fetch("entries").first
+      # Historical inspection requires the generated, checksum-bound authority
+      # contract even when this fixture exercises only worktree discovery.
+      prompt = AgentCodingTool::PromptRenderer.new.render(task, @snapshot)
+      File.binwrite(File.join(run, "prompt.txt"), prompt)
       File.write(File.join(run, "handoff.json"), JSON.generate(
         "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "T",
         "attempt" => 1, "worktrees_path" => record, "worktrees" => inventory,
-        "preparation" => @snapshot, "status" => "exited"))
+        "preparation" => @snapshot, "status" => "exited",
+        "prompt_sha256" => Digest::SHA256.hexdigest(prompt), "prompt_bytes" => prompt.bytesize))
       File.write(File.join(entry.fetch("path"), "candidate"), "keep")
       before = [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
       out, err = StringIO.new, StringIO.new

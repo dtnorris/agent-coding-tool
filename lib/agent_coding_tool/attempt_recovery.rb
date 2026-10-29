@@ -23,10 +23,10 @@ module AgentCodingTool
     # Returns independent historical rows, retaining valid inventories when a
     # sibling attempt is damaged. Inspection writes nothing; blockers are data.
     def inspect(id)
-      task = TaskStore.new(File.join(@data, "tasks")).load(id)
+      TaskStore.new(File.join(@data, "tasks")).load(id)
       directories(id).map do |directory|
         begin
-          inspect_attempt(id, directory, task)
+          inspect_attempt(id, directory)
         rescue Error, KeyError, TypeError, NoMethodError, ArgumentError, SystemCallError, JSON::ParserError => error
           { "run_dir" => directory, "classification" => "unverified", "blockers" => [error.message] }
         end
@@ -196,7 +196,7 @@ module AgentCodingTool
 
     # Verifies one report against its own original preparation and native Git
     # inventory, never the task's newer state. Returns discoverable references.
-    def inspect_attempt(id, directory, task)
+    def inspect_attempt(id, directory)
       if Dir.children(directory).any? { |name| name.end_with?(".tmp", ".pending") }
         raise InvalidState, "history: interrupted evidence publication; preserve temporary records for judgment"
       end
@@ -206,7 +206,7 @@ module AgentCodingTool
       unless report["schema_version"] == Launcher::SCHEMA && report["task_id"] == id &&
              report["attempt"].is_a?(Integer) && report["attempt"].positive? &&
              report["worktrees_path"] == record && report["preparation"].is_a?(Hash) &&
-             report["preparation"].keys.sort == task.fetch("repositories").keys.sort
+             !report["preparation"].empty?
         raise InvalidState, "history: task/attempt/original preparation identity mismatch"
       end
       row = report.slice("task_id", "attempt", "invocation_id", "status", "prepared_at", "preparation", "artifacts")
@@ -226,7 +226,7 @@ module AgentCodingTool
                                    .inspect!(allow_partial: report["status"] == "preflight_failed")
         unless inventory.values_at("task_id", "attempt") == report.values_at("task_id", "attempt") &&
                (!inventory["invocation_id"] || inventory["invocation_id"] == report["invocation_id"]) &&
-               inventory.fetch("entries").map { |entry| entry.fetch("name") }.sort == task.fetch("repositories").keys.sort
+               inventory.fetch("entries").map { |entry| entry.fetch("name") }.sort == report.fetch("preparation").keys.sort
           raise InvalidState, "history: inventory identity mismatch"
         end
         if report["worktrees"] && immutable(report.fetch("worktrees")) != immutable(inventory)
@@ -234,8 +234,7 @@ module AgentCodingTool
         end
         inventory.fetch("entries").each do |entry|
           prepared = report.fetch("preparation").fetch(entry.fetch("name"))
-          unless entry["access"] == task.fetch("repositories").fetch(entry.fetch("name")).fetch("access") &&
-                 prepared.values_at("path", "remote", "remote_url", "branch", "pushed_sha") ==
+          unless prepared.values_at("path", "remote", "remote_url", "branch", "pushed_sha") ==
                    entry.values_at("parent", "remote", "remote_url", "source_branch", "base_sha")
             raise InvalidState, "history: original repository/access/base identity mismatch"
           end
@@ -259,6 +258,7 @@ module AgentCodingTool
         row["classification"] = "verified_precreation_failure"
       end
       verify_artifacts!(report, directory)
+      verify_original_contract!(report, directory, row.fetch("inventory")) if row["inventory"]
       closeout_path = File.join(directory, "closeout.json")
       if File.exist?(closeout_path) || File.symlink?(closeout_path)
         closeout = read_json(closeout_path)
@@ -286,6 +286,31 @@ module AgentCodingTool
       row["liveness"] = "not checked; use close-attempt --dry-run"
       row["next_action"] = row["closed"] || row["legacy_abandoned"] ? "explicit prepare --retry, then launch" : "record non-complete outcome; close-attempt --dry-run"
       row
+    end
+
+    # Corroborates historical names, bases and access with the original prompt,
+    # whose bytes must already pass verify_artifacts!. The report/inventory alone
+    # cannot authorize access. Returns nil; missing or inconsistent bindings raise
+    # InvalidState. Legacy runs may bind the prompt through their artifact list.
+    def verify_original_contract!(report, directory, inventory)
+      path = File.join(directory, "prompt.txt")
+      unless report["prompt_sha256"] || report.fetch("artifacts", []).any? { |artifact| artifact["path"] == path }
+        raise InvalidState, "history: original repository contract is not bound to prompt evidence"
+      end
+      prompt = checked_file(path)
+      sources = report.fetch("preparation").map do |name, prepared|
+        "- #{name}\n" + %w[path remote_url branch pushed_sha].map do |field|
+          "  - #{field}: #{prepared.fetch(field)}\n"
+        end.join
+      end.join
+      access = { "write" => "Writable repositories", "read_only" => "Read-only repositories" }.map do |mode, title|
+        names = inventory.fetch("entries").filter_map { |entry| entry.fetch("name") if entry["access"] == mode }
+        "## #{title}\n\n#{names.map { |name| "- #{name}\n" }.join}\n" unless names.empty?
+      end.join
+      access += "Only the repositories designated writable above may be modified for this task. Other connected repositories, including the task-data repository, may be read when needed; reading one does not grant write authority.\n"
+      unless prompt.scan(/^#{Regexp.escape((sources + "\n" + access).b)}/n).length == 1
+        raise InvalidState, "history: original repository/access/base contract differs from bound prompt"
+      end
     end
 
     # Missing inventory is harmless only before any mutation: prove all planned

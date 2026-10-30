@@ -308,8 +308,10 @@ module AgentCodingTool
     end
 
     def snapshot!(workspace, base_sha, contract)
+      IncidentalMetadata.check_repository!(workspace) { |*args| git!(workspace, *args) }
       raise InvalidState, "delivery: staged changes" unless git!(workspace, "diff", "--cached", "--name-only").empty?
       status = git!(workspace, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+      status = IncidentalMetadata.status(workspace, status) { |*args| git!(workspace, *args) }
       records = status.split("\0")
       raise InvalidState, "delivery: no implementation" if records.empty?
       paths = records.map do |record|
@@ -430,7 +432,7 @@ module AgentCodingTool
     def verify_commit!(workspace, commit, details)
       raise InvalidState, "delivery: commit changed" unless git!(workspace, "rev-parse", "HEAD").strip == commit &&
         git!(workspace, "rev-parse", "HEAD^").strip == details.fetch("base_sha") &&
-        git!(workspace, "status", "--porcelain", "--untracked-files=all").empty?
+        IncidentalMetadata.git_status(workspace) { |*args| git!(workspace, *args) }.empty?
       paths = git!(workspace, "diff", "--name-only", "-z", "HEAD^", "HEAD").split("\0").sort
       raise InvalidState, "delivery: commit paths differ" unless paths == details.fetch("paths")
       details.fetch("manifest").each do |path, entry|

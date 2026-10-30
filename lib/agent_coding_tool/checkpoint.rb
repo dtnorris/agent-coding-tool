@@ -146,7 +146,7 @@ module AgentCodingTool
       if workspace
         workspace = workspace!(workspace, base)
         launch_binding!(id, state, name, base, workspace)
-        actual, inventory = implementation(workspace, base.fetch("pushed_sha"))
+        actual, inventory = implementation(workspace, base.fetch("pushed_sha"), preserved_paths: record.fetch("changed_files").map { |entry| entry.fetch("path") })
         unless actual == bytes && inventory == record.fetch("changed_files")
           state["checkpoint"] = { "attempt" => attempt(state), "status" => "stale",
                                   "record_path" => File.join(directory, "current.json") }
@@ -252,8 +252,8 @@ module AgentCodingTool
         git!(path, "checkout", "--detach", base.fetch("pushed_sha"))
         git!(path, "apply", "--check", "--binary", evidence.fetch("path"))
         git!(path, "apply", "--binary", evidence.fetch("path"))
-        actual, inventory = implementation(path, base.fetch("pushed_sha"))
         record = evidence.fetch("record")
+        actual, inventory = implementation(path, base.fetch("pushed_sha"), preserved_paths: record.fetch("changed_files").map { |entry| entry.fetch("path") })
         raise InvalidState, "checkpoint: reconstructed implementation differs" unless
           Digest::SHA256.hexdigest(actual) == record.fetch("implementation_sha256") &&
           inventory == record.fetch("changed_files")
@@ -433,7 +433,7 @@ module AgentCodingTool
       task_root = File.join(@root, id)
       return nil unless File.directory?(task_root)
       raise InvalidState, "checkpoint: symlinked run evidence" if File.symlink?(task_root)
-      reports = Dir.children(task_root).filter_map do |entry|
+      reports = IncidentalMetadata.children(task_root).filter_map do |entry|
         run_dir = File.join(task_root, entry)
         raise InvalidState, "checkpoint: partial/foreign run evidence" if
           File.symlink?(run_dir) || !File.directory?(run_dir)
@@ -475,8 +475,14 @@ module AgentCodingTool
 
     # Returns canonical binary patch bytes and a complete status/path inventory
     # against sha, including untracked files, using disposable index/objects.
-    # Staged changes, unsafe files and failed Git operations raise InvalidState.
-    def implementation(workspace, sha)
+    # Checked historical inventories may preserve explicitly recorded metadata;
+    # new candidates never supply preserved_paths. Staged changes, unsafe files
+    # and failed Git operations raise InvalidState.
+    def implementation(workspace, sha, preserved_paths: [])
+      unless preserved_paths.all? { |path| path.is_a?(String) && !path.empty? && !path.start_with?("/") && !path.split("/").include?("..") }
+        raise InvalidState, "checkpoint: unsafe preserved path"
+      end
+      IncidentalMetadata.check_repository!(workspace) { |*args| git!(workspace, *args, strip: false) }
       _staged, _error, staged = Open3.capture3("git", "diff", "--cached", "--quiet", sha, chdir: workspace)
       raise InvalidState, "checkpoint: staged-only changes require operator judgment" unless staged.success?
       # Objects and index are disposable too: a confined worker must not write
@@ -488,11 +494,23 @@ module AgentCodingTool
           File.unlink(index.path)
           git!(workspace, "read-tree", sha, env: env)
           git!(workspace, "add", "-A", env: env)
+          preserved_paths.each do |path|
+            absolute = File.join(workspace, path)
+            next unless File.basename(path) == ".DS_Store" && (File.exist?(absolute) || File.symlink?(absolute)) && IncidentalMetadata.file?(absolute)
+            git!(workspace, "--literal-pathspecs", "add", "-f", "--", path, env: env)
+          end
           names = git!(workspace, "diff", "--cached", "--name-status", "-z", "--no-renames", sha, env: env, strip: false).split("\0")
           inventory = names.each_slice(2).map { |status, path| { "status" => status, "path" => path } }
           raise InvalidState, "checkpoint: malformed changed-file inventory" unless
             inventory.all? { |row| %w[A M D T].include?(row["status"]) &&
               row["path"] && !row["path"].empty? && !row["path"].start_with?("../", "/") }
+          inventory.reject! do |entry|
+            path = entry.fetch("path")
+            next false unless entry.fetch("status") == "A" && !preserved_paths.include?(path) &&
+              IncidentalMetadata.untracked?(workspace, path) { |*args| git!(workspace, *args, strip: false) }
+            git!(workspace, "update-index", "--force-remove", "--", path, env: env)
+            true
+          end
           inventory.each do |entry|
             next if entry.fetch("status") == "D"
             path = File.join(workspace, entry.fetch("path"))
@@ -510,14 +528,16 @@ module AgentCodingTool
       source ||= base.fetch("path")
       source_identity!(source, base)
       Dir.mktmpdir("act-checkpoint-verify-") do |root|
-        clean = File.join(root, "clean")
+        # macOS may spell the system temporary root through /var. Canonicalize
+        # this ACT-created directory before applying strict ancestor checks.
+        clean = File.join(File.realpath(root), "clean")
         # Temporary applicability check can borrow immutable Git objects; the
         # durable patch remains independent of this disposable reconstruction.
         git!(nil, "clone", "--shared", "--no-checkout", "--", source, clean)
         git!(clean, "checkout", "--detach", base.fetch("pushed_sha"))
         git!(clean, "apply", "--check", "--binary", path)
         git!(clean, "apply", "--binary", path)
-        actual, actual_inventory = implementation(clean, base.fetch("pushed_sha"))
+        actual, actual_inventory = implementation(clean, base.fetch("pushed_sha"), preserved_paths: inventory.map { |entry| entry.fetch("path") })
         raise InvalidState, "checkpoint: incomplete or inapplicable artifact" unless
           actual == bytes && actual_inventory == inventory
       end

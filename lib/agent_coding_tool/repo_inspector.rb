@@ -33,7 +33,7 @@ module AgentCodingTool
       branch = spec.fetch("branch", @config.default_branch)
       pushed_sha = pushed_sha!(name, path, remote, branch)
       local_head = git!(name, path, "rev-parse", "HEAD").strip
-      dirty = !git!(name, path, "status", "--porcelain").empty?
+      dirty = !IncidentalMetadata.git_status(path) { |*args| git!(name, path, *args) }.empty?
       remote_url = git!(name, path, "remote", "get-url", remote).strip
 
       {

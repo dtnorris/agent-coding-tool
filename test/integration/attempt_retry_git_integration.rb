@@ -205,6 +205,8 @@ class AttemptRecoveryTest < Minitest::Test
         report = JSON.parse(succeeds("external", "report", "T", "--reporter", "operator",
                                     "--kind", "fake-codex", "--identifier", "fixture-worker", "--scope-complete"))
         observation = report.fetch("active").fetch("observation_id")
+        namespace_metadata = File.join("#{@data}-runs", AgentCodingTool::ExternalActivity::NAMESPACE, ".DS_Store")
+        File.binwrite(namespace_metadata, "Finder\x00\xff".b)
         detail = succeeds("status", "T")
         dashboard = succeeds("status")
         [detail, dashboard].each { |output| assert_external_stale_projection(output) }
@@ -222,6 +224,7 @@ class AttemptRecoveryTest < Minitest::Test
         closed = JSON.parse(succeeds("external", "end", "T", observation, "--disposition", "ended"))
         assert_nil closed.fetch("active")
         assert_equal observation, closed.fetch("closed").last.fetch("observation_id")
+        assert_equal "Finder\x00\xff".b, File.binread(namespace_metadata)
         assert_includes succeeds("status", "T"), "T: STALE"
         assert_equal before, before.keys.to_h { |path| [path, File.binread(path)] }
         # Existing result authority is exercised only on an independently
@@ -249,14 +252,23 @@ class AttemptRecoveryTest < Minitest::Test
   # removing closeout makes preparation fail and execution never completes work.
   def test_public_exit_zero_closeout_fresh_retry_preserves_both_attempts
     fixture(readers: 1) do
+      FileUtils.mkdir_p(File.join("#{@data}-runs", "T"), mode: 0o700)
+      File.binwrite(File.join("#{@data}-runs", "T", ".DS_Store"), "before launch")
       succeeds("launch", "T", "--codex", "--reasoning", "high")
       %w[blocked failed needs_judgment].each_with_index do |outcome, index|
         first = reports.fetch(index)
         assert_equal [index + 1, "exited", 0, true, "fresh_at_exit"], first.values_at("attempt", "status", "exit_status", "final_valid", "writable_freshness")
         assert_equal %w[write read_only], first.fetch("worktrees").fetch("entries").map { |entry| entry.fetch("access") }
         first_fixture = first.fetch("fixture").fetch("path")
+        run_dir = File.dirname(first.fetch("worktrees_path"))
+        metadata = [run_dir, *first.fetch("worktrees").fetch("entries").flat_map { |entry| [entry.fetch("path"), File.dirname(entry.fetch("path"))] }].uniq.map do |directory|
+          path = File.join(directory, ".DS_Store")
+          File.binwrite(path, "Finder\x00\xff".b)
+          path
+        end
         File.binwrite(File.join(first_fixture, "retained.bin"), "\x00\xfffixture".b)
         old = reports.each_with_object({}) { |report, retained| retained.merge!(bytes(File.dirname(report.fetch("worktrees_path")))) }
+        old.reject! { |path, _bytes| File.basename(path) == ".DS_Store" }
         original_state = first.fetch("execution_state")
         succeeds("record", "T", outcome, "--summary", "No candidate.", "--next", "Explicit closeout and retry.")
         before = bytes
@@ -266,6 +278,11 @@ class AttemptRecoveryTest < Minitest::Test
         succeeds("close-attempt", "T", "--dry-run")
         assert_equal before, bytes
         succeeds("close-attempt", "T")
+        closeout = JSON.parse(File.binread(File.join(run_dir, "closeout.json")))
+        refute closeout.fetch("evidence").key?(".DS_Store")
+        metadata.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+        metadata.each { |path| File.binwrite(path, "changed after closeout") }
+        File.unlink(metadata.first)
         closed = bytes
         succeeds("close-attempt", "T")
         assert_equal closed, bytes

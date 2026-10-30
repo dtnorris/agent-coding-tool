@@ -9,6 +9,8 @@ require_relative "../test_helper"
 class PublisherTest < Minitest::Test
   def with_repo
     Dir.mktmpdir do |dir|
+      # Keep native fixtures canonical when macOS spells TMPDIR through /var.
+      dir = File.realpath(dir)
       bare = File.join(dir, "actd.git")
       root = File.join(dir, "actd")
       run_git(dir, "init", "--bare", "--initial-branch=main", bare)
@@ -40,6 +42,30 @@ class PublisherTest < Minitest::Test
       data_root: root, config: AgentCodingTool::Config.load(File.join(root, "config.yml")),
       task_store: AgentCodingTool::TaskStore.new(File.join(root, "tasks"))
     )
+  end
+
+  # Dry-run selection excludes incidental metadata without publication; tracked
+  # and staged metadata retain normal selection and dirty-state observations.
+  def test_metadata_selection_and_repository_inspection
+    with_repo do |root, _bare|
+      root = File.realpath(root)
+      run_git(root, "config", "core.excludesFile", File::NULL)
+      nested = File.join(root, "space\ncontrol")
+      FileUtils.mkdir_p(nested)
+      paths = [File.join(root, ".DS_Store"), File.join(nested, ".DS_Store")]
+      paths.each { |path| File.binwrite(path, "Finder\x00\xff".b) }
+      config = AgentCodingTool::Config.load(File.join(root, "config.yml"))
+      inspector = AgentCodingTool::RepoInspector.new(config)
+      spec = { "path" => root, "access" => "write" }
+      refute inspector.snapshot("data", spec).fetch("local_dirty")
+      result = publisher(root).publish(mode: :all, dry_run: true)
+      assert_empty result.fetch(:files)
+      run_git(root, "add", "--", ".DS_Store")
+      assert inspector.snapshot("data", spec).fetch("local_dirty")
+      assert_equal [".DS_Store"], publisher(root).publish(mode: :all, dry_run: true).fetch(:files)
+      paths.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+      assert_equal "A\0.DS_Store\0", run_git(root, "diff", "--cached", "--name-status", "-z").first
+    end
   end
 
   def run_git(root, *args, allow_failure: false)
@@ -311,12 +337,28 @@ class PublisherTest < Minitest::Test
 
   def test_rename_crossing_narrow_scope_blocks_but_all_accepts
     with_repo do |root, _bare|
+      metadata = File.join(root, ".DS_Store")
+      File.binwrite(metadata, "Finder\x00\xff".b)
       run_git(root, "mv", "state/T1.yml", "notes.yml")
       assert_match(/renamed selected file/, publisher(root).publish(mode: :default, dry_run: true).fetch(:blocker))
       assert_raises(AgentCodingTool::RepositoryError) { publisher(root).publish(mode: :default) }
       result = publisher(root).publish(mode: :all)
       assert_equal %w[notes.yml state/T1.yml], result.fetch(:files)
       assert_equal result.fetch(:files), committed_paths(root)
+      assert_equal "Finder\x00\xff".b, File.binread(metadata)
+      assert_empty run_git(root, "ls-files", "--", ".DS_Store").first
+    end
+    # An already staged deletion has no remaining path for git add. Its exact
+    # deletion still belongs in the commit; incidental metadata stays untouched.
+    with_repo do |root, _bare|
+      metadata = File.join(root, ".DS_Store")
+      File.binwrite(metadata, "Finder\x00\xff".b)
+      run_git(root, "rm", "state/T1.yml")
+      result = publisher(root).publish(mode: :all)
+      assert_equal ["state/T1.yml"], result.fetch(:files)
+      assert_equal result.fetch(:files), committed_paths(root)
+      assert_equal "Finder\x00\xff".b, File.binread(metadata)
+      assert_empty run_git(root, "ls-files", "--", ".DS_Store").first
     end
   end
 

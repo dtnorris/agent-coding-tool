@@ -190,6 +190,41 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # Exercises exact baseline, drift, untracked files and both through real
   # consent/validation/commit. Initial sibling files, modes and index stay intact;
   # declared provenance may name an absent object or an older existing commit.
+  # Metadata churn in either declared repository is incidental throughout public
+  # consent and validation. Explicit destinations still collide and stay intact.
+  def test_public_apply_ignores_metadata_churn_but_preserves_explicit_collision
+    fixture do
+      paths = [@a, @b, File.join(@b, "nested space\nname")].map do |directory|
+        FileUtils.mkdir_p(directory)
+        path = File.join(directory, ".DS_Store")
+        File.binwrite(path, "initial\x00\xff".b)
+        path
+      end
+      responses = [-> { paths.each { |path| File.binwrite(path, "review churn") }; "yes" },
+                   -> { File.unlink(paths.last); "yes" }, "no"]
+      stdout, stderr, status = cli(responses)
+      assert status.success?, stderr
+      assert_includes stdout, "sibling validation passed"
+      refute_includes stdout, 'preserving initial untracked files: ".DS_Store"'
+      paths.first(2).each { |path| assert_equal "review churn", File.binread(path) }
+      refute File.exist?(paths.last)
+      assert_equal @bases[0], git(@a, "rev-parse", "HEAD").strip
+      assert_equal "", git(@a, "diff", "--cached")
+    end
+    fixture do
+      @patch = "diff --git a/.DS_Store b/.DS_Store\nnew file mode 100644\n--- /dev/null\n+++ b/.DS_Store\n@@ -0,0 +1 @@\n+deliberate\n"
+      File.binwrite(@patch_path, @patch)
+      @manifest["paths"] = [".DS_Store"]
+      @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch)
+      save_manifest
+      File.binwrite(File.join(@a, ".DS_Store"), "keep existing metadata")
+      _stdout, stderr, status = cli([], terminal: false)
+      assert_equal 2, status.exitstatus
+      assert_match(/proposal conflict|already occupied/, stderr)
+      assert_equal "keep existing metadata", File.binread(File.join(@a, ".DS_Store"))
+    end
+  end
+
   def test_public_cli_new_task_sibling_validation_and_target_commit
     [[true, false], [false, false], [false, true], [true, true]].each do |drift, untracked|
       fixture(nonportable: true) do

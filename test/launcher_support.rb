@@ -305,7 +305,7 @@ module LauncherSupport
       case command
       when ['remote', 'get-url', 'origin'] then [@remote, '', Status.new(true)]
       when ['rev-parse', 'HEAD'] then [@base, '', Status.new(true)]
-      when ['status', '--porcelain', '--untracked-files=all'] then ['', '', Status.new(true)]
+      when ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'] then ['', '', Status.new(true)]
       when ['symbolic-ref', '-q', 'HEAD'] then ['refs/heads/act/T/attempt-1', '', Status.new(true)]
       else raise "unexpected Git operation: #{command.inspect}"
       end

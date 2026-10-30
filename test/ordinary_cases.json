@@ -295,5 +295,10 @@
     "RunEvidenceTest#test_inventory_refuses_symlinks_and_unknown_entries": [],
     "RunEvidenceTest#test_durable_limits_stop_and_expiry": [],
     "RunEvidenceTest#test_budget_boundaries_and_grant_closure": []
+  },
+  "test/incidental_metadata_test.rb": {
+    "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental": [],
+    "IncidentalMetadataTest#test_status_filters_only_proven_untracked_metadata": [],
+    "IncidentalMetadataTest#test_closeout_hash_compatibility_and_explicit_evidence": []
   }
 }

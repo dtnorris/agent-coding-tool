@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "agent_coding_tool/errors"
+require_relative "agent_coding_tool/incidental_metadata"
 require_relative "agent_coding_tool/config"
 require_relative "agent_coding_tool/task_store"
 require_relative "agent_coding_tool/state_store"

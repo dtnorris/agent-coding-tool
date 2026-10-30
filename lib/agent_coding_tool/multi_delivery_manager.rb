@@ -132,7 +132,7 @@ module AgentCodingTool
         next unless entry["access"] == "read_only"
         raise InvalidState, "delivery: read-only dependency changed" unless
           git!(entry.fetch("path"), "rev-parse", "HEAD").strip == entry.fetch("base_sha") &&
-          git!(entry.fetch("path"), "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
+          IncidentalMetadata.git_status(entry.fetch("path")) { |*args| git!(entry.fetch("path"), *args) }.empty?
       end
     end
 
@@ -198,7 +198,7 @@ module AgentCodingTool
       head = git!(workspace, "rev-parse", "HEAD").strip
       if detail["stage"] == "pending"
         raise InvalidState, "delivery: repository advanced before validation" unless head == base.fetch("pushed_sha")
-        dirty = git!(workspace, "status", "--porcelain", "--untracked-files=all")
+        dirty = IncidentalMetadata.git_status(workspace) { |*args| git!(workspace, *args) }
         if dirty.empty?
           detail["stage"] = "unchanged"
           save!(path, detail)
@@ -233,7 +233,7 @@ module AgentCodingTool
       else
         raise InvalidState, "delivery: unchanged repository changed" unless
           head == base.fetch("pushed_sha") &&
-          git!(workspace, "status", "--porcelain", "--untracked-files=all").empty?
+          IncidentalMetadata.git_status(workspace) { |*args| git!(workspace, *args) }.empty?
       end
       info[:detail] = detail
     end

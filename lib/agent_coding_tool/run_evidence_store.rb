@@ -112,9 +112,8 @@ module AgentCodingTool
     # metadata files. Symlinks, other file types and unknown entries refuse.
     def children(path)
       raise Refused, "source.directory" unless File.directory?(path) && !File.symlink?(path) && File.realpath(path) == path
-      entries = Dir.children(path).sort
+      entries = IncidentalMetadata.children(path).sort
       raise Refused, "source.inventory" unless entries.length <= 1024
-      entries.reject! { |entry| entry == ".DS_Store" && File.lstat(File.join(path, entry)).file? }
       raise Refused, "source.inventory" unless entries.all? do |entry|
         entry.match?(/\A[A-Za-z0-9_-]+\z/) && File.lstat(File.join(path, entry)).directory?
       end

@@ -33,6 +33,12 @@ class PreflightRecoveryTest < Minitest::Test
     fixture(git: true) do
       report = failed_attempt
       path = report.fetch("workspace")
+      metadata = ["#{@data}-runs", File.join("#{@data}-runs", "T"), File.dirname(report.fetch("worktrees_path")),
+                  File.join(@root, "worktrees", "T"), File.dirname(path), path].uniq.map do |directory|
+        metadata_path = File.join(directory, ".DS_Store")
+        File.binwrite(metadata_path, "Finder\x00\xff".b)
+        metadata_path
+      end
       fixture_path = report.fetch("fixture").fetch("path")
       File.binwrite(File.join(fixture_path, "retained.bin"), "\x00\xfffixture".b)
       File.symlink(@data, File.join(fixture_path, "protected-link"))
@@ -40,9 +46,13 @@ class PreflightRecoveryTest < Minitest::Test
       refute @store.load("T")["started_at"]
       assert File.directory?(path)
       assert_equal false, recovery.preflight("T").fetch("abandoned")
+      metadata.each { |metadata_path| assert_equal "Finder\x00\xff".b, File.binread(metadata_path) }
       result = recovery.abandon("T")
       assert result.fetch("abandoned")
       refute File.exist?(path)
+      metadata.reject { |metadata_path| metadata_path.start_with?(path + "/") }.each do |metadata_path|
+        assert_equal "Finder\x00\xff".b, File.binread(metadata_path)
+      end
       assert_equal "failed", @store.load("T").dig("result", "outcome")
       assert_equal "preflight_abandoned", JSON.parse(File.binread(File.join(result.fetch("run_dir"), "handoff.json"))).fetch("status")
       assert File.file?(result.fetch("record_path"))

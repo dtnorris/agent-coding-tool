@@ -299,9 +299,14 @@ class LauncherTest < Minitest::Test
         "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "OTHER",
         "preparation" => {}, "status" => "exited"
       ))
+      [File.dirname(File.dirname(other)), File.dirname(other), File.join(root, "T")].each do |directory|
+        FileUtils.mkdir_p(directory)
+        File.binwrite(File.join(directory, ".DS_Store"), bytes)
+      end
 
       assert_equal 0, launcher.launch("T")
       assert_equal "exited", report.fetch("status")
+      assert_equal 1, report.fetch("attempt")
       assert_equal bytes, File.binread(finder)
       assert File.file?(other)
     end
@@ -326,8 +331,8 @@ class LauncherTest < Minitest::Test
     end
   end
 
-  def test_only_regular_top_level_finder_metadata_is_ignored
-    [:symlink, :directory, :foreign_file, :nested_file].each do |kind|
+  def test_only_regular_finder_metadata_is_ignored
+    [:symlink, :directory, :foreign_file, :nested_symlink, :nested_directory, :nested_fifo].each do |kind|
       fixture do
         root = "#{@data}-runs"
         FileUtils.mkdir_p(root, mode: 0o700)
@@ -335,12 +340,15 @@ class LauncherTest < Minitest::Test
         when :symlink then File.symlink(@ordinary, File.join(root, ".DS_Store"))
         when :directory then Dir.mkdir(File.join(root, ".DS_Store"))
         when :foreign_file then File.write(File.join(root, ".other"), "foreign")
-        when :nested_file
+        when :nested_symlink, :nested_directory, :nested_fifo
           task_root = File.join(root, "OTHER")
           Dir.mkdir(task_root)
-          File.write(File.join(task_root, ".DS_Store"), "foreign")
+          path = File.join(task_root, ".DS_Store")
+          File.symlink(File.join(root, "absent"), path) if kind == :nested_symlink
+          Dir.mkdir(path) if kind == :nested_directory
+          File.mkfifo(path) if kind == :nested_fifo
         end
-        assert_preflight_failure(kind == :nested_file ? /partial\/foreign run artifacts/ : /foreign evidence entry/)
+        assert_preflight_failure(kind.to_s.start_with?("nested_") ? /partial\/foreign run artifacts/ : /foreign evidence entry/)
       end
     end
   end

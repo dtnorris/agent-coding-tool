@@ -175,10 +175,12 @@ module AgentCodingTool
     def verify_clean!(inventory)
       inventory.fetch("entries").each do |entry|
         next unless File.directory?(entry.fetch("path"))
-        output, error, status = Open3.capture3("git", "--no-optional-locks", "status", "--porcelain",
-                                             "--untracked-files=all", "--ignored", chdir: entry.fetch("path"))
-        raise InvalidState, "close-attempt: dirty or unreadable worktree #{entry['path']}: #{error}" unless
-          status.success? && output.empty?
+        output = IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) do |*args|
+          bytes, error, status = Open3.capture3("git", *args, chdir: entry.fetch("path"))
+          raise InvalidState, "close-attempt: unreadable worktree #{entry['path']}: #{error}" unless status.success?
+          bytes
+        end
+        raise InvalidState, "close-attempt: dirty worktree #{entry['path']}" unless output.empty?
       end
     end
 
@@ -191,7 +193,7 @@ module AgentCodingTool
       path = File.join(@root, id)
       return [] unless File.exist?(path) || File.symlink?(path)
       safe_directory!(path)
-      Dir.children(path).sort.map { |name| safe_directory!(File.join(path, name)) }
+      IncidentalMetadata.children(path).sort.map { |name| safe_directory!(File.join(path, name)) }
     end
 
     # Verifies one report against its own original preparation and native Git
@@ -266,7 +268,7 @@ module AgentCodingTool
           "id" => id, "prepared_at" => report.fetch("prepared_at"), "snapshot" => report.fetch("preparation"))
         unless closeout["schema"] == SCHEMA && closeout["operation"] == "preserve_for_retry" &&
                closeout.values_at("task_id", "attempt", "invocation_id") == report.values_at("task_id", "attempt", "invocation_id") &&
-               closeout["evidence"] == evidence_hashes(directory) &&
+               closeout["evidence"] == evidence_hashes(directory, include_metadata: closeout.fetch("evidence").key?(".DS_Store")) &&
                closeout.fetch("state").values_at("prepared_at", "snapshot") == report.values_at("prepared_at", "preparation") &&
                closeout.fetch("state").reject { |key, _| %w[result checkpoint].include?(key) } ==
                  original.reject { |key, _| %w[result checkpoint].include?(key) } &&
@@ -386,9 +388,11 @@ module AgentCodingTool
     end
 
     # Binds every immutable run artifact, including partial operation markers.
-    # Closeout is separate and excluded; unexpected entries refuse, not disappear.
-    def evidence_hashes(directory)
-      Dir.children(directory).sort.reject { |name| name == "closeout.json" }.to_h do |name|
+    # Closeout and incidental metadata are excluded. Historical metadata hashes
+    # must still verify exactly before an old closeout can be trusted; no rewrite.
+    def evidence_hashes(directory, include_metadata: false)
+      names = include_metadata ? Dir.children(directory) : IncidentalMetadata.children(directory)
+      names.sort.reject { |name| name == "closeout.json" }.to_h do |name|
         path = File.join(directory, name)
         [name, Digest::SHA256.hexdigest(checked_file(path))]
       end

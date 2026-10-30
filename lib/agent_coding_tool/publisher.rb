@@ -118,7 +118,11 @@ module AgentCodingTool
       untracked = []
       begin
         if mode == :all
-          git!("add", "-A", "--", ".")
+          # Rename sources and staged deletions are already absent from the
+          # index. Stage current status paths only; keep both rename paths in
+          # the independently checked commit selection and trailer.
+          staging_files = entries.reject { |entry| entry.fetch(:xy) == "D " }.map { |entry| entry.fetch(:path) }.uniq.sort
+          git!("--literal-pathspecs", "add", "-A", "--", *staging_files) unless staging_files.empty?
           git!("commit", "-m", message, "-m", trailer)
         else
           untracked = entries.filter_map { |entry| entry.fetch(:path) if entry.fetch(:xy) == "??" && files.include?(entry.fetch(:path)) }
@@ -181,7 +185,9 @@ module AgentCodingTool
     # Reads selection candidates without Git's optional index refresh, preserving
     # dry-run bytes/timestamps. Returns entries or raises RepositoryError.
     def status_entries
-      fields = git!("--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none").split("\0")
+      IncidentalMetadata.check_repository!(@root) { |*args| git!(*args) }
+      status = git!("--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+      fields = IncidentalMetadata.status(@root, status) { |*args| git!(*args) }.split("\0")
       entries = []
       until fields.empty?
         field = fields.shift

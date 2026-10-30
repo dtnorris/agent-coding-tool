@@ -499,6 +499,169 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Reproduces DPS-09 through public CLI actions with native launch ownership.
+  # Metadata churn cannot alter canonical bytes; substantive edits still refuse.
+  def test_nested_metadata_public_checkpoint_round_trip
+    fixture do |root, data, _ordinary, _unused, base|
+      store = AgentCodingTool::StateStore.new(File.join(data, "state"))
+      state = store.load("T")
+      visible = File.join(root, "worktrees")
+      File.write(File.join(data, "config.yml"), YAML.dump("worktree_root" => visible))
+      run_dir = File.join("#{data}-runs", "T", "run")
+      FileUtils.mkdir_p(run_dir, mode: 0o700)
+      record_path = File.join(run_dir, "worktrees.json")
+      inventory = AgentCodingTool::WorktreeManager.new(root: visible, record_path: record_path, attempt_paths: true).create(
+        task_id: "T", attempt: 1, task: { "repositories" => { "repo" => { "access" => "write" } } }, snapshot: state.fetch("snapshot"))
+      workspace = inventory.fetch("entries").first.fetch("path")
+      git("config", "core.excludesFile", File::NULL, chdir: workspace)
+      File.write(File.join(workspace, "changed.txt"), "candidate\n")
+      File.write(File.join(run_dir, "handoff.json"), JSON.generate(
+        "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "T",
+        "prepared_at" => state.fetch("prepared_at"), "workspace" => workspace,
+        "writable_repository" => "repo", "writable_authority" => state.fetch("snapshot").fetch("repo").slice("remote_url", "branch", "pushed_sha"),
+        "invocation_id" => "metadata-fixture", "worktrees_path" => record_path))
+      metadata = ["#{data}-runs", File.dirname(run_dir), run_dir, visible,
+                  File.dirname(File.dirname(workspace)), File.dirname(workspace), workspace,
+                  File.join(workspace, "nested space\nname")].map do |directory|
+        FileUtils.mkdir_p(directory, mode: 0o700)
+        path = File.join(directory, ".DS_Store")
+        File.binwrite(path, "Finder\x00\xff".b)
+        path
+      end
+      out, err = StringIO.new, StringIO.new
+      cli = AgentCodingTool::CLI.new(root: root, data_root: data, out: out, err: err)
+      assert_equal 0, cli.run(["checkpoint", "record", "T", "--workspace", workspace]), err.string
+      record = JSON.parse(out.string)
+      assert_equal "metadata-fixture", record.fetch("launch_invocation")
+      assert_equal [{ "status" => "M", "path" => "changed.txt" }], record.fetch("changed_files")
+      assert_equal Digest::SHA256.file(record.fetch("path")).hexdigest, record.fetch("sha256")
+      metadata.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+      excludes = File.join(root, "finder-excludes")
+      File.write(excludes, ".DS_Store\n")
+      git("config", "core.excludesFile", excludes, chdir: workspace)
+      metadata.each { |path| File.binwrite(path, "changed Finder bytes") }
+      File.unlink(metadata.last)
+      assert_equal 0, cli.run(["checkpoint", "verify", "T", "--workspace", workspace]), err.string
+      gate = [RbConfig.ruby, "-e", 'File.binwrite(".DS_Store", "gate metadata")']
+      assert_equal 0, cli.run(["checkpoint", "gate", "T", "--workspace", workspace, "--", *gate]), err.string
+      assert_equal "gate metadata", File.binread(File.join(workspace, ".DS_Store"))
+      artifact = File.join(root, "candidate.patch")
+      result = AgentCodingTool::Checkpoint.new(data_root: data).export("T", workspace: workspace, base_sha: base, artifact: artifact)
+      assert_equal record.fetch("sha256"), result.fetch("sha256")
+      assert_equal File.binread(record.fetch("path")), File.binread(artifact)
+      explicit_artifact = File.join(root, ".DS_Store")
+      File.binwrite(explicit_artifact, "explicit artifact must be verified")
+      assert_raises(AgentCodingTool::InvalidState) do
+        AgentCodingTool::Checkpoint.new(data_root: data).record("T", workspace: workspace, artifact: explicit_artifact)
+      end
+      assert_equal "explicit artifact must be verified", File.binread(explicit_artifact)
+      git("add", "-f", "--", ".DS_Store", chdir: workspace)
+      assert_equal 2, cli.run(["checkpoint", "verify", "T", "--workspace", workspace])
+      git("reset", "--", ".DS_Store", chdir: workspace)
+      metadata_only_run = File.join(File.dirname(run_dir), "metadata-only-run")
+      Dir.mkdir(metadata_only_run)
+      File.write(File.join(metadata_only_run, ".DS_Store"), "no handoff")
+      assert_equal 2, cli.run(["checkpoint", "verify", "T", "--workspace", workspace])
+      assert_equal "no handoff", File.read(File.join(metadata_only_run, ".DS_Store"))
+      FileUtils.remove_entry(metadata_only_run)
+      File.write(File.join(workspace, "changed.txt"), "concurrent substantive edit\n")
+      assert_equal 2, cli.run(["checkpoint", "verify", "T", "--workspace", workspace])
+      assert_equal "gate metadata", File.binread(File.join(workspace, ".DS_Store"))
+    end
+  end
+
+  # Tracked metadata edits remain exact candidate content; staged metadata still
+  # refuses. Unsupported file types never acquire the discovery exemption.
+  def test_checkpoint_preserves_tracked_metadata_and_rejects_unsafe_types
+    fixture do |root, data, ordinary, workspace, _base|
+      File.write(File.join(ordinary, ".DS_Store"), "deliberately tracked\n")
+      git("add", "-f", "--", ".DS_Store", chdir: ordinary)
+      git("commit", "-m", "tracked fixture metadata", chdir: ordinary)
+      base = git("rev-parse", "HEAD", chdir: ordinary)
+      tracked_workspace = File.join(root, "tracked-workspace")
+      git("clone", ordinary, tracked_workspace)
+      git("remote", "set-url", "origin", File.join(root, "remote.git"), chdir: tracked_workspace)
+      store = AgentCodingTool::StateStore.new(File.join(data, "state"))
+      state = store.load("T")
+      state["snapshot"]["repo"]["pushed_sha"] = base
+      store.write("T", state)
+      File.binwrite(File.join(tracked_workspace, ".DS_Store"), "tracked edit\x00\xff".b)
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
+      record = checkpoint.record("T", workspace: tracked_workspace)
+      assert_equal [{ "status" => "M", "path" => ".DS_Store" }], record.fetch("changed_files")
+      assert_equal "verified", checkpoint.verify("T", workspace: tracked_workspace).fetch("status")
+      git("add", "--", ".DS_Store", chdir: tracked_workspace)
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: tracked_workspace) }
+      # Return to the fixture's original baseline for independent unsafe entries.
+      state["snapshot"]["repo"]["pushed_sha"] = git("rev-parse", "HEAD", chdir: workspace)
+      store.write("T", state)
+      path = File.join(workspace, ".DS_Store")
+      [File.join(workspace, "changed.txt"), File.join(workspace, "absent")].each do |target|
+        File.symlink(target, path)
+        assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
+        assert File.symlink?(path)
+        File.unlink(path)
+      end
+      Dir.mkdir(path)
+      File.write(File.join(path, "substantive"), "preserve directory contents")
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace) }
+      assert_equal "preserve directory contents", File.read(File.join(path, "substantive"))
+    end
+  end
+
+  # A synthetic pre-policy v1 record must verify/recover its exact recorded
+  # metadata bytes. Compatibility never drops hashes or rewrites old evidence.
+  def test_legacy_checkpoint_metadata_remains_bound_to_recorded_bytes
+    fixture do |root, data, _ordinary, workspace, base|
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
+      path = File.join(workspace, ".DS_Store")
+      File.binwrite(path, "historically recorded\x00\xff".b)
+      bytes, inventory = checkpoint.send(:implementation, workspace, base, preserved_paths: [".DS_Store"])
+      current = checkpoint.record("T", workspace: workspace)
+      directory = File.dirname(current.fetch("path"))
+      record_path = File.join(directory, current.fetch("record_file"))
+      record = JSON.parse(File.binread(record_path))
+      record.merge!("sha256" => Digest::SHA256.hexdigest(bytes), "implementation_sha256" => Digest::SHA256.hexdigest(bytes),
+                    "bytes" => bytes.bytesize, "changed_files" => inventory)
+      File.binwrite(current.fetch("path"), bytes)
+      File.write(record_path, JSON.pretty_generate(record) + "\n")
+      File.write(File.join(directory, "current.json"), JSON.generate("record_file" => current.fetch("record_file"),
+        "sha256" => Digest::SHA256.file(record_path).hexdigest))
+      preserved = [current.fetch("path"), record_path, File.join(directory, "current.json")].to_h { |entry| [entry, File.binread(entry)] }
+      # Force a temporary-root alias on every platform, reproducing macOS /var.
+      # Only the ACT-created verification root is canonicalized; arbitrary
+      # metadata ancestry remains subject to the unchanged rejection policy.
+      temporary_parent = File.join(root, "verification-temporary")
+      Dir.mkdir(temporary_parent)
+      temporary_alias = File.join(root, "verification-temporary-alias")
+      File.symlink(temporary_parent, temporary_alias)
+      create_temporary = Dir.method(:mktmpdir)
+      aliased_verifications = 0
+      with_alias = lambda do |prefix, *arguments, **options, &operation|
+        if prefix == "act-checkpoint-verify-"
+          create_temporary.call(prefix, temporary_parent, **options) do |directory|
+            aliased_verifications += 1
+            operation.call(File.join(temporary_alias, File.basename(directory)))
+          end
+        else
+          create_temporary.call(prefix, *arguments, **options, &operation)
+        end
+      end
+      Dir.stub(:mktmpdir, with_alias) do
+        assert_equal "verified", checkpoint.verify("T", workspace: workspace).fetch("status")
+      end
+      assert_equal 1, aliased_verifications
+      File.binwrite(path, "changed incidental bytes")
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T", workspace: workspace) }
+      destination = File.join(root, "recovered-legacy")
+      assert_equal "reconstructed", checkpoint.recover("T", destination: destination, confirm_disconnected: true).fetch("status")
+      assert_equal "historically recorded\x00\xff".b, File.binread(File.join(destination, ".DS_Store"))
+      assert_equal preserved, preserved.keys.to_h { |entry| [entry, File.binread(entry)] }
+      File.binwrite(current.fetch("path"), bytes + "tampered")
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T") }
+    end
+  end
+
   # Declares workspace Git identity while production rejects partial/foreign
   # launch evidence, preserving the candidate, task state and refused report.
   def test_launch_attempt_rejects_foreign_workspace_and_partial_run_evidence

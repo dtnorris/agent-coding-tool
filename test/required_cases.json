@@ -191,7 +191,7 @@
       "LauncherTest#test_private_checkpoint_evidence_coexists_with_worker_reports",
       "LauncherTest#test_regular_finder_metadata_coexists_with_valid_worker_evidence",
       "LauncherTest#test_finder_metadata_does_not_hide_unknown_worker_liveness",
-      "LauncherTest#test_only_regular_top_level_finder_metadata_is_ignored",
+      "LauncherTest#test_only_regular_finder_metadata_is_ignored",
       "LauncherTest#test_replaced_or_nonprivate_checkpoint_namespace_fails_closed",
       "LauncherTest#test_unexpected_directory_and_malformed_worker_report_still_fail_closed",
       "LauncherTest#test_process_failure_and_invalid_final_preserve_real_exit_and_reservation",
@@ -349,7 +349,9 @@
       "WorktreeManagerTest#test_symlinked_root_and_interrupted_add_preserve_evidence",
       "WorktreeManagerTest#test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate",
       "WorktreeManagerTest#test_attempt_container_cannot_reuse_an_existing_resource",
-      "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource"
+      "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource",
+      "WorktreeManagerTest#test_metadata_discovery_and_native_removal_in_both_layouts",
+      "WorktreeManagerTest#test_repository_metadata_socket_refuses_disposal"
     ],
     "test/write_collision_test.rb": [
       "WriteCollisionTest#test_cli_overlap_warnings_bind_each_conflict_to_its_own_authority",
@@ -380,6 +382,11 @@
       "RunEvidenceTest#test_durable_limits_stop_and_expiry",
       "RunEvidenceTest#test_budget_boundaries_and_grant_closure",
       "RunEvidenceTest#test_native_public_cli_two_runs_and_owned_eof"
+    ],
+    "test/incidental_metadata_test.rb": [
+      "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental",
+      "IncidentalMetadataTest#test_status_filters_only_proven_untracked_metadata",
+      "IncidentalMetadataTest#test_closeout_hash_compatibility_and_explicit_evidence"
     ]
   },
   "integration": {
@@ -395,7 +402,8 @@
       "ApplyHandoffGitIntegrationTest#test_commit_failure_retains_only_proposal_in_index",
       "ApplyHandoffGitIntegrationTest#test_validation_spawn_error_and_signal_status",
       "ApplyHandoffGitIntegrationTest#test_interrupt_during_validation_preserves_output_and_candidate",
-      "ApplyHandoffGitIntegrationTest#test_bundle_rake_and_mixed_file_patch"
+      "ApplyHandoffGitIntegrationTest#test_bundle_rake_and_mixed_file_patch",
+      "ApplyHandoffGitIntegrationTest#test_public_apply_ignores_metadata_churn_but_preserves_explicit_collision"
     ],
     "test/integration/readiness_git_integration.rb": [
       "ReadinessTest#test_missing_imminent_object_blocks_launch_without_fetch_or_worker",
@@ -439,7 +447,10 @@
       "CheckpointTest#test_wrong_baseline_and_foreign_or_symlinked_evidence_fail_closed",
       "CheckpointTest#test_multiple_writers_fail_closed",
       "CheckpointTest#test_launch_attempt_rejects_foreign_workspace_and_partial_run_evidence",
-      "CheckpointTest#test_exemption_and_old_task_default"
+      "CheckpointTest#test_exemption_and_old_task_default",
+      "CheckpointTest#test_nested_metadata_public_checkpoint_round_trip",
+      "CheckpointTest#test_checkpoint_preserves_tracked_metadata_and_rejects_unsafe_types",
+      "CheckpointTest#test_legacy_checkpoint_metadata_remains_bound_to_recorded_bytes"
     ],
     "test/integration/delivery_manager_git_integration.rb": [
       "DeliveryManagerTest#test_validates_exact_bytes_then_commits_pushes_once_and_opens_draft",
@@ -452,7 +463,8 @@
       "DeliveryManagerTest#test_coverage_floor_is_host_enforced",
       "DeliveryManagerTest#test_live_git_push_adapter_creates_only_absent_feature_ref",
       "DeliveryManagerTest#test_live_guard_rejects_unbounded_or_unclassified_publication",
-      "DeliveryManagerTest#test_external_observation_blocks_fresh_and_resumed_delivery"
+      "DeliveryManagerTest#test_external_observation_blocks_fresh_and_resumed_delivery",
+      "DeliveryManagerTest#test_public_delivery_and_cleanup_with_metadata_churn"
     ],
     "test/integration/manual_parallel_launch_git_integration.rb": [
       "ManualParallelLaunchTest#test_public_cli_manual_overlap_preserves_candidates_with_active_and_historical_variants",
@@ -498,7 +510,8 @@
       "PublisherTest#test_rename_crossing_narrow_scope_blocks_but_all_accepts",
       "PublisherTest#test_status_is_read_only_and_repository_operation_blocks_publish",
       "PublisherTest#test_remote_push_race_preserves_local_commit_without_reconciliation",
-      "PublisherTest#test_external_observations_are_structurally_outside_all_public_selections"
+      "PublisherTest#test_external_observations_are_structurally_outside_all_public_selections",
+      "PublisherTest#test_metadata_selection_and_repository_inspection"
     ]
   },
   "native_default": {
@@ -535,7 +548,7 @@
       "LauncherTest#test_private_checkpoint_evidence_coexists_with_worker_reports",
       "LauncherTest#test_regular_finder_metadata_coexists_with_valid_worker_evidence",
       "LauncherTest#test_finder_metadata_does_not_hide_unknown_worker_liveness",
-      "LauncherTest#test_only_regular_top_level_finder_metadata_is_ignored",
+      "LauncherTest#test_only_regular_finder_metadata_is_ignored",
       "LauncherTest#test_replaced_or_nonprivate_checkpoint_namespace_fails_closed",
       "LauncherTest#test_unexpected_directory_and_malformed_worker_report_still_fail_closed",
       "LauncherTest#test_process_failure_and_invalid_final_preserve_real_exit_and_reservation",
@@ -591,7 +604,9 @@
       "WorktreeManagerTest#test_symlinked_root_and_interrupted_add_preserve_evidence",
       "WorktreeManagerTest#test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate",
       "WorktreeManagerTest#test_attempt_container_cannot_reuse_an_existing_resource",
-      "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource"
+      "WorktreeManagerTest#test_native_backpointer_mismatch_preserves_the_resource",
+      "WorktreeManagerTest#test_metadata_discovery_and_native_removal_in_both_layouts",
+      "WorktreeManagerTest#test_repository_metadata_socket_refuses_disposal"
     ],
     "test/run_evidence_test.rb": [
       "RunEvidenceTest#test_native_public_cli_two_runs_and_owned_eof"

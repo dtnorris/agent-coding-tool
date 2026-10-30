@@ -3,6 +3,7 @@
 require "json"
 require "open3"
 require "fileutils"
+require "tempfile"
 
 module AgentCodingTool
   # Host-owned worktree inventory. The worker cannot write the private run record.
@@ -18,11 +19,11 @@ module AgentCodingTool
       return [] unless File.exist?(task_path) || File.symlink?(task_path)
       raise InvalidState, "worktrees: foreign task path" unless File.directory?(task_path) && !File.symlink?(task_path)
       containers = paths.map { |path| File.dirname(path) }.reject { |path| path == task_path }.uniq
-      actual = Dir.children(task_path).map { |name| File.join(task_path, name) }
+      actual = IncidentalMetadata.children(task_path).map { |name| File.join(task_path, name) }
       containers.each do |container|
         next unless actual.include?(container)
         raise InvalidState, "worktrees: foreign attempt container" unless File.directory?(container) && !File.symlink?(container)
-        actual.concat(Dir.children(container).map { |name| File.join(container, name) })
+        actual.concat(IncidentalMetadata.children(container).map { |name| File.join(container, name) })
       end
       actual - paths - containers
     end
@@ -183,7 +184,7 @@ module AgentCodingTool
         next { "path" => entry.fetch("path"), "branch" => entry["branch"], "access" => entry.fetch("access"),
                "dirty" => false, "blockers" => [], "state" => "removed" } if
           entry["state"] == "removed" || (entry["state"] == "removing" && !File.exist?(entry.fetch("path")))
-        dirty = !git!(entry.fetch("path"), "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
+        dirty = !IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) { |*args| git!(entry.fetch("path"), *args) }.empty?
         { "path" => entry.fetch("path"), "branch" => entry["branch"],
           "access" => entry.fetch("access"), "dirty" => dirty, "state" => entry.fetch("state"),
           "blockers" => dirty ? ["worktree contains changes"] : [] }
@@ -204,8 +205,18 @@ module AgentCodingTool
       if File.directory?(entry.fetch("path"))
         verify_entry!(entry, expected_head: head_overrides.fetch(name, entry.fetch("base_sha")))
         raise InvalidState, "worktrees: worktree contains changes" unless
-          git!(entry.fetch("path"), "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
-        git!(entry.fetch("parent"), "worktree", "remove", "--", entry.fetch("path"))
+          IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) { |*args| git!(entry.fetch("path"), *args) }.empty?
+        # Native Git otherwise refuses untracked Finder files. A command-local
+        # exclude is safe only after the complete ignored/untracked inventory
+        # above is clear. No force, persistent ignore change or individual file
+        # removal is permitted; Git still checks native ownership and dirtiness.
+        Tempfile.create("act-metadata-excludes-") do |excludes|
+          excludes.write(".DS_Store\n")
+          excludes.flush
+          raise InvalidState, "worktrees: worktree contains changes" unless
+            IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) { |*args| git!(entry.fetch("path"), *args) }.empty?
+          git!(entry.fetch("parent"), "-c", "core.excludesFile=#{excludes.path}", "worktree", "remove", "--", entry.fetch("path"))
+        end
       end
       verify_absent_entry!(entry)
       entry["state"] = "removed"
@@ -328,7 +339,7 @@ module AgentCodingTool
       command = ["git", *args]
       command.unshift(env) unless env.empty?
       stdout, stderr, status = Open3.capture3(*command, chdir: path)
-      [stdout.strip, stderr.strip, status.success?]
+      [args.include?("-z") ? stdout : stdout.strip, stderr.strip, status.success?]
     end
 
     def git!(path, *args)

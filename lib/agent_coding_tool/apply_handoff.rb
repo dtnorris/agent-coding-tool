@@ -330,6 +330,7 @@ module AgentCodingTool
     def repository_states!
       @repositories.to_h do |name, repo|
         root = repo.fetch(:path)
+        IncidentalMetadata.check_repository!(root) { |*args| git!(repo, *args) }
         raise Error, "repository root moved" unless File.realpath(root) == root
         raise Error, "repository root mismatch" unless git!(repo, "rev-parse", "--show-toplevel").strip == root
         identity = RepositoryIdentity.resolve(git!(repo, "remote", "get-url", @config.default_remote).strip)
@@ -344,6 +345,12 @@ module AgentCodingTool
         initial_paths = git!(repo, "ls-tree", "-r", "--name-only", "-z", initial_head).split("\0")
         others = git!(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
         ignored = git!(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard").split("\0")
+        [others, ignored].each do |paths|
+          paths.reject! do |path|
+            (repo != @target || !@paths.include?(path)) && !initial_paths.include?(path) && !tracked.include?(path) &&
+              IncidentalMetadata.untracked?(root, path) { |*args| git!(repo, *args) }
+          end
+        end
         ignored.reject! { |path| GENERATED.any? { |prefix| path.start_with?(prefix) } }
         files = (initial_paths + tracked + others + ignored).uniq.sort.to_h do |path|
           absolute = repository_path!(root, path)
@@ -381,6 +388,11 @@ module AgentCodingTool
         "untracked" => git!(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
       }
       changes.each do |kind, paths|
+        if kind == "untracked"
+          paths.reject! do |path|
+            (repo != @target || !@paths.include?(path)) && IncidentalMetadata.untracked?(repo.fetch(:path), path) { |*args| git!(repo, *args) }
+          end
+        end
         if repo == @target
           paths.each do |path|
             overlap = @paths.find { |proposal| path == proposal || path.start_with?("#{proposal}/") || proposal.start_with?("#{path}/") }

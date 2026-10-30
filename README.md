@@ -82,6 +82,38 @@ The public repository also ignores legacy/local `config.yml`, `tasks/`,
 `state/`, and `data/` paths as a fail-safe against accidentally committing
 operational data.
 
+## Incidental Finder metadata
+
+ACT discovery ignores exactly the case-sensitive basename `.DS_Store` when
+`lstat` establishes a readable regular file without following symlinks. This
+applies at every managed evidence/task/attempt/worktree depth and on every
+platform, independently of Git's ignore configuration. Other names and file
+types retain their ordinary validation; unknown, inaccessible or racing evidence
+never becomes a clear result. Metadata-only directories supply no run or proof.
+
+Untracked or ignored regular metadata does not enter generated candidate patches,
+change inventories, attempt counts, reservations, new closeout hashes or dirty
+state. Git inventories use NUL-safe paths and check both index and HEAD before
+excluding it. A separate filesystem check catches untracked nonregular Finder
+entries that Git can omit (including FIFOs). Tracked/staged paths, explicit patch
+destinations and explicitly referenced artifacts retain their ordinary collision,
+byte-integrity and preservation rules. A `.DS_Store` name grants no authority.
+
+Discovery and checkpoint operations leave metadata bytes intact; its later
+creation, removal or content changes do not stale substantive candidates or new
+closeouts. Historical closeouts that recorded a metadata hash still require that
+original hash to verify; ACT never rewrites historical evidence or treats altered
+old proof as valid. Old checkpoint patches likewise retain their recorded hashes
+and complete reconstruction requirements, including metadata already explicitly
+inventoried in the recorded patch. Altering that recorded content remains stale;
+new checkpoint records exclude incidental metadata without converting old proof.
+
+Only separately authorized disposal of an entire owned worktree may remove its
+metadata. Cleanup checks ignored as well as untracked content, retains ownership,
+liveness and integration gates, and uses a temporary command-local Finder exclude
+for native Git removal after rechecking cleanliness. It uses no force removal,
+individual metadata deletion, persistent ignore change or system setting.
+
 ## Apply a worker handoff
 
 A worker supplies a handoff with two download links, for example:

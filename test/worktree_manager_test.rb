@@ -44,6 +44,75 @@ class WorktreeManagerTest < Minitest::Test
 
   def manager = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: @record)
 
+  # Both recorded layouts retain native removal gates while regular metadata
+  # alone permits disposal of the entire already authorized owned worktree.
+  def test_metadata_discovery_and_native_removal_in_both_layouts
+    [false, true].each do |attempt_paths|
+      fixture do
+        handler = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: @record, attempt_paths: attempt_paths)
+        inventory = handler.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot)
+        workspace = inventory.fetch("entries").first.fetch("path")
+        directories = [@visible, File.join(@visible, "T"), File.dirname(workspace), workspace, File.join(workspace, "space\ncontrol")].uniq
+        metadata = directories.map do |directory|
+          FileUtils.mkdir_p(directory)
+          path = File.join(directory, ".DS_Store")
+          File.binwrite(path, "Finder\x00\xff".b)
+          path
+        end
+        assert_empty AgentCodingTool::WorktreeManager.foreign_task_paths(root: @visible, task_id: "T", paths: [workspace])
+        assert_equal false, handler.cleanup_preflight.first.fetch("dirty")
+        metadata.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+        # Each nonregular metadata entry remains a blocker for native disposal.
+        nested = metadata.last
+        File.unlink(nested)
+        [:symlink, :dangling, :fifo, :directory].each do |kind|
+          case kind
+          when :symlink then File.symlink(File.join(workspace, "file.txt"), nested)
+          when :dangling then File.symlink(File.join(workspace, "absent"), nested)
+          when :fifo then File.mkfifo(nested)
+          when :directory
+            Dir.mkdir(nested)
+            File.write(File.join(nested, "keep"), "substantive")
+          end
+          assert_raises(AgentCodingTool::InvalidState) { handler.cleanup_preflight }
+          assert_raises(AgentCodingTool::InvalidState) { handler.remove_entry!("repo") }
+          assert File.directory?(workspace)
+          kind == :directory ? FileUtils.remove_entry(nested) : File.unlink(nested)
+        end
+        File.binwrite(nested, "later Finder bytes")
+        git("config", "core.excludesFile", File.join(@root, "excludes"), chdir: workspace)
+        File.write(File.join(@root, "excludes"), "ignored-keep\n")
+        File.write(File.join(workspace, "ignored-keep"), "substantive ignored work")
+        assert handler.cleanup_preflight.first.fetch("dirty")
+        assert_raises(AgentCodingTool::InvalidState) { handler.remove_entry!("repo") }
+        File.unlink(File.join(workspace, "ignored-keep"))
+        handler.remove_entry!("repo")
+        refute File.exist?(workspace)
+        metadata.reject { |path| path.start_with?(workspace + "/") }.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+        assert_equal "removed", handler.inspect!.fetch("entries").first.fetch("state")
+      end
+    end
+  end
+
+  # Real filesystem socket control, separate because confined workers may deny
+  # socket creation. Such denial fails this native gate; it is never skipped.
+  def test_repository_metadata_socket_refuses_disposal
+    fixture do
+      handler = manager
+      inventory = handler.create(task_id: "T", attempt: 1, task: @task, snapshot: @snapshot)
+      workspace = inventory.fetch("entries").first.fetch("path")
+      socket = Dir.chdir(workspace) { UNIXServer.new(".DS_Store") }
+      begin
+        assert File.lstat(File.join(workspace, ".DS_Store")).socket?
+        assert_raises(AgentCodingTool::InvalidState) { handler.cleanup_preflight }
+        assert_raises(AgentCodingTool::InvalidState) { handler.remove_entry!("repo") }
+        assert File.directory?(workspace)
+      ensure
+        socket.close
+      end
+    end
+  end
+
   def system_alias(path)
     { "/private/var/" => "/var/", "/private/tmp/" => "/tmp/" }.each do |canonical, alias_prefix|
       return path.sub(canonical, alias_prefix) if path.start_with?(canonical) &&

@@ -25,7 +25,7 @@ module AgentCodingTool
       [run_root, task_root].each { |path| directory!(path) }
       raise InvalidState, "abandon-preflight: evidence root is not private" unless
         File.stat(run_root).uid == Process.uid && (File.stat(run_root).mode & 0o077).zero?
-      attempts = Dir.children(task_root).map do |name|
+      attempts = IncidentalMetadata.children(task_root).map do |name|
         directory = File.join(task_root, name)
         directory!(directory)
         report_file = File.join(directory, "handoff.json")

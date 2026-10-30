@@ -73,17 +73,17 @@ module PublisherObservations
 
   # Returns pre-commit authority and staging observations. No fixture state
   # changes implicitly; real commit/index/ref effects stay in the native gate.
-  def before_commit_observations(mode: :default, untracked: [])
+  def before_commit_observations(mode: :default, untracked: [], files: [], staging_files: files)
     observations = [remote_observation, git_observation(["rev-parse", "HEAD"], "#{BASE}\n")]
-    observations << git_observation(["add", "-A", "--", "."]) if mode == :all
+    observations << git_observation(["--literal-pathspecs", "add", "-A", "--", *staging_files]) if mode == :all && !staging_files.empty?
     observations << git_observation(["add", "-N", "--", *untracked]) unless untracked.empty?
     observations
   end
 
   # Returns an explicit successful local commit response sequence. Exact argv
   # and selected paths must match; publication responses are declared separately.
-  def commit_observations(files, mode: :default, task_id: nil, untracked: [])
-    [*before_commit_observations(mode: mode, untracked: untracked),
+  def commit_observations(files, mode: :default, task_id: nil, untracked: [], staging_files: files)
+    [*before_commit_observations(mode: mode, untracked: untracked, files: files, staging_files: staging_files),
      git_observation(commit_arguments(files, mode: mode, task_id: task_id)),
      git_observation(["rev-parse", "HEAD"], "#{COMMIT}\n"), paths_observation(files)]
   end

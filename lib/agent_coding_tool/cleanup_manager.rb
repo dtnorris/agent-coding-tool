@@ -28,7 +28,7 @@ module AgentCodingTool
       outcome = state.dig("result", "outcome")
       rows = []
       owned_paths = []
-      run_dirs = Dir.children(root).sort.map { |entry| File.join(root, entry) }
+      run_dirs = IncidentalMetadata.children(root).sort.map { |entry| File.join(root, entry) }
       raise InvalidState, "cleanup: no task attempts" if run_dirs.empty?
       run_dirs.each do |run_dir|
         unless File.directory?(run_dir) && !File.symlink?(run_dir)
@@ -88,7 +88,7 @@ module AgentCodingTool
               blockers << "prepared identity changed"
             end
             if entry["state"] != "removed" && File.directory?(path)
-              dirty = !git(path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all").empty?
+              dirty = !IncidentalMetadata.git_status(path, ignored: true) { |*args| git(path, *args) }.empty?
               blockers << "worktree contains changes" if dirty
             end
             if entry["access"] == "write"
@@ -118,7 +118,7 @@ module AgentCodingTool
       inventory = preflight(id)
       raise InvalidState, "cleanup: #{inventory.fetch('attempts').flat_map { |row| row.fetch('blockers') }.uniq.join('; ')}" if inventory.fetch("blocked")
       root = File.join("#{@data_root}-runs", id)
-      Dir.children(root).sort.each do |attempt|
+      IncidentalMetadata.children(root).sort.each do |attempt|
         run_dir = File.join(root, attempt)
         record_path = File.join(run_dir, "worktrees.json")
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
@@ -216,7 +216,7 @@ module AgentCodingTool
     def git(path, *args)
       stdout, stderr, status = Open3.capture3("git", *args, chdir: path)
       raise RepositoryError, "cleanup: git #{args.first} failed: #{stderr.strip}" unless status.success?
-      stdout.strip
+      args.include?("-z") ? stdout : stdout.strip
     end
 
     def system_git(path, *args)

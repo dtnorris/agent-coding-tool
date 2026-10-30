@@ -226,7 +226,7 @@ module AgentCodingTool
       raise Error, "usage: agent-coding-tool deliver TASK" unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && argv.empty?
       root = File.join("#{@data_root}-runs", id)
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
-      dirs = Dir.children(root).map { |entry| File.join(root, entry) }.select { |path| File.directory?(path) }
+      dirs = IncidentalMetadata.children(root).map { |entry| File.join(root, entry) }.select { |path| File.directory?(path) }
       raise InvalidState, "#{id}: ambiguous run evidence" unless dirs.length == 1
       result = DeliveryManager.new(data_root: @data_root, coordinator: coordinator).deliver(id, run_dir: dirs.first)
       urls = result["prs"] ? result.fetch("prs").values.map { |pr| pr.fetch("url") } :
@@ -312,7 +312,7 @@ module AgentCodingTool
       root = File.join("#{@data_root}-runs", id)
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
       history = AttemptRecovery.new(data_root: @data_root).inspect(id)
-      records = Dir.children(root).sort.map do |attempt|
+      records = IncidentalMetadata.children(root).sort.map do |attempt|
         directory = File.join(root, attempt)
         historical = history.find { |row| row["run_dir"] == directory }
         raise InvalidState, "#{id}: partial/foreign run evidence" if File.symlink?(directory) || !File.directory?(directory)

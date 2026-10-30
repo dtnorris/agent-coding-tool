@@ -5,6 +5,7 @@ require "digest"
 require "json"
 require "open3"
 require "rbconfig"
+require "minitest/mock"
 
 class DeliveryManagerTest < Minitest::Test
   class Provider
@@ -152,6 +153,54 @@ class DeliveryManagerTest < Minitest::Test
       assert_equal 0, AgentCodingTool::CLI.run(["worktrees", "TASK"], root: workspace,
         data_root: data, out: output, err: StringIO.new)
       assert_match(/act\/TASK\/attempt-1/, output.string)
+    end
+  end
+
+  # Public discovery, delivery and cleanup use real native fixture ownership;
+  # only provider/liveness boundaries are faked. No GitHub publication occurs.
+  def test_public_delivery_and_cleanup_with_metadata_churn
+    fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, data|
+      roots = ["#{data}-runs", File.dirname(run_dir), run_dir, File.dirname(workspace), workspace,
+               File.join(workspace, "nested space\nname")]
+      metadata = roots.map do |directory|
+        FileUtils.mkdir_p(directory)
+        path = File.join(directory, ".DS_Store")
+        File.binwrite(path, "Finder\x00\xff".b)
+        path
+      end
+      output, errors = StringIO.new, StringIO.new
+      cli = AgentCodingTool::CLI.new(root: workspace, data_root: data, out: output, err: errors)
+      AgentCodingTool::DeliveryManager.stub(:new, manager) do
+        assert_equal 0, cli.run(["deliver", "TASK"]), errors.string
+      end
+      detail = JSON.parse(File.binread(File.join(run_dir, "delivery.json")))
+      assert_equal ["file.txt"], detail.fetch("paths")
+      assert_equal ["file.txt"], git(workspace, "diff", "--name-only", "-z", "HEAD^", "HEAD").split("\0")
+      metadata.each { |path| assert_equal "Finder\x00\xff".b, File.binread(path) }
+      metadata.each { |path| File.binwrite(path, "cleanup phase metadata") }
+      File.unlink(metadata.last)
+      state_store = AgentCodingTool::StateStore.new(File.join(data, "state"))
+      state = state_store.load("TASK")
+      state["result"]["outcome"] = "complete"
+      state_store.write("TASK", state)
+      inventory = JSON.parse(File.binread(File.join(run_dir, "worktrees.json")))
+      ordinary = inventory.fetch("entries").first.fetch("parent")
+      git(ordinary, "merge", "--ff-only", detail.fetch("commit_sha"))
+      provider.define_singleton_method(:integration) do |_remote, _url|
+        { "merged" => true, "head" => detail.fetch("commit_sha"), "base" => "main", "merge_commit_sha" => detail.fetch("commit_sha") }
+      end
+      liveness = Object.new
+      liveness.define_singleton_method(:check) { |_report, _inventory| :clear }
+      cleanup = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider, liveness: liveness)
+      AgentCodingTool::CleanupManager.stub(:new, cleanup) do
+        assert_equal 0, cli.run(["cleanup", "TASK", "--dry-run"]), errors.string
+        refute cleanup.preflight("TASK").fetch("blocked")
+        assert_equal 0, cli.run(["cleanup", "TASK"]), errors.string
+      end
+      refute File.exist?(workspace)
+      metadata.reject { |path| path.start_with?(workspace + "/") }.each do |path|
+        assert_equal "cleanup phase metadata", File.binread(path)
+      end
     end
   end
 

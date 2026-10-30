@@ -38,7 +38,7 @@ module AgentCodingTool
       check_path!(@root, directory: true)
       return [] unless File.exist?(@namespace) || File.symlink?(@namespace)
       check_path!(@namespace, directory: true)
-      documents = Dir.children(@namespace).sort.filter_map do |name|
+      documents = IncidentalMetadata.children(@namespace).sort.filter_map do |name|
         path = File.join(@namespace, name)
         # Only StateStore's private temporary is unpublished; never parse its
         # partial bytes when a reader races an atomic replacement.

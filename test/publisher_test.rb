@@ -75,12 +75,20 @@ class PublisherTest < Minitest::Test
   # All mode stages the complete selection, including tracked deletions.
   def test_all_sweeps_tracked_staged_deleted_and_untracked_paths
     files = %w[notes.txt state/T1.yml tasks/T1.yml tasks/T2.yml]
-    status = " M state/T1.yml\0M  tasks/T2.yml\0 D tasks/T1.yml\0?? notes.txt\0"
-    expect_git([*publication_observations(status: status, scope_paths: %w[state/T1.yml tasks/T2.yml tasks/T1.yml notes.txt]),
-      *commit_observations(files, mode: :all), *push_observations])
-    result = @publisher.publish(mode: :all)
-    assert result.fetch(:pushed)
-    assert_equal files, result.fetch(:files)
+    [" D", "D "].each do |deletion|
+      status = " M state/T1.yml\0M  tasks/T2.yml\0#{deletion} tasks/T1.yml\0?? notes.txt\0"
+      staging_files = deletion == "D " ? files - ["tasks/T1.yml"] : files
+      expect_git([*publication_observations(status: status, scope_paths: %w[state/T1.yml tasks/T2.yml tasks/T1.yml notes.txt]),
+        *commit_observations(files, mode: :all, staging_files: staging_files), *push_observations])
+      result = @publisher.publish(mode: :all)
+      assert result.fetch(:pushed)
+      assert_equal files, result.fetch(:files)
+    end
+    # A deletion-only index must commit directly, without a pathless add -A.
+    files = ["state/T1.yml"]
+    expect_git([*publication_observations(status: "D  state/T1.yml\0", scope_paths: files),
+      *commit_observations(files, mode: :all, staging_files: []), *push_observations])
+    assert_equal files, @publisher.publish(mode: :all).fetch(:files)
   end
 
   # All previews inspect the same status bytes and create no lock or commit.
@@ -220,7 +228,7 @@ class PublisherTest < Minitest::Test
     assert_match(/renamed selected file/, @publisher.publish(mode: :default, dry_run: true).fetch(:blocker))
     files = %w[notes.yml state/T1.yml]
     expect_git([*publication_observations(status: status, scope_paths: ["notes.yml"]),
-      *commit_observations(files, mode: :all), *push_observations])
+      *commit_observations(files, mode: :all, staging_files: ["notes.yml"]), *push_observations])
     assert_equal files, @publisher.publish(mode: :all).fetch(:files)
   end
 

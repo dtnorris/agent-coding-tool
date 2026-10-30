@@ -160,7 +160,7 @@ module AgentCodingTool
       task_root = File.join(@run_root, id)
       raise InvalidState, "#{id}: symlinked task evidence" if File.symlink?(task_root)
       FileUtils.mkdir_p(task_root, mode: 0o700)
-      attempt = Dir.children(task_root).length + 1
+      attempt = IncidentalMetadata.children(task_root).length + 1
       run_dir = File.join(task_root, "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{SecureRandom.hex(6)}")
       @report_path = File.join(run_dir, "handoff.json")
       invocation_id = SecureRandom.uuid
@@ -383,10 +383,7 @@ module AgentCodingTool
     # Reads strict managed evidence, recognizing only the validated private
     # external namespace. Unknown/foreign/malformed managed entries still refuse.
     def reports
-      entries = Dir.children(@run_root).reject do |entry|
-        entry == "launch.lock" ||
-          (entry == ".DS_Store" && File.lstat(File.join(@run_root, entry)).file?)
-      end
+      entries = IncidentalMetadata.children(@run_root).reject { |entry| entry == "launch.lock" }
       if entries.include?(ExternalActivity::NAMESPACE)
         external_activity.records
         entries.delete(ExternalActivity::NAMESPACE)
@@ -404,7 +401,7 @@ module AgentCodingTool
         unless task_id != ".DS_Store" && File.directory?(task_path) && !File.symlink?(task_path)
           raise InvalidState, "launch: foreign evidence entry; operator judgment required"
         end
-        Dir.children(task_path).map do |entry|
+        IncidentalMetadata.children(task_path).map do |entry|
           run_path = File.join(task_path, entry)
           path = File.join(run_path, "handoff.json")
           unless File.directory?(run_path) && !File.symlink?(run_path) && File.file?(path)
@@ -433,7 +430,7 @@ module AgentCodingTool
       task_root = File.join(@run_root, id)
       if File.exist?(task_root)
         raise InvalidState, "#{id}: foreign/symlinked task evidence" if File.symlink?(task_root) || !File.directory?(task_root)
-        Dir.children(task_root).each do |entry|
+        IncidentalMetadata.children(task_root).each do |entry|
           path = File.join(task_root, entry)
           unless File.directory?(path) && !File.symlink?(path) && File.file?(File.join(path, "handoff.json"))
             raise InvalidState, "#{id}: partial/foreign run artifacts; operator judgment required"
@@ -890,13 +887,13 @@ module AgentCodingTool
     def git!(*args, chdir: nil)
       stdout, stderr, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
       raise RepositoryError, "launch git failed: #{stderr.strip}" unless status.success?
-      stdout.strip
+      args.include?("-z") ? stdout : stdout.strip
     end
 
     def verify_checkout!(workspace, base)
       unless git!("remote", "get-url", base.fetch("remote"), chdir: workspace) == base.fetch("remote_url") &&
              git!("rev-parse", "HEAD", chdir: workspace) == base.fetch("pushed_sha") &&
-             git!("status", "--porcelain", "--untracked-files=all", chdir: workspace).empty?
+             IncidentalMetadata.git_status(workspace) { |*args| git!(*args, chdir: workspace) }.empty?
         raise InvalidState, "launch: unsafe checkout identity/state"
       end
       _stdout, _stderr, status = Open3.capture3("git", "symbolic-ref", "-q", "HEAD", chdir: workspace)

@@ -101,26 +101,28 @@ class RepoInspectorTest < Minitest::Test
   end
 
   def test_pushed_main_is_authoritative_and_local_state_is_only_observed
-    config = Config.new("/code", "origin", "main")
-    path = "/code/repo"
-    sha = "1" * 40
-    local = "2" * 40
-    responses = {
-      [path, ["git", "rev-parse", "--git-dir"]] => [".git\n", "", true],
-      [path, ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"]] => ["#{sha}\trefs/heads/main\n", "", true],
-      [path, ["git", "rev-parse", "HEAD"]] => ["#{local}\n", "", true],
-      [path, ["git", "status", "--porcelain"]] => [" M lib/x.rb\n", "", true],
-      [path, ["git", "remote", "get-url", "origin"]] => ["git@github.com:example/repo.git\n", "", true]
-    }
+    Dir.mktmpdir("act-inspection-") do |directory|
+      config = Config.new("/code", "origin", "main")
+      path = File.realpath(directory)
+      sha = "1" * 40
+      local = "2" * 40
+      responses = {
+        [path, ["git", "rev-parse", "--git-dir"]] => [".git\n", "", true],
+        [path, ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"]] => ["#{sha}\trefs/heads/main\n", "", true],
+        [path, ["git", "rev-parse", "HEAD"]] => ["#{local}\n", "", true],
+        [path, ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]] => [" M lib/x.rb\0", "", true],
+        [path, ["git", "remote", "get-url", "origin"]] => ["git@github.com:example/repo.git\n", "", true]
+      }
 
-    runner = runner_for(responses)
-    snapshot = AgentCodingTool::RepoInspector.new(config, runner:).snapshot("repo", "access" => "write")
+      runner = runner_for(responses)
+      snapshot = AgentCodingTool::RepoInspector.new(config, runner:).snapshot("repo", "access" => "write", "path" => path)
 
-    assert_equal sha, snapshot.fetch("pushed_sha")
-    assert_equal local, snapshot.fetch("local_head")
-    assert snapshot.fetch("local_dirty")
-    assert_equal "git@github.com:example/repo.git", snapshot.fetch("remote_url")
-    assert_equal 5, runner.commands.length
+      assert_equal sha, snapshot.fetch("pushed_sha")
+      assert_equal local, snapshot.fetch("local_head")
+      assert snapshot.fetch("local_dirty")
+      assert_equal "git@github.com:example/repo.git", snapshot.fetch("remote_url")
+      assert_equal 5, runner.commands.length
+    end
   end
 
   def test_missing_pushed_main_fails_closed

@@ -327,6 +327,7 @@ module AgentCodingTool
         raise InvalidState, "history: missing ownership after possible mutation"
       end
       root = WorktreeManager.canonical_system_path(@config.worktree_root)
+      previous_inventories = nil
       report.fetch("preparation").each do |name, prepared|
         path = File.join(root, id, *(report["worktree_layout"] == "attempt" ? ["attempt-#{report.fetch('attempt')}"] : []), name)
         manager = WorktreeManager.new(root: root, record_path: report.fetch("worktrees_path"))
@@ -339,11 +340,17 @@ module AgentCodingTool
         registry, error, status = Open3.capture3("git", "worktree", "list", "--porcelain", "-z", chdir: parent)
         raise InvalidState, "history: unreadable registry: #{error}" unless status.success?
         if File.exist?(path) || File.symlink?(path) || registry.split("\0").include?("worktree #{path}")
-          prior = directories(id).filter_map do |directory|
+          # Validate each complete earlier inventory once in this inspection,
+          # rather than once for every occupied repository path. Nothing is
+          # retained across inspections or closeout's independent preflights.
+          previous_inventories ||= directories(id).filter_map do |directory|
             record = File.join(directory, "worktrees.json")
             next unless File.file?(record) && !File.symlink?(record)
             inventory = WorktreeManager.new(root: root, record_path: record).inspect!
             next unless inventory["task_id"] == id && inventory["attempt"] < report.fetch("attempt")
+            inventory
+          end
+          prior = previous_inventories.filter_map do |inventory|
             inventory.fetch("entries").find { |entry| entry["path"] == path && entry["name"] == name &&
               entry.values_at("parent", "remote", "remote_url", "source_branch", "base_sha") ==
                 prepared.values_at("path", "remote", "remote_url", "branch", "pushed_sha") }

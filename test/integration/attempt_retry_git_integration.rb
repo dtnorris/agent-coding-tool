@@ -461,6 +461,62 @@ class AttemptRecoveryTest < Minitest::Test
       assert_includes error, "unknown host"
       assert_equal before, bytes
       assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
+
+      # A single inspection may share a complete prior-inventory proof, but
+      # every path still needs exactly one matching original authority. Later
+      # inspections must observe newly damaged native administration afresh.
+      recovery = AgentCodingTool::AttemptRecovery.new(data_root: @data)
+      second_path = File.join(File.dirname(second.fetch("worktrees_path")), "handoff.json")
+      second_bytes = File.binread(second_path)
+      changed = JSON.parse(second_bytes)
+      changed.fetch("preparation")["reader1"] = changed.fetch("preparation").fetch("writer").dup
+      begin
+        File.write(second_path, JSON.generate(changed))
+        damaged = bytes
+        row = recovery.inspect("T").find { |item| item["run_dir"] == File.dirname(second_path) }
+        assert_includes row.fetch("blockers").join, "unaccounted worktree"
+        assert_equal damaged, bytes
+      ensure
+        File.binwrite(second_path, second_bytes)
+      end
+
+      original_directory = File.dirname(first.fetch("worktrees_path"))
+      duplicate_directory = File.join(File.dirname(original_directory), "duplicate-ownership")
+      begin
+        FileUtils.cp_r(original_directory, duplicate_directory)
+        duplicate = JSON.parse(File.binread(File.join(duplicate_directory, "handoff.json")))
+        %w[worktrees_path jsonl_path stderr_path final_path prompt_path stdin_path session_transcript_path].each do |key|
+          next unless duplicate[key]&.start_with?(original_directory + "/")
+          duplicate[key] = File.join(duplicate_directory, File.basename(duplicate.fetch(key)))
+        end
+        duplicate.fetch("artifacts").each do |artifact|
+          artifact["path"] = File.join(duplicate_directory, File.basename(artifact.fetch("path")))
+        end
+        File.write(File.join(duplicate_directory, "handoff.json"), JSON.generate(duplicate))
+        duplicated = bytes
+        rows = recovery.inspect("T")
+        assert_equal 2, rows.count { |row| row["classification"] == "owned" }
+        assert_includes rows.find { |row| row["run_dir"] == File.dirname(second_path) }.fetch("blockers").join, "unaccounted worktree"
+        assert_equal duplicated, bytes
+      ensure
+        FileUtils.remove_entry(duplicate_directory) if File.directory?(duplicate_directory)
+      end
+
+      workspace = first.fetch("worktrees").fetch("entries").first.fetch("path")
+      admin = File.binread(File.join(workspace, ".git")).delete_prefix("gitdir: ").strip
+      pointer = File.join(admin, "gitdir")
+      original_pointer = File.binread(pointer)
+      begin
+        File.binwrite(pointer, "foreign\n")
+        damaged = bytes
+        assert_includes recovery.inspect("T").find { |row| row["run_dir"] == File.dirname(second_path) }.fetch("blockers").join,
+                        "native Git backpointer changed"
+        assert_equal damaged, bytes
+      ensure
+        File.binwrite(pointer, original_pointer)
+      end
+      assert_equal %w[owned verified_precreation_failure], recovery.inspect("T").map { |row| row.fetch("classification") }
+      assert_equal before, bytes
     end
   end
 

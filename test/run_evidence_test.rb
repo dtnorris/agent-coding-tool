@@ -3,6 +3,8 @@
 require_relative "test_helper"
 require "stringio"
 require "timeout"
+require "socket"
+require "minitest/mock"
 
 # Deterministic ACT records stand in only for the external worker/checkpoint
 # producer. All selection, transport, accounting and byte reading are real.
@@ -314,12 +316,255 @@ class RunEvidenceTest < Minitest::Test
     assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { AgentCodingTool::EvidenceSession.start(File.join(@temporary, "public"), @grant_path) }
   end
 
+  # Runs the actual adapter over pipes and closes only its owned fixture thread.
+  # EOF terminates the server; thread exceptions propagate after bounded cleanup.
+  def adapter_pipe
+    input, sender = IO.pipe
+    receiver, output = IO.pipe
+    worker = Thread.new do
+      begin
+        @adapter.serve(input, output)
+      ensure
+        input.close
+        output.close
+      end
+    end
+    worker.report_on_exception = false
+    yield sender, receiver
+  ensure
+    sender&.close unless sender&.closed?
+    if worker
+      joined = worker.join(2)
+      unless joined
+        worker.kill
+        worker.join
+        flunk "adapter did not terminate after fixture EOF" unless $!
+      end
+      worker.value if joined
+    end
+    receiver&.close unless receiver&.closed?
+  end
+
+  # Exchanges one real frame, retaining exact wire counts and explicit EOF errors.
+  # A refusal/early close is never replaced by a retry or a fabricated response.
+  def adapter_exchange(sender, receiver, request)
+    bytes = JSON.generate(request) + "\n"
+    sender.write(bytes)
+    @incoming_wire += bytes.bytesize
+    assert IO.select([receiver], [], [], 3), "adapter response missing"
+    line = receiver.gets
+    refute_nil line, "transient contention closed adapter"
+    @outgoing_wire += line.bytesize
+    JSON.parse(line)
+  end
+
+  # Every real ledger acquisition first collides with another descriptor. Release
+  # follows the actual failed flock, without sleeps, fake state reads or retries.
+  def test_adapter_ledger_transient_contention
+    before = @session.status
+    lock_path = File.join(@session_path, "lock")
+    competitor = File.open(lock_path, File::RDWR)
+    original = @session.method(:transaction)
+    operations, yielded, released = [], 0, 0
+    @session.define_singleton_method(:transaction) do |wait: 0, &operation|
+      raise "fixture competitor unavailable" unless competitor.flock(File::LOCK_EX | File::LOCK_NB)
+      operations << caller_locations(1, 1).first.base_label
+      original.call(wait: wait) do |state|
+        yielded += 1
+        operation.call(state)
+      end
+    ensure
+      competitor.flock(File::LOCK_UN)
+    end
+    trace = TracePoint.new(:c_return) do |event|
+      next unless event.method_id == :flock && event.return_value == false &&
+        event.self.is_a?(File) && event.self.path == lock_path
+      released += 1
+      competitor.flock(File::LOCK_UN)
+    end
+    @incoming_wire, @outgoing_wire = 0, 0
+    # Include the adapter worker; block-form tracing otherwise watches this thread.
+    trace.enable(target_thread: nil) do
+      adapter_pipe do |sender, receiver|
+        assert adapter_exchange(sender, receiver, rpc("server/discover"))["result"]
+        selected = adapter_exchange(sender, receiver,
+          rpc("tools/call", @first[:identity].merge("operation" => "select")))
+        refute selected.dig("result", "isError")
+        manifest = JSON.parse(selected.dig("result", "content", 0, "text"))
+        response = adapter_exchange(sender, receiver, rpc("tools/call", read_request(manifest)))
+        refute response.dig("result", "isError")
+        evidence = JSON.parse(response.dig("result", "content", 0, "text"))
+        bytes = evidence.fetch("data").unpack1("m0")
+        assert_equal @first[:contents]["final"].byteslice(0, 16_384), bytes
+        assert_equal Digest::SHA256.hexdigest(bytes), evidence.fetch("chunk_sha256")
+      end
+    end
+    @session.singleton_class.remove_method(:transaction)
+    after = @session.status
+    assert_equal before.slice("admitted_at", "expires_at", "grant_sha256", "limits"),
+      after.slice("admitted_at", "expires_at", "grant_sha256", "limits")
+    assert_equal 4, after["requests"] # Three frames plus the nonrefundable EOF attempt.
+    assert_equal @incoming_wire + @outgoing_wire, after["wire_bytes"]
+    assert_equal 16_384, after["decoded_bytes"]
+    assert_equal operations.length, yielded
+    assert_equal yielded, released
+    %w[admit status charge call].each { |name| assert_includes operations, name }
+    assert_equal after, AgentCodingTool::EvidenceSession.new(@session_path).status
+  ensure
+    trace&.disable
+    if @session.singleton_class.instance_methods(false).include?(:transaction)
+      @session.singleton_class.remove_method(:transaction)
+    end
+    competitor&.close
+  end
+
+  # Persistent real contention has a one-second acquisition bound. Only the
+  # wait clock advances synthetically; no ledger operation or charge is replayed.
+  def test_adapter_ledger_persistent_contention
+    ledger_path = File.join(@session_path, "state.json")
+    before = File.binread(ledger_path)
+    clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    started = clock
+    output = StringIO.new
+    File.open(File.join(@session_path, "lock"), File::RDWR) do |lock|
+      assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+      error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { @session.status }
+      assert_equal "session.busy", error.message # Controller/CLI defaults stay nonblocking.
+      Process.stub(:clock_gettime, ->(_kind) { clock }) do
+        IO.stub(:select, ->(_read, _write, _error, seconds) { clock += seconds; nil }) do
+          @adapter.serve(StringIO.new, output)
+        end
+      end
+      assert_operator clock - started, :>=, 1
+      assert_operator clock - started, :<=, 1.05
+      assert_equal before, File.binread(ledger_path)
+      assert_empty output.string
+      assert lock.flock(File::LOCK_EX | File::LOCK_NB), "competing lock was preserved"
+    end
+    assert_equal "active", @session.status["status"]
+  end
+
+  # A real competing writer stops/expires the fixture before releasing its lock.
+  # The waiting adapter rechecks lifecycle and emits/charges no evidence bytes.
+  def test_adapter_ledger_stop_and_expiry_after_contention
+    %w[stopped expired].each do |reason|
+      path = File.join(@temporary, "contended-#{reason}")
+      grant = @grant.merge("session_path" => path)
+      AgentCodingTool::EvidenceSession.start(path, write_json(File.join(@temporary, "#{reason}.json"), grant))
+      session = AgentCodingTool::EvidenceSession.new(path)
+      adapter = AgentCodingTool::EvidenceAdapter.new(session, err: StringIO.new)
+      before = session.status
+      lock_path = File.join(path, "lock")
+      output, observed, refusal = StringIO.new, false, nil
+      File.open(lock_path, File::RDWR) do |lock|
+        assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+        trace = TracePoint.new(:c_return, :raise) do |event|
+          if event.event == :raise
+            error = event.raised_exception
+            refusal = error.message if error.is_a?(AgentCodingTool::RunEvidenceReader::Refused)
+            next
+          end
+          next unless !observed && event.method_id == :flock && event.return_value == false &&
+            event.self.is_a?(File) && event.self.path == lock_path
+          observed = true
+          state = JSON.parse(File.binread(File.join(path, "state.json")))
+          if reason == "stopped"
+            state["stopped"] = true
+          else
+            state["expires_at"] = Time.now.to_f - 1
+          end
+          AgentCodingTool::EvidenceSession.write(path, state)
+          lock.flock(File::LOCK_UN)
+        end
+        begin
+          trace.enable { adapter.serve(StringIO.new, output) }
+        ensure
+          trace.disable
+        end
+      end
+      after = session.status
+      assert observed, "adapter never observed the competing writer"
+      assert_equal "lifecycle.#{reason}", refusal
+      assert_equal reason, after["status"]
+      assert_empty output.string
+      assert_equal before.slice("admitted_at", "grant_sha256", "limits", "requests", "wire_bytes", "decoded_bytes"),
+        after.slice("admitted_at", "grant_sha256", "limits", "requests", "wire_bytes", "decoded_bytes")
+      assert_equal before["expires_at"], after["expires_at"] if reason == "stopped"
+    end
+  end
+
+  # Status/stop expose only fixed tunnel outcomes, independently of launcher
+  # source identity; malformed receipts cannot become an arbitrary data echo.
+  def test_tunnel_status_is_closed_and_independent_of_candidate_identity
+    result = { "stage" => "readiness", "reason" => "failed", "local_cleanup" => "blocked",
+      "admission_stop" => "stopped", "retrieval" => "not_attested", "hosted_shutdown" => "not_observed", "saved_settings" => "not_modified" }
+    path = File.join(@session_path, "tunnel-result.json")
+    write_json(path, result)
+    assert_equal result, @session.status["tunnel"]
+    assert_equal result, AgentCodingTool::EvidenceSession.new(@session_path).stop["tunnel"]
+    write_json(path, result.merge("reason" => "private-response"))
+    error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { @session.status }
+    assert_equal "tunnel.receipt", error.message
+    refute_includes error.message, "private-response"
+  end
+
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
     output, error, status = Open3.capture3(RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", *arguments)
     assert status.success?, "CLI #{arguments.first} failed: #{error}"
     JSON.parse(output)
+  end
+
+  # Real kernel contention is released only after a fresh public CLI observes
+  # failed flock. No sleeps, simulated ledger operations, ps or tunnel startup.
+  # Persistent contention refuses, preserving accounting and the competing lock.
+  def test_native_stop_serializes_once_and_refuses_persistent_contention
+    @session.admit
+    @session.charge(wire: 123, decoded: 45)
+    before = @session.status
+    probe = <<~'RUBY'
+      trace = TracePoint.new(:c_return) do |event|
+        next unless event.method_id == :flock
+        STDERR.puts(event.return_value == false ? "LOCK_CONTENDED" : "LOCK_ACQUIRED")
+        STDERR.flush
+      end
+      trace.enable
+      load ARGV.shift
+    RUBY
+    command = [RbConfig.ruby, "-e", probe, File.expand_path("../bin/agent-coding-tool", __dir__),
+      "evidence", "stop", "--session", @session_path]
+    File.open(File.join(@session_path, "lock"), File::RDWR) do |lock|
+      assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+      output, error, status = Open3.capture3(*command)
+      refute status.success?
+      assert_empty output
+      assert_includes error, "session.busy"
+      refute JSON.parse(File.binread(File.join(@session_path, "state.json")))["stopped"]
+      Open3.popen3(*command) do |input, output, error, waiter|
+        input.close
+        assert IO.select([error], [], [], 5), "stop never observed the contended lock"
+        assert_equal "LOCK_CONTENDED\n", error.gets
+        lock.flock(File::LOCK_UN)
+        response = JSON.parse(output.read)
+        status = waiter.value
+        diagnostics = error.read
+        assert status.success?, diagnostics
+        assert_equal "stopped", response["status"]
+        assert_equal before.slice("requests", "wire_bytes", "decoded_bytes", "expires_at", "grant_sha256"),
+          response.slice("requests", "wire_bytes", "decoded_bytes", "expires_at", "grant_sha256")
+        # A single acquisition proves stop cannot hit its former status race.
+        assert_equal 1, diagnostics.scan("LOCK_ACQUIRED").length
+      end
+      assert lock.flock(File::LOCK_EX | File::LOCK_NB), "competing descriptor remains usable"
+    end
+    assert_equal "stopped", cli("stop", "--session", @session_path)["status"]
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { @session.admit }
+    # A malformed receipt still refuses its output after durable revocation.
+    write_json(File.join(@session_path, "tunnel-result.json"), "reason" => "private-value")
+    error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { @session.stop }
+    assert_equal "tunnel.receipt", error.message
+    assert JSON.parse(File.binread(File.join(@session_path, "state.json")))["stopped"]
   end
 
   # Exercises public start/select/read/status/stop plus real stdio discovery,
@@ -412,5 +657,277 @@ class RunEvidenceTest < Minitest::Test
       assert_operator error.read.bytesize, :<=, 4096
     end
     assert_equal "expired", cli("status", "--session", expiry_path)["status"]
+  end
+
+  # Makes only an external client/service fake. It verifies the actual credential
+  # environment, launches the configured real adapter and offers an offline wire.
+  # The client key appears only in this declared synthetic assertion and .env.
+  def tunnel_fixture
+    client = File.join(@temporary, "fixture-client")
+    source = <<~'RUBY'
+      require "json"
+      require "socket"
+      require "open3"
+      require "shellwords"
+      exit 41 unless ENV["CONTROL_PLANE_API_KEY"] == "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
+      exit 42 if ENV.key?("OPENAI_TUNNEL_KEY") || ENV.key?("OTHER_SECRET")
+      config = JSON.parse(File.binread(ARGV.fetch(2)))
+      capacity = config.dig("admin_ui", "log_buffer_events")
+      exit 45 unless capacity.is_a?(Integer) && capacity.positive?
+      command = Shellwords.split(config.fetch("mcp").fetch("commands").first.fetch("command"))
+      exit 43 unless command.take(2) == ["/usr/bin/env", "-i"]
+      exit 44 if command.any? { |argument| argument.include?(ENV.fetch("CONTROL_PLANE_API_KEY")) }
+      input, output, waiter = Open3.popen2(*command)
+      wire = UNIXServer.new("wire")
+      health = TCPServer.new("127.0.0.1", 0)
+      Thread.new do
+        loop do
+          connection = health.accept
+          connection.gets
+          connection.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+          connection.close
+        end
+      end
+      File.write(config.fetch("health").fetch("url_file"), "http://127.0.0.1:#{health.addr[1]}\n", perm: 0o600)
+      connection = wire.accept
+      while (frame = connection.gets)
+        input.write(frame)
+        input.flush
+        response = output.gets
+        break unless response
+        connection.write(response)
+      end
+      input.close
+      waiter.value
+    RUBY
+    RubyVM::InstructionSequence.compile(source)
+    File.write(client, "#!#{RbConfig.ruby}\n" + source, perm: 0o700)
+    @dotenv = File.join(@temporary, ".env")
+    File.write(@dotenv, "OPENAI_TUNNEL_KEY='ACT29_SYNTHETIC_CREDENTIAL_7fQ9'\nOTHER_SECRET=unrelated-sentinel\n", perm: 0o600)
+    @runtime = File.join(@temporary, "shared-runtime")
+    Dir.mkdir(@runtime, 0o700)
+    client
+  end
+
+  # Opens one fresh-process public session from an unrelated cwd, yields its wire
+  # and owned controller, then requests bounded stop even if an assertion fails.
+  def with_tunnel(client, name, seconds: 10, controller_loss: false)
+    path = File.join(@temporary, name)
+    @grant["session_path"] = path
+    @grant["transport"]["endpoint"] = "tunnel_fixture/main"
+    @grant["limits"]["seconds"] = seconds
+    grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), @grant)
+    arguments = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+      "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
+    arguments = controller_loss_command + arguments.drop(2) if controller_loss
+    environment = { "OPENAI_TUNNEL_KEY" => nil, "CONTROL_PLANE_API_KEY" => nil, "OTHER_SECRET" => nil }
+    Open3.popen3(environment, *arguments, chdir: @temporary) do |input, output, error, waiter|
+      begin
+        assert IO.select([output], [], [], 5), "public tunnel startup did not finish"
+        line = output.gets
+        assert line, "public tunnel startup refused before READY"
+        assert_equal "ready", JSON.parse(line)["status"]
+        wire = Dir.chdir(path) { UNIXSocket.new("wire") }
+        yield wire, waiter, path
+      ensure
+        AgentCodingTool::EvidenceSession.new(path).stop if File.exist?(File.join(path, "state.json"))
+        wire&.close unless wire&.closed?
+        input.close
+        status = Timeout.timeout(5) { waiter.value }
+        assert status.exited? || status.signaled?
+        @tunnel_diagnostics = error.read
+        refute_includes @tunnel_diagnostics, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
+        refute_includes @tunnel_diagnostics, "unrelated-sentinel"
+      end
+    end
+  end
+
+  # Exercises real dotenv -> client credential channel -> actual adapter -> exact
+  # reader bytes through public open/status/stop, two selections and later reuse.
+  # Missing delivery or a broken run binding fails this very composed journey.
+  def test_native_tunnel_cli_dotenv_two_sessions_and_negative_controls
+    client = tunnel_fixture
+    original_dotenv = File.binread(@dotenv)
+    original_mode = File.stat(@dotenv).mode
+    output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, RbConfig.ruby,
+      "-I", File.expand_path("../lib", __dir__), "-e",
+      'require "agent_coding_tool"; AgentCodingTool::CLI.run(["help"]); abort "unexpected dotenv loading" if defined?(Dotenv)', chdir: @temporary)
+    assert status.success?, error
+    refute_includes output, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
+    later = write_run(2)
+    with_tunnel(client, "tunnel-first") do |wire, _waiter, path|
+      exchange = lambda do |request|
+        wire.write(JSON.generate(request) + "\n")
+        assert IO.select([wire], [], [], 3), "bounded tunnel response missing"
+        JSON.parse(wire.gets)
+      end
+      assert exchange.call(rpc("server/discover"))["result"]
+      assert exchange.call(rpc("tools/list"))["result"]
+      [@first, later].each do |run|
+        selected = exchange.call(rpc("tools/call", run[:identity].merge("operation" => "select")))
+        refute selected.dig("result", "isError")
+        manifest = JSON.parse(selected.dig("result", "content", 0, "text"))
+        manifest.fetch("artifacts").each do |name, spec|
+          next if spec["status"] == "missing"
+          bytes, offset = "".b, 0
+          loop do
+            response = exchange.call(rpc("tools/call", read_request(manifest, name, offset: offset)))
+            refute response.dig("result", "isError")
+            evidence = JSON.parse(response.dig("result", "content", 0, "text"))
+            chunk = evidence.fetch("data").unpack1("m0")
+            assert_equal Digest::SHA256.hexdigest(chunk), evidence["chunk_sha256"]
+            assert_equal Digest::SHA256.file(spec.fetch("path")).hexdigest, evidence["sha256"]
+            bytes << chunk
+            break unless evidence["next_offset"]
+            offset = evidence.fetch("next_offset")
+          end
+          assert_equal File.binread(spec.fetch("path")), bytes
+        end
+        handoff = File.join(run[:run], "handoff.json")
+        original = File.binread(handoff)
+        write_json(handoff, JSON.parse(original).merge("session_id" => "broken-required-binding"))
+        assert exchange.call(rpc("tools/call", read_request(manifest))).dig("result", "isError")
+        File.binwrite(handoff, original)
+        assert exchange.call(rpc("tools/call", read_request(manifest).merge("task_id" => "OUTSIDE"))).dig("result", "isError")
+      end
+      bad = exchange.call(rpc("tools/call", {}, meta: metadata(tool: true).merge("unknown" => "private-context")))
+      assert_equal "metadata.unknown_member", bad.dig("error", "data", "stage")
+      assert_equal 2, cli("status", "--session", path)["selected_runs"].length
+      assert_equal "stopped", cli("stop", "--session", path)["status"]
+    end
+    adapter_diagnostics = File.binread(File.join(@temporary, "tunnel-first", "adapter-diagnostics.jsonl"))
+    assert_includes adapter_diagnostics, "reader.refused"
+    refute_includes adapter_diagnostics, "private-context"
+    assert_operator adapter_diagnostics.bytesize, :<=, 4096
+    # The same command/client source and .env are used with a new approved grant.
+    with_tunnel(client, "tunnel-later") do |wire, _waiter, path|
+      wire.write(JSON.generate(rpc("tools/call", later[:identity].merge("operation" => "select"))) + "\n")
+      assert IO.select([wire], [], [], 3), "later selection response missing"
+      response = JSON.parse(wire.gets)
+      manifest = JSON.parse(response.dig("result", "content", 0, "text"))
+      wire.write(JSON.generate(rpc("tools/call", read_request(manifest))) + "\n")
+      assert IO.select([wire], [], [], 3), "later read response missing"
+      evidence = JSON.parse(JSON.parse(wire.gets).dig("result", "content", 0, "text"))
+      assert_equal later[:contents]["final"].byteslice(0, 16_384), evidence.fetch("data").unpack1("m0")
+      assert_equal "stopped", cli("stop", "--session", path)["status"]
+    end
+    assert_equal original_dotenv, File.binread(@dotenv)
+    assert_equal original_mode, File.stat(@dotenv).mode
+    %w[tunnel-first tunnel-later].each do |name|
+      receipt = JSON.parse(File.binread(File.join(@temporary, name, "tunnel-result.json")))
+      assert_equal "not_attested", receipt["retrieval"]
+      assert_equal "not_observed", receipt["hosted_shutdown"]
+      refute_equal "unknown", receipt["local_cleanup"]
+      refute_equal "blocked", receipt["local_cleanup"]
+      assert_equal "stopped", cli("status", "--session", File.join(@temporary, name))["status"]
+    end
+  end
+
+  # Returns a test-only public CLI bootstrap. USR1 exits the controller with a
+  # distinct status without the cooperative TERM wait, while Ruby at_exit can
+  # finalize coverage. This stimulus does not prove SIGKILL behavior.
+  def controller_loss_command
+    [RbConfig.ruby, "-e", 'trap("USR1") { exit 86 }; load ARGV.shift',
+      File.expand_path("../bin/agent-coding-tool", __dir__)]
+  end
+
+  # Proves independent expiry/controller-loss cleanup, endpoint collision and
+  # nonrenewable session accounting through actual public process boundaries.
+  # An unrelated live child is a sentinel and must survive every owned teardown.
+  def test_native_tunnel_lifecycle_and_exclusive_ownership
+    client = tunnel_fixture
+    sentinel = Process.spawn(RbConfig.ruby, "-e", "sleep 30", out: File::NULL, err: File::NULL)
+    with_tunnel(client, "controller-loss", controller_loss: true) do |wire, waiter, path|
+      wire.write(JSON.generate(rpc("ping")) + "\n")
+      assert IO.select([wire], [], [], 3), "lifecycle probe response missing"
+      assert JSON.parse(wire.gets)["result"]
+      before = cli("status", "--session", path)
+      arguments = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+        "--session", path, "--grant", File.join(@temporary, "controller-loss-grant.json"),
+        "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
+      output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments)
+      refute status.success?
+      assert_empty output
+      assert_includes error, "tunnel.session_reused"
+      assert_equal "active", cli("status", "--session", path)["status"]
+      # A separately approved new admission still cannot take this endpoint.
+      occupied = File.join(@temporary, "occupied")
+      proposal = @grant.merge("session_path" => occupied)
+      write_json(File.join(@temporary, "occupied-grant.json"), proposal)
+      occupied_arguments = arguments.map { |value| value == path ? occupied : value == File.join(@temporary, "controller-loss-grant.json") ? File.join(@temporary, "occupied-grant.json") : value }
+      _output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *occupied_arguments)
+      refute status.success?
+      assert_includes error, "tunnel.occupied"
+      refute File.exist?(occupied)
+      # Observe actual controller death before any fixture stop/cleanup path.
+      Process.kill("USR1", waiter.pid)
+      controller_status = Timeout.timeout(5) { waiter.value }
+      assert controller_status.exited?
+      assert_equal 86, controller_status.exitstatus
+      receipt_path = File.join(path, "tunnel-result.json")
+      Timeout.timeout(5) { IO.select(nil, nil, nil, 0.05) until File.exist?(receipt_path) }
+      receipt = JSON.parse(File.binread(receipt_path))
+      assert_equal "controller_lost", receipt["reason"]
+      assert_equal "stopped", receipt["admission_stop"]
+      assert_includes %w[owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped], receipt["local_cleanup"]
+      after = cli("status", "--session", path)
+      assert_equal "stopped", after["status"]
+      health = URI.parse(File.binread(File.join(path, "health-url")).strip)
+      assert_raises(Errno::ECONNREFUSED) { TCPSocket.new(health.host, health.port) }
+      assert_equal before.values_at("wire_bytes", "decoded_bytes", "expires_at", "limits"),
+        after.values_at("wire_bytes", "decoded_bytes", "expires_at", "limits")
+      _output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments)
+      refute status.success?
+      assert_includes error, "tunnel.session_reused"
+      assert_equal after, cli("stop", "--session", path)
+      assert_equal after, cli("stop", "--session", path)
+      assert_equal 1, Process.kill(0, sentinel)
+    end
+    with_tunnel(client, "finite-expiry", seconds: 1) do |_wire, waiter, path|
+      assert Timeout.timeout(4) { waiter.value }.exited?
+      result = cli("status", "--session", path)
+      assert_equal "expired", result.dig("tunnel", "reason")
+      assert_equal "stopped", result["status"]
+      assert_equal 1, Process.kill(0, sentinel)
+    end
+  ensure
+    if sentinel
+      Process.kill("TERM", sentinel)
+      Process.waitpid(sentinel)
+    end
+  end
+
+  # Credential rejection happens locally without a prompt. Wrong delivery to
+  # the synthetic client fails startup; stopping a startup leaves its failure
+  # distinct from cleanup. No consumed grant is automatically retried.
+  def test_native_tunnel_startup_failures_are_safe_and_nonzero
+    client = tunnel_fixture
+    File.write(@dotenv, "OPENAI_TUNNEL_KEY=wrong-synthetic-delivery\n", perm: 0o600)
+    %w[failed-client stopped-startup].each do |name|
+      path = File.join(@temporary, name)
+      proposal = @grant.merge("session_path" => path,
+        "transport" => @grant.fetch("transport").merge("endpoint" => "tunnel_fixture/main"),
+        "limits" => @grant.fetch("limits").merge("seconds" => 1))
+      grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), proposal)
+      arguments = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+        "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
+      Open3.popen3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments) do |input, output, error, waiter|
+        input.close
+        if name == "stopped-startup"
+          Timeout.timeout(3) { IO.select(nil, nil, nil, 0.02) until File.exist?(File.join(path, "tunnel.json")) }
+          cli("stop", "--session", path)
+        end
+        refute Timeout.timeout(4) { waiter.value }.success?
+        assert_empty output.read
+        diagnostics = error.read
+        refute_includes diagnostics, "wrong-synthetic-delivery"
+        result = JSON.parse(File.binread(File.join(path, "tunnel-result.json")))
+        assert_equal "readiness", result["stage"]
+        assert_includes %w[expired stopped], result["reason"]
+        assert_equal "not_attested", result["retrieval"]
+        assert_equal "stopped", result["admission_stop"]
+        assert_equal 0, cli("status", "--session", path)["decoded_bytes"]
+      end
+    end
   end
 end

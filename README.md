@@ -1410,32 +1410,102 @@ with `File.realpath`, rather than comparing aliases. The parent must already
 exist. `start` exclusively creates a new admission; it never overwrites one.
 No ACT lifecycle or checkpoint state changes.
 
+The reusable foreground start/status/stop route is `open`. It uses the installed
+client's `sample_mcp_stdio_local` contract (`mcp.commands`, `channel: main`),
+without historical Downloads files, generated task-specific source, saved-profile
+changes or a new hosted tunnel. Grants and exact run selections are data.
+Before each session David separately approves the grant's endpoint/account,
+whole personal Work workspace audience, manager, tasks, artifacts, finite limits
+and teardown. `approved: true` records that decision; key availability is not
+consent. Confirm local **and hosted** endpoint idleness, serialize other managers'
+connection use and record prior saved settings for owner comparison.
+
+Create one canonical operator-owned 0700 runtime directory outside repositories,
+ACTD and run evidence; use this same shared directory for every session.
+`open` takes a kernel endpoint lock there and conservatively refuses any other
+native `tunnel-client` process. Missing inventory means unknown ownership and
+refuses. External clients do not share the lock, so owner-confirmed exclusivity
+is still required. Never bypass refusals or signal historical PIDs.
+
+Before live approval, qualify the installed client's `run --help`,
+`help quickstart`, Ruby/Bundler, native `ps`, process groups, loopback sockets and
+canonical executable paths offline. The client must support
+`CONTROL_PLANE_API_KEY`, `health.url_file` and `/readyz`. An upgrade needs fresh
+qualification. This example uses the canonical installed binary behind the
+Homebrew symlink. After candidate review, qualification and concrete approval:
+
 ```sh
-act evidence start --grant /private/approved-grant.json --session /private/read-session
+act evidence open --grant /private/approved-grant.json --session /private/read-session \
+  --env-file /Users/davidnorris/code/agent-coding-tool/.env \
+  --client /opt/homebrew/Cellar/tunnel-client/0.0.18/libexec/tunnel-client \
+  --runtime-dir /private/shared-evidence-runtime
+# In another terminal:
 act evidence status --session /private/read-session
-act evidence serve --session /private/read-session
 act evidence stop --session /private/read-session
 ```
 
-Run `serve` as the foreground stdio command of the already-supported Work
-tunnel connection (`sample_mcp_stdio_local`, `mcp.commands`, `channel: main`):
+Stop waits at most one second for ledger lock contention, then commits admission
+revocation once and reports that committed snapshot. Sustained contention refuses
+with `session.busy`; it never renews a grant or signals a historical process.
 
-```yaml
-mcp:
-  commands:
-    - channel: main
-      command: "/absolute/path/to/act evidence serve --session /private/read-session"
-```
+`--env-file` is explicit and canonical, even from another cwd/worktree; do not
+copy the ordinary ACT `.env`. A **nonblank process `OPENAI_TUNNEL_KEY` takes
+precedence**; otherwise the Ruby dotenv gem parses only the requested key.
+Command/variable substitution is disabled. No unrelated entries enter global
+`ENV`; other ACT commands never load dotenv. Missing, blank, duplicate, malformed,
+unreadable or noncanonical file/value refuses before client startup, with no
+interactive secret fallback. Nonblank process values must also satisfy the
+bounded printable-ASCII credential contract. The file's bytes, permissions and
+Git state are unchanged. Host metadata checks must confirm
+`git -C /Users/davidnorris/code/agent-coding-tool check-ignore -- .env` names
+`.env`, and `git -C /Users/davidnorris/code/agent-coding-tool ls-files -- .env`
+prints nothing. Real file presence/permissions and preservation are host-only
+checks; implementation tests use synthetic files.
 
-This is a connection configuration fragment, not an instruction to replace shared
-settings. The owner must first serialize shared connection use, record its prior
-configuration, qualify the installed tunnel/Ruby/Bundler and command paths, and
-authorize the exact endpoint. Preserve the existing credential handling; the
-adapter receives no key. One catalog refresh at session setup is sufficient:
-the tool schema does not change when another approved task completes. This code
-does not start or own a tunnel, socket, daemon or hosted service. Stop only this
-session and its foreground adapter; preserve shared infrastructure. The owner
-separately verifies hosted exposure ended and saved settings remained intact.
+The credential goes only in the client child's `CONTROL_PLANE_API_KEY`. Its
+value never enters argv, grants, generated configuration, diagnostics, hashes or
+receipts. The configured adapter starts through `env -i` before Ruby starts,
+receiving neither credential nor unrelated dotenv values. Client output/logs are
+discarded and tracing is disabled. The installed client requires a positive UI
+log-buffer capacity; ACT limits it to one in-memory event, rather than disabling
+the buffer. Never paste/upload/request the real key or file, and exclude both
+from generic file/environment capture.
+
+Keep `open` in the foreground. An independent owner polls durable stop/expiry and
+controller pipe loss, and signals only its retained, unreaped direct child's
+verified group before reaping it. A failed ownership/group observation remains
+blocked. Client `/readyz` HTTP 200 is distinct from successful Work retrieval and
+qualified account/audience isolation; admission `active` alone is not readiness.
+`tunnel-result.json` in the private admission, also returned by `status`/`stop`, records fixed stage/reason,
+admission stop, owned-group signal/reap outcome, retrieval `not_attested`, hosted
+shutdown `not_observed` and no saved-settings write. Startup/cleanup failure exits
+nonzero; cleanup cannot erase startup failure. The owner independently observes
+native owned-process absence, hosted shutdown and preserved saved settings.
+
+`credential.*` errors require checking the explicit host file or process setting;
+`tunnel.ownership_unknown` requires native process permissions; `tunnel.occupied`
+requires resolving exclusive use; `admission.refused` requires checking the
+private grant/paths/scope. The session's bounded `adapter-diagnostics.jsonl`
+retains only the adapter's fixed stage enums, across reconnects, without client
+output or metadata values. Client delivery (`delivery.failed`), readiness
+(`readiness.*`), adapter `metadata.*`/`reader.refused` and cleanup diagnostics
+remain separate fixed codes, without raw exceptions or client responses. No
+refusal asks for a key in chat or a secret prompt.
+
+Preserve failed admissions; never blindly reopen a consumed grant. A later
+session requires a new separately approved grant with a new `session_path` and
+the same unchanged `open` command, shared runtime directory and canonical `.env`.
+Ordinary approved selections need no repeated consent, source edits, rebuilt
+packages or catalog replacement. At most one connection refresh at setup is
+needed. Retain ledgers: reconnects/restarts do not replenish budgets.
+`status` and `stop` use the durable session path through the supported installed
+ACT command, without candidate HEAD/hash checks or historical package identity.
+Keep the implementation available during a session for adapter restarts.
+
+The lower-level `evidence start --grant ... --session ...` admission and
+`evidence serve --session ...` stdio commands remain for an independently owned
+external transport. They do not own a tunnel. `open` owns only its foreground
+client/group; preserve all shared infrastructure and saved connection settings.
 
 Select from authoritative `handoff.json` records using **all four** identities;
 the CLI and `read_run_evidence` tool use the same resolver:
@@ -1473,7 +1543,12 @@ hashes, never transcript bodies. It durably reserves requests and byte totals
 before release; reconnecting/restarting cannot reset them. Both absolute wall
 and monotonic deadlines apply; stop remains a tombstone. One foreground server
 holds a kernel owner lock. Stdio EOF/broken output, stop and expiry close it;
-there are no owned children to signal. Waiting I/O polls stop/expiry at 250 ms.
+the stdio adapter itself has no children to signal. `open` has a separate client
+owner as described above. Idle I/O polls stop/expiry at 250 ms. The adapter waits
+at most one second for each ledger lock, then checks the original lifecycle and
+budgets under that lock. Persistent contention still closes the stream. Waiting
+never renews admission or replays a selection, read, reservation or byte charge;
+the tunnel owner's independent expiry checks retain their nonblocking reads.
 Retain the admission directory through owner closeout; deleting/recreating it is
 not a restart or renewal. Changed scope or an extended lease needs new approval.
 Fixed bounded stderr stages contain no metadata values, artifact bodies or
@@ -1483,6 +1558,17 @@ before business dispatch. MCP versions 2026-07-28 discovery and the three
 qualified legacy initialize versions are supported.
 
 Focused synthetic qualification: `bundle exec ruby -Ilib:test test/run_evidence_test.rb`.
+Credential qualification: `bundle exec ruby -Ilib:test test/tunnel_credential_test.rb`.
+The native tunnel case exercises public dotenv/client delivery/adapter reading,
+two selections and a later grant; only the external client/service and
+worker/checkpoint producer are fake. Removing delivery or run binding must fail
+that same case. Sandbox-denied native ownership observation is an environment
+blocker, not a composed-journey PASS. Real acceptance still needs two separately
+approved Mac-to-Work sessions using useful completed runs, host-oracle source
+and chunk digests, final/transcript/available checkpoint/validation reads,
+explicit missing evidence and a supported next action. Record commands, elapsed
+time and operator interventions separately for setup, within-session selection
+and later startup. No result upload, body paste or push establishes retrieval.
 The native public-entry case fakes only worker/checkpoint production, exercises
 real stdio/CLI handoffs and compares returned bytes to independent file oracles.
 Actual-host two-run retrieval, account boundary and hosted teardown remain

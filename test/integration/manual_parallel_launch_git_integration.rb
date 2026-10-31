@@ -28,6 +28,18 @@ class ManualParallelLaunchTest < Minitest::Test
     output
   end
 
+  # Runs repeated checkpoint/status variants through the real public parser,
+  # returning stdout or failing on a nonzero result. The continuous cold journey
+  # still crosses fresh interpreters; native Git, files and validators run here.
+  def overlap_command!(*args, cold:)
+    return cli!(*args) if cold
+
+    output, error = StringIO.new, StringIO.new
+    result = AgentCodingTool::CLI.run(args, root: Dir.pwd, data_root: @data, out: output, err: error)
+    assert_equal 0, result, "#{args.inspect}: #{error.string}"
+    output.string
+  end
+
   # Starts A manually, preserving staged/unstaged, binary, untracked and ignored
   # work in its legitimate external worktree. Optional main movement ages only A.
   # Only source movement needs an earlier T preparation to refresh. Native Git
@@ -48,7 +60,7 @@ class ManualParallelLaunchTest < Minitest::Test
     setup_git("worktree", "add", "-b", "external-A", @external, @base, chdir: @ordinary)
     if checkpoint
       File.write(File.join(@external, "file.txt"), "earlier checkpoint candidate\n")
-      cli!("checkpoint", "record", "A", "--workspace", @external)
+      overlap_command!("checkpoint", "record", "A", "--workspace", @external, cold: cold)
     end
     File.binwrite(File.join(@external, "file.txt"), "staged\n")
     setup_git("add", "file.txt", chdir: @external)
@@ -106,8 +118,8 @@ class ManualParallelLaunchTest < Minitest::Test
           assert_equal "act/T/attempt-1", setup_git("branch", "--show-current", chdir: report.fetch("workspace"))
           refute_equal @external, report.fetch("workspace")
           assert_equal "worker", File.binread(File.join(report.fetch("workspace"), "worker-change.txt"))
-          cli!("checkpoint", "record", "T", "--workspace", report.fetch("workspace"))
-          cli!("checkpoint", "verify", "T", "--workspace", report.fetch("workspace"))
+          overlap_command!("checkpoint", "record", "T", "--workspace", report.fetch("workspace"), cold: active && advance)
+          overlap_command!("checkpoint", "verify", "T", "--workspace", report.fetch("workspace"), cold: active && advance)
           assert_equal [], report.fetch("collision_authorization").fetch("verified_conflicts")
           assert_equal ["A"], report.fetch("collision_authorization").fetch("unverified_manual_conflicts").map { |row| row.fetch("task_id") }
           assert_equal "operator_authorized_manual_overlap", @store.load("T").dig("write_overlap", "basis")
@@ -119,7 +131,7 @@ class ManualParallelLaunchTest < Minitest::Test
           assert_nil @store.load("A")["result"]
           assert_empty Dir.glob("#{@data}-runs/A/*")
           assert_empty Dir.glob("#{run_dir}/delivery*")
-          cli_output = cli!("status", "T")
+          cli_output = overlap_command!("status", "T", cold: active && advance)
           assert_includes cli_output, "external isolation/liveness unverified"
           assert_includes cli_output, "managed delivery disabled"
           consumed = File.binread(File.join(@root, "stdin"))

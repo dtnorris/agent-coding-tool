@@ -12,6 +12,7 @@ module AgentCodingTool
     INFO = { "name" => "act-run-evidence", "version" => "0.1.0" }.freeze
     TOOL = "read_run_evidence"
     FRAME = 65_536
+    LOCK_WAIT = 1
     CLIENT_HINTS = { "openai/locale" => String, "webplus/i18n" => String,
       "openai/userAgent" => String, "openai/userLocation" => Hash,
       "openai/subject" => String, "openai/session" => String,
@@ -124,7 +125,7 @@ module AgentCodingTool
         raise ArgumentError unless params.keys.sort == %w[arguments name] && params["name"] == TOOL
         @stage = "reader.dispatch"
         begin
-          evidence = @session.call(params["arguments"])
+          evidence = @session.call(params["arguments"], wait: LOCK_WAIT)
           { "content" => [{ "type" => "text", "text" => JSON.generate(evidence) }], "isError" => false }
         rescue RunEvidenceReader::Refused
           @stage = "reader.refused"
@@ -149,6 +150,7 @@ module AgentCodingTool
     # names. Unavailable/full diagnostic sinks disable observation, never block.
     def observe
       bytes = "ACT_EVIDENCE #{JSON.generate('stage' => @stage)}\n"
+      @diagnostics = @err.stat.size if @err.respond_to?(:stat) && @err.stat.file?
       return if @diagnostics + bytes.bytesize > 4096
       @diagnostics += bytes.bytesize
       if @err.respond_to?(:write_nonblock)
@@ -163,14 +165,14 @@ module AgentCodingTool
     # controller EOF or broken output closes this process; no child is spawned.
     def ready(io, writing: false)
       loop do
-        raise EOFError if %w[stopped expired].include?(@session.status.fetch("status"))
+        raise EOFError if %w[stopped expired].include?(@session.status(wait: LOCK_WAIT).fetch("status"))
         selected = IO.select(writing ? [@input] : [io], writing ? [io] : [], [], 0.25)
         next unless selected
         if writing && selected[0].include?(@input)
           incoming = @input.read_nonblock(4096, exception: false)
           raise EOFError unless incoming
           unless incoming == :wait_readable
-            @session.charge(wire: incoming.bytesize)
+            @session.charge(wire: incoming.bytesize, wait: LOCK_WAIT)
             @pending << incoming
             raise RunEvidenceReader::Refused, "envelope.frame_size" if @pending.bytesize > FRAME
           end
@@ -193,7 +195,7 @@ module AgentCodingTool
         incoming = input.read_nonblock([4096, FRAME - @pending.bytesize].min, exception: false)
         next if incoming == :wait_readable
         raise EOFError unless incoming
-        @session.charge(wire: incoming.bytesize)
+        @session.charge(wire: incoming.bytesize, wait: LOCK_WAIT)
         @pending << incoming
       end
     end
@@ -208,7 +210,7 @@ module AgentCodingTool
         evidence = RunEvidenceStore.parse(response.dig("result", "content", 0, "text"))
         decoded = evidence.fetch("data", "").unpack1("m0").bytesize
       end
-      @session.charge(wire: bytes.bytesize, decoded: decoded)
+      @session.charge(wire: bytes.bytesize, decoded: decoded, wait: LOCK_WAIT)
       until bytes.empty?
         ready(output, writing: true)
         count = output.write_nonblock(bytes, exception: false)
@@ -219,12 +221,13 @@ module AgentCodingTool
 
     # Serves one foreground connection under the kernel owner lock. Returns nil
     # on finite termination. Every frame attempt consumes a durable request;
-    # malformed JSON is a fixed refusal. Filesystem/accounting failures close.
+    # ledger acquisition waits at most one second without replaying work.
+    # Malformed JSON is a fixed refusal; persistent lock/accounting failures close.
     def serve(input, output)
       @input = input
       @session.serve_owner do
         loop do
-          @session.admit
+          @session.admit(wait: LOCK_WAIT)
           bytes = frame(input)
           begin
             response = dispatch(RunEvidenceStore.parse(bytes))

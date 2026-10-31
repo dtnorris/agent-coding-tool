@@ -105,9 +105,10 @@ module AgentCodingTool
     # reader as MCP. Returns zero or a fixed refusal, never executes evidence.
     def evidence_command(argv)
       action = argv.shift
+      require_relative "evidence_tunnel" if action == "open"
       options = {}
       parser = OptionParser.new do |opts|
-        %w[session grant task invocation codex-session handle revision artifact].each do |name|
+        %w[session grant task invocation codex-session handle revision artifact env-file client runtime-dir].each do |name|
           opts.on("--#{name} VALUE") { |value| options[name] = value }
         end
         %w[attempt offset length].each do |name|
@@ -117,6 +118,7 @@ module AgentCodingTool
       parser.require_exact = true
       parser.parse!(argv)
       allowed = case action
+                when "open" then %w[session grant env-file client runtime-dir]
                 when "start" then %w[session grant]
                 when "serve", "status", "stop" then %w[session]
                 when "select" then %w[session task attempt invocation codex-session]
@@ -124,12 +126,28 @@ module AgentCodingTool
                 else []
                 end
       raise RunEvidenceReader::Refused, "cli.fields" unless argv.empty? && !allowed.empty? && options.keys.sort == allowed.sort
+      if action == "open"
+        return EvidenceTunnel.new(session: options.fetch("session"), grant: options.fetch("grant"),
+          env_file: options.fetch("env-file"), client: options.fetch("client"), runtime_dir: options.fetch("runtime-dir"),
+          out: @out, err: @err).run
+      end
       if action == "start"
         result = EvidenceSession.start(options.fetch("session"), options.fetch("grant"))
       else
         session = EvidenceSession.new(options.fetch("session"))
         case action
-        when "serve" then return EvidenceAdapter.new(session, err: @err).serve($stdin, @out) || 0
+        when "serve"
+          sink = @err
+          diagnostic_path = File.join(File.expand_path(options.fetch("session")), "adapter-diagnostics.jsonl")
+          if File.exist?(diagnostic_path) || File.symlink?(diagnostic_path)
+            RunEvidenceStore.bytes(diagnostic_path, root: File.expand_path(options.fetch("session")), private: true)
+            sink = File.open(diagnostic_path, File::WRONLY | File::APPEND | File::NOFOLLOW)
+          end
+          begin
+            return EvidenceAdapter.new(session, err: sink).serve($stdin, @out) || 0
+          ensure
+            sink.close unless sink.equal?(@err)
+          end
         when "status" then result = session.status
         when "stop" then result = session.stop
         else
@@ -144,8 +162,17 @@ module AgentCodingTool
       end
       @out.puts JSON.generate(result)
       0
-    rescue RunEvidenceReader::Refused, SystemCallError, JSON::ParserError, ArgumentError, OptionParser::ParseError
-      @err.puts "ERROR: evidence session refused; check private grant, exact run identity and session status"
+    rescue TunnelCredential::Refused => error
+      @err.puts "ERROR: #{error.message}; check the explicit canonical ACT .env or nonblank OPENAI_TUNNEL_KEY; no secret prompt"
+      2
+    rescue RunEvidenceReader::Refused, SystemCallError, JSON::ParserError, ArgumentError, OptionParser::ParseError => error
+      if action == "open"
+        reason = %w[tunnel.session_reused tunnel.endpoint tunnel.occupied tunnel.path tunnel.ownership_unknown].include?(error.message) ? error.message : "admission.refused"
+        @err.puts "ERROR: #{reason}; check endpoint exclusivity, private grant/paths and native process permissions; use a new approved session after admission"
+        return 2
+      end
+      detail = error.is_a?(RunEvidenceReader::Refused) && error.message == "session.busy" ? " (session.busy)" : ""
+      @err.puts "ERROR: evidence session refused#{detail}; check private grant, exact run identity and session status"
       2
     end
 
@@ -1576,6 +1603,11 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          evidence open --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY --env-file /CANONICAL/ACT/.env
+                        --client /CANONICAL/tunnel-client --runtime-dir SHARED_PRIVATE_DIRECTORY
+                              foreground finite owner-approved tunnel; explicit canonical paths
+                              nonblank OPENAI_TUNNEL_KEY overrides .env; no key prompt or global dotenv load
+                              later session needs a new approved grant/path; status/stop use durable ledger
           evidence start --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY
           evidence {serve|status|stop} --session PRIVATE_DIRECTORY
           evidence select --session DIR --task TASK --attempt N --invocation ID --codex-session ID

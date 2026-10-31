@@ -12,6 +12,11 @@ module AgentCodingTool
     Refused = RunEvidenceReader::Refused
     LIMITS = { "seconds" => 3600, "requests" => 8192,
       "wire_bytes" => 128 * 1024 * 1024, "decoded_bytes" => 64 * 1024 * 1024 }.freeze
+    TUNNEL_RESULT = { "stage" => %w[delivery readiness lifecycle],
+      "reason" => %w[client_start_failed deadline failed stopped expired exhausted interrupted controller_lost lost],
+      "local_cleanup" => %w[not_started unknown blocked owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped],
+      "admission_stop" => %w[stopped blocked], "retrieval" => %w[not_attested],
+      "hosted_shutdown" => %w[not_observed], "saved_settings" => %w[not_modified] }.freeze
 
     # Creates one exclusive permanent admission directory from private operator
     # JSON. Returns status. Refuses reused directories, unknown fields or scope;
@@ -81,10 +86,17 @@ module AgentCodingTool
 
     # Serializes private state changes. Callers may inspect status after expiry;
     # malformed, replaced or symlinked ledger files refuse with no evidence bytes.
-    def transaction
+    # Calls default to immediate refusal; stop and the adapter can wait within
+    # one second. Only acquisition waits: no ledger work is retried or renewed.
+    def transaction(wait: 0)
       RunEvidenceStore.bytes(File.join(@path, "lock"), root: @path, private: true)
       File.open(File.join(@path, "lock"), File::RDWR | File::NOFOLLOW) do |lock|
-        raise Refused, "session.busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + wait
+        until lock.flock(File::LOCK_EX | File::LOCK_NB)
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          raise Refused, "session.busy" unless remaining.positive?
+          IO.select(nil, nil, nil, [0.05, remaining].min)
+        end
         raw = RunEvidenceStore.bytes(File.join(@path, "state.json"), root: @path, private: true)
         state = RunEvidenceStore.parse(raw)
         raise Refused, "session.binding" unless state.dig("grant", "session_path") == @path
@@ -108,25 +120,49 @@ module AgentCodingTool
     end
 
     # Returns bounded admission/accounting metadata; never returns artifact bodies.
-    def status
-      transaction do |state|
-        state.slice("grant_sha256", "admitted_at", "expires_at", "requests", "wire_bytes", "decoded_bytes").merge(
-          "status" => reason(state), "limits" => state.dig("grant", "limits"),
-          "selected_runs" => state.fetch("selections").values.map { |config| config.fetch("binding") })
-      end
+    # Optional wait bounds only lock acquisition, retaining nonblocking defaults.
+    def status(wait: 0)
+      transaction(wait: wait) { |state| status_for(state) }
+    end
+
+    # Formats one ledger snapshot using only closed tunnel receipt enums. Returns
+    # bounded metadata or raises for an invalid receipt; never echoes raw values.
+    def status_for(state)
+      result = state.slice("grant_sha256", "admitted_at", "expires_at", "requests", "wire_bytes", "decoded_bytes").merge(
+        "status" => reason(state), "limits" => state.dig("grant", "limits"),
+        "selected_runs" => state.fetch("selections").values.map { |config| config.fetch("binding") })
+      result["tunnel"] = tunnel_result if File.exist?(File.join(@path, "tunnel-result.json")) || File.symlink?(File.join(@path, "tunnel-result.json"))
+      result
+    end
+
+    # Returns only closed, fixed tunnel result enums for supported status/stop.
+    # No implementation hash or PID lookup is needed. Tampered receipts refuse
+    # instead of reflecting arbitrary data, client messages or potential secrets.
+    def tunnel_result
+      raw = RunEvidenceStore.bytes(File.join(@path, "tunnel-result.json"), root: @path, private: true)
+      result = RunEvidenceStore.parse(raw)
+      raise Refused, "tunnel.receipt" unless raw.bytesize <= 4096 && result.is_a?(Hash) &&
+        result.keys.sort == TUNNEL_RESULT.keys.sort && TUNNEL_RESULT.all? { |key, allowed| allowed.include?(result[key]) }
+      result
     end
 
     # Permanently stops admission. Polling servers close themselves without
     # historical PID signaling; repeated stops do not mint a replacement grant.
+    # Commit before formatting the same snapshot, without reacquiring the lock.
+    # Even an invalid tunnel receipt cannot undo durable admission revocation.
     def stop
-      transaction { |state| state["stopped"] = true }
-      status
+      state = transaction(wait: 1) do |current|
+        current["stopped"] = true
+        current
+      end
+      status_for(state)
     end
 
     # Charges one bounded incoming frame before parsing, including refusals and
     # notifications. EOF/partial input reservations are deliberately not refunded.
-    def admit
-      transaction do |state|
+    # Optional wait affects acquisition only; lifecycle is checked after locking.
+    def admit(wait: 0)
+      transaction(wait: wait) do |state|
         raise Refused, "lifecycle.#{reason(state)}" unless reason(state) == "active"
         state["requests"] += 1
       end
@@ -134,8 +170,9 @@ module AgentCodingTool
 
     # Charges exact incoming/outgoing wire and decoded bytes before release.
     # Invalid amounts or cumulative overruns raise without releasing a response.
-    def charge(wire:, decoded: 0)
-      transaction do |state|
+    # Optional wait never replays charges or extends the original admission.
+    def charge(wire:, decoded: 0, wait: 0)
+      transaction(wait: wait) do |state|
         # The last admitted frame may finish at the request limit.
         current = reason(state)
         raise Refused, "lifecycle.#{current}" if %w[stopped expired].include?(current)
@@ -151,10 +188,11 @@ module AgentCodingTool
     # Selects an exact run or reads a pinned selection. Closed business fields
     # exclude metadata, paths and commands. Every receipt contains only bounded
     # identities, paths and digests, preserving original worker evidence in place.
-    # Returns evidence metadata/bytes; invalid scope, revision or identity refuses.
-    def call(request)
+    # Returns evidence metadata/bytes; optional wait is acquisition only. Invalid
+    # scope, revision or identity refuses without replaying the reader operation.
+    def call(request, wait: 0)
       raise Refused, "reader.fields" unless request.is_a?(Hash)
-      transaction do |state|
+      transaction(wait: wait) do |state|
         current = reason(state)
         raise Refused, "lifecycle.#{current}" if %w[stopped expired].include?(current)
         grant = state.fetch("grant")

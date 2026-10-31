@@ -14,6 +14,11 @@
     "FeedbackContract#test_default_yaml_then_ordinary_and_bad_yaml_refusal",
     "FeedbackContract#test_delivery_requires_complete_act_feedback"
   ],
+  "test/git_contract/retry_recovery_contract.rb": [
+    "RetryRecoveryContract#test_terminal_outcome_decisions_use_native_ownership_observations",
+    "RetryRecoveryContract#test_tampered_artifacts_and_closeout_refuse_without_mutation",
+    "RetryRecoveryContract#test_ownership_delivery_candidate_and_changed_state_refusals"
+  ],
   "test/git_contract/native_contract.rb": [
     "NativeGitContract#test_immutable_skill_object_read",
     "NativeGitContract#test_authoritative_refs_snapshot_and_dirty_state",

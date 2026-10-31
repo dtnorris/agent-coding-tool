@@ -449,6 +449,13 @@ module AgentCodingTool
   # prove escaped/reparented descendants terminated and grants no cleanup right;
   # safety also requires the per-attempt sandbox and protected shared Git admin.
   class RetryLiveness
+    # Accepts the capture3 boundary for bounded lsof observations in recovery
+    # contracts. The default executes native Open3; host identity, PID checks and
+    # liveness decisions remain real. Construction performs no external work.
+    def initialize(capture: Open3)
+      @capture = capture
+    end
+
     # Returns local host/boot identity, or nil when it cannot be verified. No ps,
     # nested sandbox, worker, process enumeration or network access is performed.
     def self.host_identity
@@ -520,7 +527,7 @@ module AgentCodingTool
       end
       inventory.fetch("entries").each do |entry|
         next unless File.directory?(entry.fetch("path"))
-        output, error, status = Open3.capture3("lsof", "-n", "-P", "+D", entry.fetch("path"))
+        output, error, status = @capture.capture3("lsof", "-n", "-P", "+D", entry.fetch("path"))
         return :active if status.exitstatus == 0 && !output.strip.empty?
         return :unknown unless status.exitstatus == 1 && output.empty?
         next if error.empty?

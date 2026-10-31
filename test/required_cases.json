@@ -421,7 +421,6 @@
       "AttemptRecoveryTest#test_missing_ownership_after_native_mutation_refuses_without_changes",
       "AttemptRecoveryTest#test_legacy_fixed_path_mixed_history_is_accurately_classified",
       "AttemptRecoveryTest#test_dirty_resources_refuse_before_any_closeout_or_retry_mutation",
-      "AttemptRecoveryTest#test_tampered_artifacts_and_closeout_refuse_without_mutation",
       "AttemptRecoveryTest#test_unsuccessful_execution_statuses_can_close_and_retry",
       "AttemptRecoveryTest#test_child_start_failure_is_preserved_and_can_retry",
       "AttemptRecoveryTest#test_already_attempted_preparation_cannot_be_reused",
@@ -429,7 +428,6 @@
       "AttemptRecoveryTest#test_interrupted_evidence_publication_remains_precisely_blocked",
       "AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry",
       "AttemptRecoveryTest#test_sibling_terminal_review_is_independent_in_both_orders",
-      "AttemptRecoveryTest#test_ownership_delivery_candidate_and_changed_state_refusals",
       "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle",
       "AttemptRecoveryTest#test_retry_uses_original_contract_after_repository_and_access_changes"
     ],

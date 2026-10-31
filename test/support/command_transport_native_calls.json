@@ -1,0 +1,140 @@
+[
+  {
+    "path": "lib/agent_coding_tool/attempt_recovery.rb",
+    "method": "host_identity",
+    "source": "Open3.capture3(\"/usr/sbin/sysctl\", \"-n\", \"kern.bootsessionuuid\")",
+    "sha256": "d474a012321a04c177feff73a9cbfec9b97dad5cd01a15e70b048706e29a68e9"
+  },
+  {
+    "path": "lib/agent_coding_tool/attempt_recovery.rb",
+    "method": "check",
+    "source": "@capture.capture3(\"lsof\", \"-n\", \"-P\", \"+D\", entry.fetch(\"path\"))",
+    "sha256": "ca36af79b3d6148c2f4ef712d8ec5db279a6e27105ed42b051623893f59e1f56"
+  },
+  {
+    "path": "lib/agent_coding_tool/checkpoint.rb",
+    "method": "gate",
+    "source": "system(*command, chdir: workspace)",
+    "sha256": "84ae8281b03815a4ce6311f0b4344ba5726e0c2b5d1ab228aa060b51cb693652"
+  },
+  {
+    "path": "lib/agent_coding_tool/cleanup_manager.rb",
+    "method": "check",
+    "source": "Open3.capture3(\"lsof\", \"-n\", \"-P\", \"+D\", entry.fetch(\"path\"))",
+    "sha256": "5c19e346e75239510e0ee363d3ff8521cf2ebb8c60fe396ca7141555b81f71fa"
+  },
+  {
+    "path": "lib/agent_coding_tool/command_transport.rb",
+    "method": "call",
+    "source": "Open3.capture3(env, *argv, stdin_data: input, **options)",
+    "sha256": "c56e5ca9b598028b8b41f3c0845d105fcdf8fb6cdc20da6948f4ecbac307de57"
+  },
+  {
+    "path": "lib/agent_coding_tool/command_transport.rb",
+    "method": "capture_process",
+    "source": "Open3.popen3(env, *argv, **options)",
+    "sha256": "787c95eaf98566e9c98800a2e0e75308eefdbb1ac1d726cf3dcaf12156c02a09"
+  },
+  {
+    "path": "lib/agent_coding_tool/delivery_manager.rb",
+    "method": "run_command!",
+    "source": "Open3.popen3(environment,\n                       *argv, chdir: workspace, unsetenv_others: true, pgroup: true)",
+    "sha256": "8e4642a31932d7662004c9475daeb5431e3bb589970ee724d796b61210b6be12"
+  },
+  {
+    "path": "lib/agent_coding_tool/delivery_manager.rb",
+    "method": "request",
+    "source": "Open3.capture3(*argv)",
+    "sha256": "cae1daa414a33b61149d6542df3322ab36476c96ed0860c9f20a45565f9466e2"
+  },
+  {
+    "path": "lib/agent_coding_tool/delivery_manager.rb",
+    "method": "verify!",
+    "source": "Open3.capture3(*command, remote, mutation.to_s, commit)",
+    "sha256": "e0a8d562ec04177f2f0ae79a46a789ca1cb4a916e9a5f44870ee327c1947e060"
+  },
+  {
+    "path": "lib/agent_coding_tool/evidence_tunnel.rb",
+    "method": "run",
+    "source": "fork",
+    "sha256": "8d0c7ac992af2f4913b47d425af0fe08dca35d157cbf27e40c203589b983d1fd"
+  },
+  {
+    "path": "lib/agent_coding_tool/evidence_tunnel.rb",
+    "method": "inventory!",
+    "source": "Open3.capture3(clean_environment, \"/bin/ps\", \"-axo\", \"comm=\", unsetenv_others: true)",
+    "sha256": "bd21f8935e3f0e3bbe27653575b18ab2354821d0c5176356fa05824d6fbcce96"
+  },
+  {
+    "path": "lib/agent_coding_tool/evidence_tunnel.rb",
+    "method": "own",
+    "source": "Process.spawn(environment, @client, \"run\", \"--config\", File.join(@path, \"tunnel.json\"),\n          unsetenv_others: true, pgroup: true, in: File::NULL, out: File::NULL, err: File::NULL, chdir: @path)",
+    "sha256": "585ae2c6cb7360d786e0e3cb8946a03d70795bf1d5511d8feb9b10d9e0902637"
+  },
+  {
+    "path": "lib/agent_coding_tool/evidence_tunnel.rb",
+    "method": "terminal_group?",
+    "source": "Open3.capture3(clean_environment, \"/bin/ps\", \"-axo\", \"pid=,pgid=,stat=\", unsetenv_others: true)",
+    "sha256": "308a07e9bce8ee2e4cfe51b50eab2456b0ed158d98abed0e02e7599215550b6d"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "initialize",
+    "source": "Process.method(:spawn)",
+    "sha256": "c03a96f51deed4fad3ebc480fad4d3f67f02e84f5dcb34426d0da235019d4360"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "verify_running_process!",
+    "source": "Open3.capture3(\"ps\", \"-o\", \"ppid=\", \"-o\", \"pgid=\", \"-p\", child.to_s)",
+    "sha256": "e1064d3e5c4c44bf515c7d8fc7d78808a73fd42b30c0b52deeb7f5e28f2f6e48"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "preflight_codex!",
+    "source": "Open3.capture3(worker_env, @codex, \"--version\", unsetenv_others: true)",
+    "sha256": "83d190030e4d8c92a78090d833d4ab0d38226bcc8f0e3e4394d36b17f8bd09ed"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "preflight_codex!",
+    "source": "Open3.capture3(worker_env, @codex, \"exec\", \"--help\", unsetenv_others: true)",
+    "sha256": "f8f38646e5b21e3b4125ba8d62f0e799ba85fa4718ab52ced3953cd0cdd3dfb0"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "preflight_codex!",
+    "source": "Open3.capture3(worker_env, @codex, \"login\", \"--help\", unsetenv_others: true)",
+    "sha256": "aeff9d22ea55cd5b52f4413a7206b49fac78a274ed252be7b286669a64c502ed"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "preflight_codex!",
+    "source": "Open3.capture3(worker_env, @codex, \"login\", \"status\", unsetenv_others: true)",
+    "sha256": "c508848c87ec2cc42e456dd989b7527308c479aa947c9ff09587f413e6f8f5bf"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "sandbox_probe!",
+    "source": "Open3.capture3(worker_env, @codex, \"sandbox\", \"--help\", unsetenv_others: true)",
+    "sha256": "cccabba853acaae90fc942af2ad0f70092f93541bc7eeb20d7ac75840a0dbabb"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "sandbox_probe!",
+    "source": "Open3.capture3(\n            worker_env(fixture: true).merge(\"CODEX_HOME\" => isolated_home), @codex,\n            \"-c\", 'sandbox_mode=\"workspace-write\"',\n            \"-c\", \"sandbox_workspace_write.network_access=false\",\n            \"-c\", \"sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1) + [@report.fetch('fixture').fetch('path')])}\",\n            \"-c\", \"sandbox_workspace_write.exclude_tmpdir_env_var=true\",\n            \"-c\", \"sandbox_workspace_write.exclude_slash_tmp=true\",\n            \"sandbox\", \"--\",\n            \"/bin/sh\", \"-c\", 'for path; do if printf breach > \"$path\" 2>/dev/null; then printf \"1\\\\n\"; else printf \"0\\\\n\"; fi; done',\n            \"act-probe\", *targets.map(&:first),\n            chdir: workspace, unsetenv_others: true\n          )",
+    "sha256": "8ca74fbd0eb12425cace9ef1dee11f505e88b2aa21d77a86fbd5d7adb42a4e6b"
+  },
+  {
+    "path": "lib/agent_coding_tool/launcher.rb",
+    "method": "execute",
+    "source": "@spawner.call(worker_env(fixture: true), *command, chdir: @report.fetch(\"workspace\"),\n                              in: input_r, out: stdout_w, err: stderr_w, pgroup: true, unsetenv_others: true)",
+    "sha256": "8c54b45aad503300179695544635690f17657032ef44e276a25ef9d98326f1ce"
+  },
+  {
+    "path": "lib/agent_coding_tool/preflight_recovery.rb",
+    "method": "clear_liveness?",
+    "source": "Open3.capture3(\"lsof\", \"-n\", \"-P\", \"+D\", entry.fetch(\"path\"))",
+    "sha256": "5c19e346e75239510e0ee363d3ff8521cf2ebb8c60fe396ca7141555b81f71fa"
+  }
+]

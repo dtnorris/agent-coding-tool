@@ -16,9 +16,10 @@ module AgentCodingTool
     REASONING = %w[minimal low medium high xhigh].freeze
 
     def initialize(coordinator:, data_root:, source_root:, out: $stdout, err: $stderr,
-                   codex: "codex", spawner: Process.method(:spawn))
+                   codex: "codex", spawner: Process.method(:spawn), transport: NativeCommandTransport.new)
       @coordinator, @data_root, @source_root = coordinator, File.realpath(data_root), File.realpath(source_root)
       @out, @err, @codex, @spawner = out, err, codex, spawner
+      @transport = transport
       @run_root = "#{@data_root}-runs"
     end
 
@@ -101,7 +102,7 @@ module AgentCodingTool
         ExternalActivity.new(data_root: @data_root,
           task_store: TaskStore.new(File.join(@data_root, "tasks")),
           state_store: StateStore.new(File.join(@data_root, "state")),
-          repo_inspector: RepoInspector.new(Config.load(File.join(@data_root, "config.yml"))))
+          repo_inspector: RepoInspector.new(Config.load(File.join(@data_root, "config.yml")), transport: @transport))
     end
 
     def safe_root!
@@ -166,7 +167,7 @@ module AgentCodingTool
       invocation_id = SecureRandom.uuid
       manager = WorktreeManager.new(root: config.worktree_root, record_path: File.join(run_dir, "worktrees.json"),
                                     attempt_paths: true, invocation_id: invocation_id,
-                                    inventory_written: -> { @report["worktree_creation"] = "inventory_persisted"; save_report })
+                                    inventory_written: -> { @report["worktree_creation"] = "inventory_persisted"; save_report }, transport: @transport)
       sources = manager.creation_readiness!(task: task, snapshot: state.fetch("snapshot"))
       Dir.mkdir(run_dir, 0o700)
       @report = {
@@ -222,7 +223,7 @@ module AgentCodingTool
         end
         verified_conflicts = current_conflicts
         @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") } +
-          AttemptRecovery.new(data_root: @data_root).protected_paths(id, before_attempt: attempt)
+          AttemptRecovery.new(data_root: @data_root, transport: @transport).protected_paths(id, before_attempt: attempt)
         provision_fixture!(inventory)
         sandbox_probe!(inventory, workspace, run_dir)
         heads = checked_status!(id, allow_write_collision: allow_write_collision)
@@ -251,7 +252,7 @@ module AgentCodingTool
             @err.puts "PARALLEL DEVELOPMENT: operator authorized; new worker isolation verified by worktree/sandbox checks; external worker isolation and activity are unverified; managed delivery disabled."
           end
         end
-        AttemptRecovery.new(data_root: @data_root).retry_ready!(id, current_run: run_dir) if attempt > 1
+        AttemptRecovery.new(data_root: @data_root, transport: @transport).retry_ready!(id, current_run: run_dir) if attempt > 1
         raise InvalidState, "launch: task/preparation changed before reservation" unless
           state_store.load(id) == state && TaskStore.new(File.join(@data_root, "tasks")).load(id) == task &&
           File.binread(state.fetch("prompt_path")) == prompt && @coordinator.launch_prompt(id).b == prompt
@@ -273,7 +274,7 @@ module AgentCodingTool
         save_report
         result = execute(command, lock)
         if result == 0 && @report["status"] == "exited"
-          delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
+          delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
           if manual_conflicts.any?
             @err.puts "DELIVERY DEFERRED: unverified manual overlap; managed delivery disabled for this attempt; preserve candidate for operator review"
           elsif delivery.configured?(id) && !lock.flock(File::LOCK_EX | File::LOCK_NB)
@@ -351,7 +352,7 @@ module AgentCodingTool
 
     def validate_authorities!(task, state)
       config = Config.load(File.join(@data_root, "config.yml"))
-      inspector = RepoInspector.new(config)
+      inspector = RepoInspector.new(config, transport: @transport)
       task.fetch("repositories").each do |name, spec|
         old = state.fetch("snapshot").fetch(name)
         unless inspector.repository_authority(name, spec) == [old.fetch("remote_url"), old.fetch("branch")]
@@ -437,7 +438,7 @@ module AgentCodingTool
           end
         end
       end
-      AttemptRecovery.new(data_root: @data_root).retry_ready!(id)
+      AttemptRecovery.new(data_root: @data_root, transport: @transport).retry_ready!(id)
       reports.select { |report| report["task_id"] == id }.each do |report|
         unless TERMINAL.include?(report["status"])
           raise InvalidState, "#{id}: previous run liveness unknown; operator judgment required"
@@ -570,9 +571,9 @@ module AgentCodingTool
         end
       end
       root = Config.load(File.join(@data_root, "config.yml")).worktree_root
-      manager = WorktreeManager.new(root: root, record_path: record_path)
+      manager = WorktreeManager.new(root: root, record_path: record_path, transport: @transport)
       # Only host-validated exact candidate commits may replace the prepared HEAD.
-      overrides = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator)
+      overrides = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
                                  .verified_delivery_heads(other_id, report, run_dir)
       inventory = manager.inspect!(head_overrides: overrides)
       unless report["worktrees"].is_a?(Hash) &&
@@ -885,7 +886,7 @@ module AgentCodingTool
     end
 
     def git!(*args, chdir: nil)
-      stdout, stderr, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
+      stdout, stderr, status = @transport.call(["git", *args], cwd: chdir)
       raise RepositoryError, "launch git failed: #{stderr.strip}" unless status.success?
       args.include?("-z") ? stdout : stdout.strip
     end
@@ -896,7 +897,7 @@ module AgentCodingTool
              IncidentalMetadata.git_status(workspace) { |*args| git!(*args, chdir: workspace) }.empty?
         raise InvalidState, "launch: unsafe checkout identity/state"
       end
-      _stdout, _stderr, status = Open3.capture3("git", "symbolic-ref", "-q", "HEAD", chdir: workspace)
+      _stdout, _stderr, status = @transport.call(["git", "symbolic-ref", "-q", "HEAD"], cwd: workspace)
       raise InvalidState, "launch: workspace must have a dedicated feature branch" unless status.success?
       directory = workspace
       loop do

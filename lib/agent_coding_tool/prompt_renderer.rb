@@ -22,11 +22,11 @@ module AgentCodingTool
     # raw-byte/boolean capture protocol. Optional inputs isolate external reads.
     # Returns a renderer; source errors are deferred until render, not status reads.
     def initialize(skill_root: SKILL_ROOT, skill_identity: SKILL_IDENTITY,
-                   planning_skill_identity: PLANNING_SKILL_IDENTITY, runner: CommandRunner.new)
+                   planning_skill_identity: PLANNING_SKILL_IDENTITY, runner: nil, transport: NativeCommandTransport.new)
       @skill_root = skill_root
       @skill_identity = skill_identity.dup.freeze
       @planning_skill_identity = planning_skill_identity.dup.freeze
-      @runner = runner
+      @runner = runner || CommandRunner.new(transport: transport)
     end
 
     # Returns the revision/fingerprint recorded in preparation state; no I/O.

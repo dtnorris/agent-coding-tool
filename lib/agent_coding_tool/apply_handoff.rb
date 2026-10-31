@@ -2,7 +2,6 @@
 
 require "digest"
 require "json"
-require "open3"
 require "rbconfig"
 require "shellwords"
 
@@ -16,12 +15,12 @@ module AgentCodingTool
 
     # Binds configured repository discovery and terminal streams. No I/O occurs
     # until run; streams must support gets/tty? or write/flush as appropriate.
-    # An optional transport accepts argv/cwd/env/input and returns raw stdout,
-    # stderr and an integer exit code (128+signal for signal termination), or
-    # raises the native execution exception. It never supplies policy or consent.
+    # The optional shared transport returns CommandResult from argv/cwd/env/input
+    # and execution options, or raises the native exception. Shell-code conversion
+    # stays here at the workflow boundary; the transport supplies no policy/consent.
     def initialize(config:, input: $stdin, out: $stdout, err: $stderr, transport: nil)
       @config, @input, @out, @err = config, input, out, err
-      @transport = transport
+      @transport = transport || NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
       @phase = "not applied"
     end
 
@@ -469,42 +468,8 @@ module AgentCodingTool
     def execute(argv, cwd:, env: {}, input: "")
       raise Error, "ambient GIT_* overrides are unsupported" if ENV.keys.any? { |key| key.start_with?("GIT_") && !%w[GIT_PAGER GIT_TERMINAL_PROMPT].include?(key) }
       environment = argv.first == "git" ? env.merge("GIT_TERMINAL_PROMPT" => "0", "GIT_PAGER" => "cat") : env
-      return @transport.call(argv, cwd: cwd, env: environment, input: input) if @transport
-
-      capture_process(argv, cwd: cwd, env: environment, input: input)
-    end
-
-    # Executes direct argv in an owned group, draining binary pipes concurrently.
-    # Returns raw streams and the native exit code/128+signal. Interrupt kills and
-    # reaps only this child group, replays output and propagates; spawn errors raise.
-    def capture_process(argv, cwd:, env:, input:)
-      Open3.popen3(env, *argv, chdir: cwd, pgroup: true) do |stdin, stdout, stderr, child|
-        [stdin, stdout, stderr].each(&:binmode)
-        readers = [stdout, stderr].map { |stream| Thread.new { stream.read } }
-        begin
-          begin
-            stdin.write(input)
-          rescue Errno::EPIPE
-            # A rejecting child may close stdin before reading the whole patch;
-            # retain that child's diagnostic and status rather than hiding them.
-          end
-          stdin.close
-          status = child.value
-          [readers[0].value, readers[1].value, status.exitstatus || 128 + status.termsig]
-        rescue Interrupt
-          begin
-            Process.kill("KILL", -child.pid)
-          rescue Errno::ESRCH
-            # The child may have exited immediately before interruption.
-          end
-          child.value
-          @out.write readers[0].value
-          @err.write readers[1].value
-          raise
-        ensure
-          stdin.close unless stdin.closed?
-        end
-      end
+      stdout, stderr, result = @transport.call(argv, cwd: cwd, env: environment, input: input, pgroup: true)
+      [stdout, stderr, result.shell_status]
     end
 
     # Runs local Git reads/mutations with checked status; returns raw stdout or

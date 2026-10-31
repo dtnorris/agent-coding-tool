@@ -9,9 +9,10 @@ module AgentCodingTool
   class CleanupManager
     SHA = /\A[0-9a-f]{40}\z/
 
-    def initialize(data_root:, provider: nil, liveness: nil, after_removal: nil)
+    def initialize(data_root:, provider: nil, liveness: nil, after_removal: nil, transport: NativeCommandTransport.new)
       @data_root = File.realpath(data_root)
-      @provider = provider || GitHubDeliveryProvider.new
+      @transport = transport
+      @provider = provider || GitHubDeliveryProvider.new(transport: transport)
       @liveness = liveness || CleanupLiveness.new
       @after_removal = after_removal
     end
@@ -49,7 +50,7 @@ module AgentCodingTool
               raise InvalidState, "cleanup: unverified abandoned preflight"
             end
             WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                record_path: record_path).inspect!
+                                record_path: record_path, transport: @transport).inspect!
             owned_paths.concat(inventory_raw.fetch("entries").map { |entry| entry.fetch("path") })
             blockers = outcome == "complete" ? [] : ["task outcome is #{outcome || 'unfinished'}"]
             rows << { "attempt" => report.fetch("attempt"), "path" => run_dir,
@@ -65,7 +66,7 @@ module AgentCodingTool
             raise InvalidState, "cleanup: task/attempt identity changed"
           end
           config = Config.load(File.join(@data_root, "config.yml"))
-          manager = WorktreeManager.new(root: config.worktree_root, record_path: record_path)
+          manager = WorktreeManager.new(root: config.worktree_root, record_path: record_path, transport: @transport)
           overrides = inventory_raw.fetch("entries").filter_map do |entry|
             next unless entry["access"] == "write"
             detail = delivery_detail(run_dir, entry.fetch("name"), inventory_raw)
@@ -122,7 +123,7 @@ module AgentCodingTool
         run_dir = File.join(root, attempt)
         record_path = File.join(run_dir, "worktrees.json")
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                      record_path: record_path)
+                                      record_path: record_path, transport: @transport)
         record = JSON.parse(File.binread(record_path))
         overrides = record.fetch("entries").filter_map do |entry|
           next unless entry["access"] == "write"
@@ -214,13 +215,13 @@ module AgentCodingTool
     end
 
     def git(path, *args)
-      stdout, stderr, status = Open3.capture3("git", *args, chdir: path)
+      stdout, stderr, status = @transport.call(["git", *args], cwd: path)
       raise RepositoryError, "cleanup: git #{args.first} failed: #{stderr.strip}" unless status.success?
       args.include?("-z") ? stdout : stdout.strip
     end
 
     def system_git(path, *args)
-      Open3.capture3("git", *args, chdir: path).last.success?
+      @transport.call(["git", *args], cwd: path).success?
     end
   end
 

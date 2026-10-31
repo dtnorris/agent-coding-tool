@@ -15,13 +15,14 @@ module AgentCodingTool
 
     # Binds lifecycle stores and optional observation seam; construction writes
     # nothing. Filesystem-backed callers use the canonical private sibling root.
-    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:, external_activity: nil)
+    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:, external_activity: nil, transport: NativeCommandTransport.new)
       @task_store = task_store
       @state_store = state_store
       @repo_inspector = repo_inspector
       @prompt_renderer = prompt_renderer
       @prompt_root = prompt_root
       @external_activity = external_activity
+      @transport = transport
     end
 
     def tasks = @task_store.all
@@ -286,7 +287,7 @@ module AgentCodingTool
 
       data_root = File.dirname(File.dirname(@state_store.state_path(id)))
       if File.directory?(File.join("#{data_root}-runs", id)) || File.symlink?(File.join("#{data_root}-runs", id))
-        AttemptRecovery.new(data_root: data_root).retry_ready!(id)
+        AttemptRecovery.new(data_root: data_root, transport: @transport).retry_ready!(id)
       end
 
       validate_skill_identity!(id, state)
@@ -488,7 +489,7 @@ module AgentCodingTool
         end
 
         path = File.join("#{File.realpath(data_root)}-runs", id)
-        AttemptRecovery.new(data_root: data_root).inspect(id) if File.exist?(path) || File.symlink?(path)
+        AttemptRecovery.new(data_root: data_root, transport: @transport).inspect(id) if File.exist?(path) || File.symlink?(path)
         yield lock
       end
     end

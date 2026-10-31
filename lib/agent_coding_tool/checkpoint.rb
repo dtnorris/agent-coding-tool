@@ -3,7 +3,6 @@
 require "digest"
 require "fileutils"
 require "json"
-require "open3"
 require "securerandom"
 require "shellwords"
 require "tempfile"
@@ -27,12 +26,13 @@ module AgentCodingTool
 
     # Binds the operator-owned task/evidence roots and receipt diagnostics stream;
     # construction performs no I/O. Filesystem failures arise at operation time.
-    def initialize(data_root:, err: $stderr)
+    def initialize(data_root:, err: $stderr, transport: NativeCommandTransport.new)
       @data_root = File.expand_path(data_root)
       @tasks = TaskStore.new(File.join(@data_root, "tasks"))
       @states = StateStore.new(File.join(@data_root, "state"))
       @root = "#{@data_root}-runs"
       @err = err
+      @transport = transport
     end
 
     # Exports canonical bytes without reading/writing host task/run state. Inputs
@@ -131,7 +131,7 @@ module AgentCodingTool
     # original base. Historical verification is read-only and accepts no workspace.
     def verify(id, workspace: nil, attempt: nil)
       raise InvalidState, "checkpoint: historical verification accepts no workspace" if attempt && workspace
-      historical = AttemptRecovery.new(data_root: @data_root).closed_state(id, attempt) if attempt
+      historical = AttemptRecovery.new(data_root: @data_root, transport: @transport).closed_state(id, attempt) if attempt
       task, state, name, base = context!(id, historical: historical)
       return { "status" => "exempt" } unless CheckpointPolicy.required?(task) || historical || state["checkpoint"]
       directory = directory!(id, state, create: false)
@@ -239,7 +239,7 @@ module AgentCodingTool
     # explicit disconnected-worker judgment grants no acceptance/publication.
     def recover(id, destination:, confirm_disconnected: false, attempt: nil)
       raise InvalidState, "checkpoint: explicit disconnected-worker judgment required" unless confirm_disconnected
-      historical = AttemptRecovery.new(data_root: @data_root).closed_state(id, attempt) if attempt
+      historical = AttemptRecovery.new(data_root: @data_root, transport: @transport).closed_state(id, attempt) if attempt
       _task, state, _name, base = context!(id, historical: historical)
       evidence = verify(id, attempt: attempt)
       raise InvalidState, "checkpoint: exempt task has no recovery artifact" if evidence["status"] == "exempt"
@@ -451,7 +451,7 @@ module AgentCodingTool
         raise InvalidState, "checkpoint: workspace differs from launch ownership"
       end
       manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                    record_path: report.fetch("worktrees_path"))
+                                    record_path: report.fetch("worktrees_path"), transport: @transport)
       inventory = manager.inspect!
       unless inventory.fetch("task_id") == id &&
              inventory.fetch("entries").any? { |entry| entry["name"] == name && entry["path"] == workspace &&
@@ -483,7 +483,7 @@ module AgentCodingTool
         raise InvalidState, "checkpoint: unsafe preserved path"
       end
       IncidentalMetadata.check_repository!(workspace) { |*args| git!(workspace, *args, strip: false) }
-      _staged, _error, staged = Open3.capture3("git", "diff", "--cached", "--quiet", sha, chdir: workspace)
+      _staged, _error, staged = @transport.call(["git", "diff", "--cached", "--quiet", sha], cwd: workspace)
       raise InvalidState, "checkpoint: staged-only changes require operator judgment" unless staged.success?
       # Objects and index are disposable too: a confined worker must not write
       # shared Git administration when hashing untracked/changed content.
@@ -567,8 +567,7 @@ module AgentCodingTool
     end
 
     def git!(dir, *args, env: {}, strip: true)
-      options = dir ? { chdir: dir } : {}
-      out, err, status = Open3.capture3(env, "git", *args, **options)
+      out, err, status = @transport.call(["git", *args], cwd: dir, env: env)
       raise InvalidState, "checkpoint: git #{args.first} failed: #{err.strip}" unless status.success?
       strip ? out.strip : out
     end

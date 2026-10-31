@@ -1,0 +1,21 @@
+[
+  "CommandTransportVerifier#test_apply_request_and_signal_translation",
+  "CommandTransportVerifier#test_checkpoint_staged_refusal_and_raw_bytes",
+  "CommandTransportVerifier#test_cli_status_continuous_journey_and_malformed_ref",
+  "CommandTransportVerifier#test_delivery_deleted_blob_and_push_lease",
+  "CommandTransportVerifier#test_grouped_rejected_stdin_keeps_diagnostic",
+  "CommandTransportVerifier#test_launcher_nested_authority_and_cleanup_status",
+  "CommandTransportVerifier#test_launcher_symbolic_ref_refusal",
+  "CommandTransportVerifier#test_native_binary_capture_and_grouped_capture",
+  "CommandTransportVerifier#test_native_defaults_and_unknown_requests",
+  "CommandTransportVerifier#test_native_environment_cwd_and_options",
+  "CommandTransportVerifier#test_native_interrupt_replays_output_and_reaps",
+  "CommandTransportVerifier#test_native_missing_executable_propagates_on_all_paths",
+  "CommandTransportVerifier#test_native_signal_retains_nil_success",
+  "CommandTransportVerifier#test_native_timeout_cleans_up_child_and_blocked_input",
+  "CommandTransportVerifier#test_recovery_raw_status_and_refusal",
+  "CommandTransportVerifier#test_result_exit_signal_and_invalid_facts",
+  "CommandTransportVerifier#test_runner_normalizes_every_request_field_and_signal",
+  "CommandTransportVerifier#test_spawn_errors_propagate_unchanged",
+  "CommandTransportVerifier#test_static_boundary_and_constructor_audit"
+]

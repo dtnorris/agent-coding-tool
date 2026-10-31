@@ -97,7 +97,7 @@
     "test/support/fixtures/guard_child.rb": "59739f50edad43479b7efecbf8e584d9df8e78e552a9de29b088ba72431e6ab1",
     "test/support/no_git_execution.rb": "918b49f766ff872dd4c9e06f01164d68a22d4f7cf33cabfa9fa715b486b426e3",
     "test/support/source_identity.rb": "8c39e28e884fe0ebcc6b403d15923b75cec08af568e2b0f0a224c85c14094dc3",
-    "test/support/verify_zero_git.rb": "2164d340899fcac861f6d7499daf9fcee1250f9cfd4f1995a992581b7ecff592",
+    "test/support/verify_zero_git.rb": "8e48f1ad87d6fbeb2c65916381fc90c06aa4341f027374310593ba621396f60d",
     "test/task_store_test.rb": "503d5c93d87162d98d380a8b1e573a3ac36a30dfc174730448aba5ea905e92b4",
     "test/test_helper.rb": "daa8db6e3d0d303214141464f533d6d1eb0c13b4aa29d9164b791affe2d8b568",
     "test/worktree_manager_test.rb": "5fc776971dd53e238862c975f57a051c29b26372bde1d27a51e871b4dbde8a88",
@@ -60077,7 +60077,16 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 21,
+      "line": 15,
+      "kinds": [
+        "process_transport"
+      ],
+      "preceding_method_declaration": null,
+      "source": "# discovery invokes system, which this verifier deliberately prohibits."
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 24,
       "kinds": [
         "git_reference"
       ],
@@ -60086,7 +60095,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 22,
+      "line": 25,
       "kinds": [
         "git_reference"
       ],
@@ -60095,7 +60104,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 29,
+      "line": 32,
       "kinds": [
         "git_reference"
       ],
@@ -60104,7 +60113,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 33,
+      "line": 36,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60113,7 +60122,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 34,
+      "line": 37,
       "kinds": [
         "process_transport"
       ],
@@ -60122,7 +60131,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 35,
+      "line": 38,
       "kinds": [
         "git_reference"
       ],
@@ -60131,7 +60140,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 36,
+      "line": 39,
       "kinds": [
         "process_transport"
       ],
@@ -60140,7 +60149,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 46,
+      "line": 49,
       "kinds": [
         "git_reference"
       ],
@@ -60149,7 +60158,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 57,
+      "line": 60,
       "kinds": [
         "git_reference"
       ],
@@ -60158,7 +60167,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 59,
+      "line": 62,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60168,7 +60177,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 62,
+      "line": 65,
       "kinds": [
         "fixture_copy_or_metadata"
       ],
@@ -60177,7 +60186,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 71,
+      "line": 74,
       "kinds": [
         "process_transport"
       ],
@@ -60186,7 +60195,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 74,
+      "line": 77,
       "kinds": [
         "git_reference"
       ],
@@ -60195,7 +60204,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 77,
+      "line": 80,
       "kinds": [
         "git_reference"
       ],
@@ -60204,7 +60213,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 82,
+      "line": 85,
       "kinds": [
         "git_reference"
       ],
@@ -60213,7 +60222,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 90,
+      "line": 93,
       "kinds": [
         "git_reference"
       ],
@@ -60222,7 +60231,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 91,
+      "line": 94,
       "kinds": [
         "git_reference"
       ],
@@ -60231,7 +60240,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 94,
+      "line": 97,
       "kinds": [
         "git_reference"
       ],
@@ -60240,7 +60249,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 105,
+      "line": 108,
       "kinds": [
         "git_reference"
       ],
@@ -60249,7 +60258,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 110,
+      "line": 113,
       "kinds": [
         "process_transport"
       ],
@@ -60258,7 +60267,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 111,
+      "line": 114,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60267,7 +60276,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 112,
+      "line": 115,
       "kinds": [
         "cached_native_or_status"
       ],
@@ -60276,7 +60285,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 113,
+      "line": 116,
       "kinds": [
         "cached_native_or_status"
       ],
@@ -60285,7 +60294,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 119,
+      "line": 122,
       "kinds": [
         "cached_native_or_status"
       ],
@@ -60294,7 +60303,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 126,
+      "line": 129,
       "kinds": [
         "cached_native_or_status"
       ],
@@ -60303,7 +60312,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 136,
+      "line": 139,
       "kinds": [
         "git_reference"
       ],
@@ -60312,7 +60321,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 138,
+      "line": 141,
       "kinds": [
         "git_reference"
       ],
@@ -60321,7 +60330,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 143,
+      "line": 146,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60331,7 +60340,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 144,
+      "line": 147,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60341,7 +60350,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 145,
+      "line": 148,
       "kinds": [
         "process_transport"
       ],
@@ -60350,7 +60359,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 146,
+      "line": 149,
       "kinds": [
         "process_transport"
       ],
@@ -60359,7 +60368,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 151,
+      "line": 154,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60369,7 +60378,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 152,
+      "line": 155,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60379,7 +60388,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 153,
+      "line": 156,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60389,7 +60398,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 154,
+      "line": 157,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60399,7 +60408,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 155,
+      "line": 158,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60409,7 +60418,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 156,
+      "line": 159,
       "kinds": [
         "git_reference",
         "process_transport",
@@ -60420,22 +60429,12 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 159,
+      "line": 162,
       "kinds": [
         "git_reference"
       ],
       "preceding_method_declaration": "def test_malicious_process_and_pipe_routes",
       "source": "        assert_raises(NoGitExecution::ProhibitedExecution, &attack)"
-    },
-    {
-      "path": "test/support/verify_zero_git.rb",
-      "line": 166,
-      "kinds": [
-        "git_reference",
-        "environment_or_payload"
-      ],
-      "preceding_method_declaration": "def test_malicious_process_and_pipe_routes",
-      "source": "        assert_raises(NoGitExecution::ProhibitedExecution) { ORIGINAL_ZERO_GIT_FOREACH.call(\"|#{shell}\").to_a }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
@@ -60445,11 +60444,21 @@
         "environment_or_payload"
       ],
       "preceding_method_declaration": "def test_malicious_process_and_pipe_routes",
+      "source": "        assert_raises(NoGitExecution::ProhibitedExecution) { ORIGINAL_ZERO_GIT_FOREACH.call(\"|#{shell}\").to_a }"
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 172,
+      "kinds": [
+        "git_reference",
+        "environment_or_payload"
+      ],
+      "preceding_method_declaration": "def test_malicious_process_and_pipe_routes",
       "source": "        assert_raises(NoGitExecution::ProhibitedExecution) { ORIGINAL_ZERO_GIT_OPEN.bind(self).call(\"|#{shell}\") }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 178,
+      "line": 181,
       "kinds": [
         "git_reference"
       ],
@@ -60458,7 +60467,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 181,
+      "line": 184,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60468,7 +60477,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 182,
+      "line": 185,
       "kinds": [
         "git_reference"
       ],
@@ -60477,7 +60486,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 190,
+      "line": 193,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60486,7 +60495,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 192,
+      "line": 195,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60495,7 +60504,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 194,
+      "line": 197,
       "kinds": [
         "process_transport",
         "environment_or_payload"
@@ -60505,7 +60514,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 197,
+      "line": 200,
       "kinds": [
         "cached_native_or_status"
       ],
@@ -60514,7 +60523,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 202,
+      "line": 205,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60524,7 +60533,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 207,
+      "line": 210,
       "kinds": [
         "process_transport"
       ],
@@ -60533,7 +60542,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 208,
+      "line": 211,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60542,7 +60551,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 209,
+      "line": 212,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60551,7 +60560,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 211,
+      "line": 214,
       "kinds": [
         "process_transport"
       ],
@@ -60560,7 +60569,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 221,
+      "line": 224,
       "kinds": [
         "git_reference"
       ],
@@ -60569,7 +60578,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 223,
+      "line": 226,
       "kinds": [
         "git_reference"
       ],
@@ -60578,33 +60587,13 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 224,
+      "line": 227,
       "kinds": [
         "git_reference",
         "process_transport"
       ],
       "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
       "source": "        NoGitExecution.with_permit(approval) { Process.spawn(approval.environment, *argv) }"
-    },
-    {
-      "path": "test/support/verify_zero_git.rb",
-      "line": 227,
-      "kinds": [
-        "git_reference"
-      ],
-      "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
-      "source": "    assert_raises(NoGitExecution::ProhibitedExecution) do"
-    },
-    {
-      "path": "test/support/verify_zero_git.rb",
-      "line": 228,
-      "kinds": [
-        "git_reference",
-        "process_transport",
-        "environment_or_payload"
-      ],
-      "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
-      "source": "      NoGitExecution.with_permit(approval) { Process.spawn(approval.environment.merge(\"RUBYOPT\" => nil), *approval.argv) }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
@@ -60620,10 +60609,11 @@
       "line": 231,
       "kinds": [
         "git_reference",
-        "process_transport"
+        "process_transport",
+        "environment_or_payload"
       ],
       "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
-      "source": "      NoGitExecution.with_permit(approval) { Process.spawn(approval.environment, *approval.argv, unsetenv_others: true) }"
+      "source": "      NoGitExecution.with_permit(approval) { Process.spawn(approval.environment.merge(\"RUBYOPT\" => nil), *approval.argv) }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
@@ -60639,10 +60629,10 @@
       "line": 234,
       "kinds": [
         "git_reference",
-        "environment_or_payload"
+        "process_transport"
       ],
       "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
-      "source": "      NoGitExecution.with_permit(approval) { ORIGINAL_ZERO_GIT_SPAWN.call(approval.environment, *approval.argv) }"
+      "source": "      NoGitExecution.with_permit(approval) { Process.spawn(approval.environment, *approval.argv, unsetenv_others: true) }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
@@ -60651,11 +60641,30 @@
         "git_reference"
       ],
       "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
-      "source": "    assert_raises(NoGitExecution::ProhibitedExecution) { NoGitExecution.with_permit(approval) { nil } }"
+      "source": "    assert_raises(NoGitExecution::ProhibitedExecution) do"
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 237,
+      "kinds": [
+        "git_reference",
+        "environment_or_payload"
+      ],
+      "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
+      "source": "      NoGitExecution.with_permit(approval) { ORIGINAL_ZERO_GIT_SPAWN.call(approval.environment, *approval.argv) }"
     },
     {
       "path": "test/support/verify_zero_git.rb",
       "line": 239,
+      "kinds": [
+        "git_reference"
+      ],
+      "preceding_method_declaration": "def test_permit_binds_bootstrap_argv_environment_and_native_entry",
+      "source": "    assert_raises(NoGitExecution::ProhibitedExecution) { NoGitExecution.with_permit(approval) { nil } }"
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 242,
       "kinds": [
         "environment_or_payload"
       ],
@@ -60664,7 +60673,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 240,
+      "line": 243,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60674,7 +60683,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 242,
+      "line": 245,
       "kinds": [
         "process_transport"
       ],
@@ -60683,7 +60692,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 245,
+      "line": 248,
       "kinds": [
         "process_transport"
       ],
@@ -60692,7 +60701,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 251,
+      "line": 254,
       "kinds": [
         "process_transport"
       ],
@@ -60701,7 +60710,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 252,
+      "line": 255,
       "kinds": [
         "process_transport"
       ],
@@ -60710,7 +60719,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 253,
+      "line": 256,
       "kinds": [
         "git_reference"
       ],
@@ -60719,7 +60728,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 254,
+      "line": 257,
       "kinds": [
         "git_reference"
       ],
@@ -60728,7 +60737,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 257,
+      "line": 260,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60738,7 +60747,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 258,
+      "line": 261,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60748,7 +60757,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 259,
+      "line": 262,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60758,7 +60767,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 260,
+      "line": 263,
       "kinds": [
         "git_reference"
       ],
@@ -60767,7 +60776,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 263,
+      "line": 266,
       "kinds": [
         "git_reference"
       ],
@@ -60776,7 +60785,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 267,
+      "line": 270,
       "kinds": [
         "git_reference"
       ],
@@ -60785,7 +60794,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 270,
+      "line": 273,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60795,7 +60804,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 272,
+      "line": 275,
       "kinds": [
         "process_transport"
       ],
@@ -60804,7 +60813,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 274,
+      "line": 277,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -60814,7 +60823,16 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 280,
+      "line": 282,
+      "kinds": [
+        "process_transport"
+      ],
+      "preceding_method_declaration": "def test_changed_identities_and_spawn_error",
+      "source": "  # Rendering a failed assertion must neither spawn nor add a boundary refusal."
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 284,
       "kinds": [
         "git_reference",
         "process_transport"
@@ -60824,7 +60842,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 281,
+      "line": 285,
       "kinds": [
         "git_reference"
       ],
@@ -60833,7 +60851,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 282,
+      "line": 286,
       "kinds": [
         "git_reference"
       ],
@@ -60842,7 +60860,25 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 286,
+      "line": 287,
+      "kinds": [
+        "git_reference"
+      ],
+      "preceding_method_declaration": "def test_audit_scope",
+      "source": "    audit_before = NoGitExecution.audit.dup"
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 293,
+      "kinds": [
+        "git_reference"
+      ],
+      "preceding_method_declaration": "def test_audit_scope",
+      "source": "    assert_equal audit_before, NoGitExecution.audit"
+    },
+    {
+      "path": "test/support/verify_zero_git.rb",
+      "line": 297,
       "kinds": [
         "git_reference"
       ],
@@ -60851,7 +60887,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 298,
+      "line": 309,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60861,7 +60897,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 301,
+      "line": 312,
       "kinds": [
         "process_transport"
       ],
@@ -60870,7 +60906,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 308,
+      "line": 319,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60880,7 +60916,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 316,
+      "line": 327,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60890,7 +60926,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 317,
+      "line": 328,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60900,7 +60936,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 321,
+      "line": 332,
       "kinds": [
         "git_reference"
       ],
@@ -60909,7 +60945,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 330,
+      "line": 341,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60919,7 +60955,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 332,
+      "line": 343,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60929,7 +60965,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 333,
+      "line": 344,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60939,7 +60975,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 335,
+      "line": 346,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60949,7 +60985,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 337,
+      "line": 348,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60959,7 +60995,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 338,
+      "line": 349,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60969,7 +61005,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 346,
+      "line": 360,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60979,7 +61015,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 347,
+      "line": 361,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60989,7 +61025,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 354,
+      "line": 368,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -60999,7 +61035,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 366,
+      "line": 380,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61009,7 +61045,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 370,
+      "line": 384,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61019,7 +61055,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 371,
+      "line": 385,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61029,7 +61065,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 373,
+      "line": 387,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61039,7 +61075,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 374,
+      "line": 388,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61049,7 +61085,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 376,
+      "line": 390,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61059,7 +61095,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 377,
+      "line": 391,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61069,7 +61105,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 379,
+      "line": 393,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61079,7 +61115,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 381,
+      "line": 395,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61089,7 +61125,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 384,
+      "line": 398,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61099,7 +61135,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 393,
+      "line": 407,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61109,7 +61145,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 396,
+      "line": 410,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata"
@@ -61119,7 +61155,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 397,
+      "line": 411,
       "kinds": [
         "git_reference",
         "fixture_copy_or_metadata",
@@ -61130,7 +61166,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 398,
+      "line": 412,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -61140,7 +61176,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 403,
+      "line": 417,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -61150,7 +61186,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 404,
+      "line": 418,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -61160,7 +61196,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 408,
+      "line": 422,
       "kinds": [
         "git_reference"
       ],
@@ -61169,7 +61205,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 409,
+      "line": 423,
       "kinds": [
         "git_reference"
       ],
@@ -61178,7 +61214,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 412,
+      "line": 426,
       "kinds": [
         "git_reference"
       ],
@@ -61187,7 +61223,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 415,
+      "line": 429,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -61197,7 +61233,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 416,
+      "line": 430,
       "kinds": [
         "git_reference"
       ],
@@ -61206,7 +61242,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 420,
+      "line": 434,
       "kinds": [
         "git_reference",
         "environment_or_payload"
@@ -61216,7 +61252,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 421,
+      "line": 435,
       "kinds": [
         "git_reference"
       ],
@@ -61225,7 +61261,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 422,
+      "line": 436,
       "kinds": [
         "git_reference"
       ],
@@ -61234,7 +61270,7 @@
     },
     {
       "path": "test/support/verify_zero_git.rb",
-      "line": 425,
+      "line": 439,
       "kinds": [
         "git_reference"
       ],

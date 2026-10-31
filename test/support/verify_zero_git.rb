@@ -11,6 +11,9 @@ require_relative "no_git_execution"
 require "bundler/setup"
 require "minitest/autorun"
 require "minitest/mock"
+# Assertion diagnostics must stay in-process: Minitest's automatic diff
+# discovery invokes system, which this verifier deliberately prohibits.
+Minitest::Assertions.diff = nil
 require "tmpdir"
 require "fileutils"
 require "open3"
@@ -276,10 +279,18 @@ class NoGitExecutionVerifier < Minitest::Test
 
   # Audit records distinguish internal refusals/permits from independent OS
   # tracing, whose absence cannot be represented as observed zero OS executions.
+  # Rendering a failed assertion must neither spawn nor add a boundary refusal.
   def test_audit_scope
     assert_raises(NoGitExecution::ProhibitedExecution) { system("git --version") }
     assert NoGitExecution.audit.any? { |row| row["mechanism"] == "ruby-c-entry" && row["decision"] == "DENY" }
     assert_equal "UNAVAILABLE", NoGitExecution.independent_audit.fetch("status")
+    audit_before = NoGitExecution.audit.dup
+    expected = "/canonical/source/common\n" * 3
+    actual = "/aliased/source/common\n" * 3
+    failure = assert_raises(Minitest::Assertion) { assert_equal expected, actual }
+    assert_includes failure.message, "/canonical/source/common"
+    assert_includes failure.message, "/aliased/source/common"
+    assert_equal audit_before, NoGitExecution.audit
   end
 end
 
@@ -341,8 +352,11 @@ class SourceIdentityVerifier < Minitest::Test
   end
 
   # Linked worktrees read their private HEAD/index and common loose/packed refs.
+  # An explicit root alias exercises canonical paths even with a canonical TMPDIR.
   def test_worktree_pointer_and_commondir
     fixture do |root|
+      File.symlink(root, File.join(root, "alias"))
+      root = File.join(root, "alias")
       FileUtils.mv(File.join(root, ".git"), File.join(root, "common"))
       write(root, ".git", "gitdir: common/worktrees/one\n")
       write(root, "common/worktrees/one/commondir", "../..\n")
@@ -350,7 +364,7 @@ class SourceIdentityVerifier < Minitest::Test
       write(root, "common/packed-refs", "#{HEAD} refs/heads/main\n")
       write(root, "common/worktrees/one/index", "index bytes\x00")
       assert_equal HEAD, identity(root).fetch("head")
-      assert_equal File.join(root, "common"), identity(root).fetch("common_dir")
+      assert_equal File.realpath(File.join(root, "common")), identity(root).fetch("common_dir")
       write(root, ".git", "gitdir: #{root}/common/worktrees/one\n")
       assert_equal HEAD, identity(root).fetch("head")
       write(root, "common/worktrees/one/HEAD", OTHER)

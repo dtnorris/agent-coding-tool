@@ -16,8 +16,12 @@ module AgentCodingTool
 
     # Binds configured repository discovery and terminal streams. No I/O occurs
     # until run; streams must support gets/tty? or write/flush as appropriate.
-    def initialize(config:, input: $stdin, out: $stdout, err: $stderr)
+    # An optional transport accepts argv/cwd/env/input and returns raw stdout,
+    # stderr and an integer exit code (128+signal for signal termination), or
+    # raises the native execution exception. It never supplies policy or consent.
+    def initialize(config:, input: $stdin, out: $stdout, err: $stderr, transport: nil)
       @config, @input, @out, @err = config, input, out, err
+      @transport = transport
       @phase = "not applied"
     end
 
@@ -63,7 +67,7 @@ module AgentCodingTool
       @steps.each_with_index do |step, index|
         raise Error, "validation execution scope changed" unless validation_step!(@manifest.fetch("validation").fetch(index)) == step
         begin
-          stdout, stderr, status = execute(step.fetch(:argv), cwd: step.fetch(:cwd), env: step.fetch(:env))
+          stdout, stderr, code = execute(step.fetch(:argv), cwd: step.fetch(:cwd), env: step.fetch(:env))
         rescue SystemCallError => error
           @phase = "applied; validation #{index + 1} could not start; commit not run"
           @err.puts "Validation #{index + 1}: #{error.class}; exit 127; #{@steps.length - index - 1} remaining unrun"
@@ -71,7 +75,6 @@ module AgentCodingTool
         end
         @out.write stdout
         @err.write stderr
-        code = status.exitstatus || 128 + status.termsig
         @out.puts "Validation #{index + 1}: exit #{code}"
         @phase = "applied; validation #{index + 1} failed; commit not run" unless code.zero?
         @out.puts "Validation #{index + 1}: exit #{code}; #{@steps.length - index - 1} remaining unrun" unless code.zero?
@@ -114,12 +117,12 @@ module AgentCodingTool
       tree = git!(@target, "write-tree").strip
       unchanged!(staged)
       @phase = "applied; validated; commit started; result unverified; inspect HEAD/index/worktree"
-      stdout, stderr, status = execute(["git", "commit", "--only", "-m", @manifest.fetch("commit_message"), "--", *@paths], cwd: @target.fetch(:path))
+      stdout, stderr, code = execute(["git", "commit", "--only", "-m", @manifest.fetch("commit_message"), "--", *@paths], cwd: @target.fetch(:path))
       @out.write stdout
       @err.write stderr
-      unless status.success?
+      unless code.zero?
         @phase = "applied; validated; commit failed; inspect index/worktree"
-        return status.exitstatus || 128 + status.termsig
+        return code
       end
 
       raise Error, "commit parent changed" unless git!(@target, "rev-parse", "HEAD^").strip == @initial.fetch(@manifest.fetch("target")).fetch(:head)
@@ -317,8 +320,8 @@ module AgentCodingTool
         if File.exist?(absolute) && git!(@target, "ls-files", "-z", "--", path).empty?
           raise Error, "patch path is already occupied: #{path}"
         end
-        _stdout, _stderr, status = execute(["git", "check-ignore", "--quiet", "--", path], cwd: @target.fetch(:path))
-        raise Error, "ignored patch path refused: #{path}" unless status.exitstatus == 1
+        _stdout, _stderr, code = execute(["git", "check-ignore", "--quiet", "--", path], cwd: @target.fetch(:path))
+        raise Error, "ignored patch path refused: #{path}" unless code == 1
       end
       git!(@target, "apply", "--check", input: @patch)
     end
@@ -336,14 +339,19 @@ module AgentCodingTool
         identity = RepositoryIdentity.resolve(git!(repo, "remote", "get-url", @config.default_remote).strip)
         raise Error, "wrong repository identity" unless identity == repo.fetch(:identity)
         head = git!(repo, "rev-parse", "HEAD").strip
-        tracked = git!(repo, "ls-files", "-z", "--cached").split("\0")
-        unmerged = git!(repo, "ls-files", "--unmerged", "-z").split("\0").map { |entry| entry.split("\t", 2).last }.uniq
+        # One NUL-delimited inventory keeps stage, flags and arbitrary path
+        # bytes together. Untracked entries have a distinct "? " prefix; only
+        # ordinary stage-zero H entries may contribute to the preserved index.
+        others, entries = git!(repo, "ls-files", "--stage", "-v", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+                              .partition { |entry| entry.start_with?("? ") }
+        unmerged = entries.reject { |entry| entry.split("\t", 2).first.end_with?(" 0") }.map { |entry| entry.split("\t", 2).last }.uniq
         raise Error, "#{name}: unresolved merge/index entries: #{unmerged.map(&:dump).join(', ')}" unless unmerged.empty?
-        flags = git!(repo, "ls-files", "-v", "-z")
-        raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless flags.split("\0").all? { |entry| entry.start_with?("H ") }
+        raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless entries.all? { |entry| entry.start_with?("H ") }
+        index = entries.map { |entry| entry.delete_prefix("H ") + "\0" }.join
+        tracked = entries.map { |entry| entry.split("\t", 2).last }
+        others.map! { |entry| entry.delete_prefix("? ") }
         initial_head = @initial ? @initial.fetch(name).fetch(:head) : head
         initial_paths = git!(repo, "ls-tree", "-r", "--name-only", "-z", initial_head).split("\0")
-        others = git!(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
         ignored = git!(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard").split("\0")
         [others, ignored].each do |paths|
           paths.reject! do |path|
@@ -367,7 +375,7 @@ module AgentCodingTool
                  directory: [File.stat(root).dev, File.stat(root).ino],
                  git_directory: git!(repo, "rev-parse", "--absolute-git-dir"),
                  branch: git!(repo, "rev-parse", "--symbolic-full-name", "HEAD"),
-                 index: git!(repo, "ls-files", "--stage", "-z"),
+                 index: index,
                  index_diff: git!(repo, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv") }]
       end
     end
@@ -455,13 +463,22 @@ module AgentCodingTool
       @err.puts "Status inspection unavailable: #{error.class}"
     end
 
-    # Executes argv directly, preserving binary streams and Process::Status.
-    # Interrupt kills only this invocation's subprocess group and replays captured
-    # output before propagating. Ambient Git redirection and spawn errors raise.
+    # Rejects ambient Git redirection and constructs the exact child environment
+    # before the transport boundary. Returns raw streams and an integer exit code;
+    # transport/spawn exceptions propagate without becoming successful results.
     def execute(argv, cwd:, env: {}, input: "")
       raise Error, "ambient GIT_* overrides are unsupported" if ENV.keys.any? { |key| key.start_with?("GIT_") && !%w[GIT_PAGER GIT_TERMINAL_PROMPT].include?(key) }
       environment = argv.first == "git" ? env.merge("GIT_TERMINAL_PROMPT" => "0", "GIT_PAGER" => "cat") : env
-      Open3.popen3(environment, *argv, chdir: cwd, pgroup: true) do |stdin, stdout, stderr, child|
+      return @transport.call(argv, cwd: cwd, env: environment, input: input) if @transport
+
+      capture_process(argv, cwd: cwd, env: environment, input: input)
+    end
+
+    # Executes direct argv in an owned group, draining binary pipes concurrently.
+    # Returns raw streams and the native exit code/128+signal. Interrupt kills and
+    # reaps only this child group, replays output and propagates; spawn errors raise.
+    def capture_process(argv, cwd:, env:, input:)
+      Open3.popen3(env, *argv, chdir: cwd, pgroup: true) do |stdin, stdout, stderr, child|
         [stdin, stdout, stderr].each(&:binmode)
         readers = [stdout, stderr].map { |stream| Thread.new { stream.read } }
         begin
@@ -473,7 +490,7 @@ module AgentCodingTool
           end
           stdin.close
           status = child.value
-          [readers[0].value, readers[1].value, status]
+          [readers[0].value, readers[1].value, status.exitstatus || 128 + status.termsig]
         rescue Interrupt
           begin
             Process.kill("KILL", -child.pid)
@@ -493,8 +510,8 @@ module AgentCodingTool
     # Runs local Git reads/mutations with checked status; returns raw stdout or
     # raises Error with the native diagnostic. There are no network operations.
     def git!(repo, *arguments, input: "")
-      stdout, stderr, status = execute(["git", *arguments], cwd: repo.fetch(:path), input: input)
-      raise Error, "git #{arguments.first} failed (#{status.exitstatus || 128 + status.termsig}): #{stderr.dump}" unless status.success?
+      stdout, stderr, code = execute(["git", *arguments], cwd: repo.fetch(:path), input: input)
+      raise Error, "git #{arguments.first} failed (#{code}): #{stderr.dump}" unless code.zero?
       stdout
     end
   end

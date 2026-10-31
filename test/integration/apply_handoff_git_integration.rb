@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../test_helper"
+require_relative "../apply_handoff_support"
 require "pty"
 require "shellwords"
 require "timeout"
@@ -10,137 +10,7 @@ require "timeout"
 class ApplyHandoffGitIntegrationTest < Minitest::Test
   include TestHelpers
   CLI = File.expand_path("../../bin/agent-coding-tool", __dir__)
-  NONPORTABLE_PATHS = ["notes (from PDF).md", "Explorer's_Guide.md",
-                       "title & notes.md", "Moria_Khazad-dûm.md"].freeze
-  IGNORED_PATH = "ignored (notes & dûm's).bin"
-  TASK = <<~YAML
-    ---
-    id: NEW
-    title: Example inspection
-    repositories:
-      agent-coding-tool:
-        access: read_only
-    goal: Inspect the example.
-    acceptance:
-      - Report findings.
-  YAML
-  JOURNEY_SCRIPT = <<~'RUBY'
-    require "yaml"
-    abort "test-only ACT preload leaked into validation" if defined?(AgentCodingTool)
-    data = ENV.fetch("AGENT_CODING_TOOL_DATA_DIR")
-    abort "missing task handoff" unless YAML.safe_load_file(File.join(data, "tasks", "NEW.yml"))["id"] == "NEW"
-    abort "wrong validation cwd" unless File.basename(Dir.pwd) == "B"
-    puts "sibling validation passed"
-  RUBY
-
-  # Creates sibling repositories, tracked lifecycle bytes and a new-file patch
-  # in a download directory containing spaces. Yields with instance fixture paths
-  # bound; optional unrelated nonportable files exercise repository snapshots.
-  # Native setup failures propagate, and all files are removed afterward.
-  def fixture(script: JOURNEY_SCRIPT, nonportable: false)
-    Dir.mktmpdir("act apply ") do |root|
-      @root = File.realpath(root)
-      @repos = File.join(@root, "repositories")
-      @a, @b = %w[A B].map { |name| File.join(@repos, name) }
-      FileUtils.mkdir_p(@repos)
-      seed = TestHelpers.git_seed
-      [@a, @b].each do |path|
-        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), path)
-        remote = "#{path}.git"
-        FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
-        git(path, "remote", "set-url", "origin", remote)
-      end
-      FileUtils.mkdir_p([File.join(@a, "tasks"), File.join(@a, "state")])
-      File.write(File.join(@a, "state", "ACT-UX-02.yml"), "result: retained\n")
-      File.write(File.join(@a, "config.yml"), YAML.dump("repo_root" => @repos))
-      File.write(File.join(@b, "verify.rb"), script)
-      [@a, @b].each do |path|
-        if nonportable
-          NONPORTABLE_PATHS.each do |relative|
-            File.binwrite(File.join(path, relative), "unrelated\x00\xff".b)
-            File.chmod(0o755, File.join(path, relative))
-          end
-          File.write(File.join(path, ".git", "info", "exclude"), "/#{IGNORED_PATH}\n")
-          File.binwrite(File.join(path, IGNORED_PATH), "ignored\x00\xfe".b)
-        end
-        git(path, "add", ".")
-        git(path, "commit", "-m", "fixture")
-      end
-      @bases = [@a, @b].map { |path| git(path, "rev-parse", "HEAD").strip }
-      downloads = File.join(@root, "Downloaded proposals")
-      FileUtils.mkdir_p(downloads)
-      @json = File.join(downloads, "new task.json")
-      @patch_path = File.join(downloads, "new task.patch")
-      # A complete new-file task-registration handoff, generated without staging.
-      @task = File.join(@a, "tasks", "NEW.yml")
-      @patch = "diff --git a/tasks/NEW.yml b/tasks/NEW.yml\nnew file mode 100644\n--- /dev/null\n+++ b/tasks/NEW.yml\n@@ -0,0 +1,#{TASK.lines.length} @@\n" + TASK.lines.map { |line| "+#{line}" }.join
-      File.binwrite(@patch_path, @patch)
-      @manifest = {
-        "schema" => AgentCodingTool::ApplyHandoff::SCHEMA, "target" => "data",
-        "repositories" => { "data" => { "path" => "A", "remote_url" => "#{@a}.git", "baseline" => @bases[0] },
-                            "tool" => { "path" => "B", "remote_url" => "#{@b}.git", "baseline" => @bases[1] } },
-        "patch" => { "file" => "new task.patch", "sha256" => Digest::SHA256.hexdigest(@patch) },
-        "paths" => ["tasks/NEW.yml"],
-        "validation" => [{ "action" => "ruby_test", "repository" => "tool", "cwd" => ".", "files" => ["verify.rb"],
-                           "env" => { "AGENT_CODING_TOOL_DATA_DIR" => "data" } },
-                         { "action" => "git_diff_check", "repository" => "data", "cwd" => ".", "env" => {} }],
-        "commit_message" => "Register NEW task"
-      }
-      save_manifest
-      yield
-    end
-  end
-
-  # Executes local fixture Git with optional stdin; returns stdout, raising on
-  # unexpected failure. Mutations are confined to the disposable fixture.
-  def git(path, *args, input: "")
-    stdout, stderr, status = Open3.capture3("git", *args, chdir: path, stdin_data: input)
-    raise stderr unless status.success?
-    stdout
-  end
-
-  # Writes the currently edited proposal as UTF-8 JSON; filesystem errors propagate.
-  def save_manifest
-    File.write(@json, JSON.pretty_generate(@manifest))
-  end
-
-  # Returns HEAD, index entries and non-Git file bytes/modes for preservation checks.
-  def state(path)
-    files = Dir.glob("**/*", File::FNM_DOTMATCH, base: path).reject { |entry| entry == ".git" || entry.start_with?(".git/") }
-    [git(path, "rev-parse", "HEAD"), git(path, "ls-files", "--stage"), files.select { |entry| File.file?(File.join(path, entry)) }.sort.to_h { |entry| [entry, [File.stat(File.join(path, entry)).mode & 0o777, File.binread(File.join(path, entry))]] }]
-  end
-
-  # Creates unrelated staged, unstaged, partially staged, deleted and untracked
-  # files in both disposable repos. Returns nil; native setup failures raise.
-  def dirty_repositories
-    [@a, @b].each do |repo|
-      File.write(File.join(repo, "file.txt"), "staged version\n")
-      File.write(File.join(repo, NONPORTABLE_PATHS[2]), "staged only\n")
-      git(repo, "add", "--", "file.txt", NONPORTABLE_PATHS[2])
-      File.write(File.join(repo, "file.txt"), "different worktree version\n")
-      File.chmod(0o755, File.join(repo, "file.txt"))
-      File.unlink(File.join(repo, NONPORTABLE_PATHS[0]))
-      git(repo, "rm", "--", NONPORTABLE_PATHS[1])
-      File.binwrite(File.join(repo, NONPORTABLE_PATHS[3]), "unstaged\x00\xff".b)
-      File.chmod(0o644, File.join(repo, NONPORTABLE_PATHS[3]))
-      File.binwrite(File.join(repo, "untracked (keep & dûm's).bin"), "keep\x00\xfe".b)
-    end
-    File.write(File.join(@a, "state", "ACT-UX-02.yml"), "result: operator edit\n")
-    File.chmod(0o755, File.join(@a, "state", "ACT-UX-02.yml"))
-    nil
-  end
-
-  # Adds a tracked-file edit to the reviewed patch, then restores fixture bytes.
-  # Returns the saved manifest; filesystem/native setup errors propagate.
-  def overlapping_proposal
-    File.write(File.join(@a, "file.txt"), "proposal version\n")
-    @patch += git(@a, "diff", "--binary", "--no-renames")
-    File.write(File.join(@a, "file.txt"), "base\n")
-    File.binwrite(@patch_path, @patch)
-    @manifest["paths"] << "file.txt"
-    @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch)
-    save_manifest
-  end
+  include ApplyHandoffFixtures
 
   # Runs the actual CLI from unrelated cwd, using a PTY for stdin only. Each
   # response/callback occurs after its displayed prompt; stdout/stderr remain raw.
@@ -226,7 +96,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   end
 
   def test_public_cli_new_task_sibling_validation_and_target_commit
-    [[true, false], [false, false], [false, true], [true, true]].each do |drift, untracked|
+    [[true, true]].each do |drift, untracked|
       fixture(nonportable: true) do
         if drift
           [@a, @b].each do |repo|
@@ -376,50 +246,6 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     end
   end
 
-  # All malformed contracts refuse before target mutation, including literal
-  # shell payloads in action/task/path/environment fields. No payload is evaluated.
-  def test_invalid_contracts_and_injection_leave_bytes_index_and_head_unchanged
-    fixture do
-      original = Marshal.dump(@manifest)
-      before = [state(@a), state(@b)]
-      edits = [
-        -> { @manifest["schema"] = "future/v2" },
-        -> { @manifest.delete("target") },
-        -> { @manifest["extra"] = "ignored?" },
-        -> { @manifest["paths"] = ["../escape"] },
-        -> { @manifest["paths"] = [".GiT/config"] },
-        -> { @manifest["paths"] = ["tasks/NEW.yml", "tasks/NEW.yml"] },
-        -> { @manifest["patch"]["file"] = "../new task.patch" },
-        -> { @manifest["patch"]["sha256"] = "z" * 64 },
-        -> { @manifest["repositories"]["data"]["baseline"] = "x" },
-        -> { @manifest["repositories"]["data"]["remote_url"] = "#{@b}.git" },
-        -> { @manifest["repositories"]["tool"]["remote_url"] = "#{@a}.git" },
-        -> { @manifest["repositories"]["data"]["path"] = "../A" },
-        -> { @manifest["validation"][0]["action"] = "sh; touch injected" },
-        -> { @manifest["validation"][0]["cwd"] = "../B" },
-        -> { @manifest["validation"][0]["env"]["RUBYOPT"] = "-r./injected" },
-        -> { @manifest["validation"][0]["env"]["AGENT_CODING_TOOL_DATA_DIR"] = "unknown" },
-        -> { @manifest["validation"][0]["executable"] = "sh" },
-        -> { @manifest["validation"][0] = { "action" => "bundle_rake", "repository" => "tool", "cwd" => ".", "env" => {}, "tasks" => ["test; touch injected"] } },
-        -> { @manifest["validation"] = [] },
-        -> { @manifest["commit_message"] = "title\nbody" }
-      ]
-      edits.each do |edit|
-        @manifest = Marshal.load(original)
-        edit.call
-        save_manifest
-        _stdout, stderr, status = cli(%w[y y y], terminal: false)
-        assert_equal 2, status.exitstatus, stderr
-        assert_equal before, [state(@a), state(@b)]
-        refute File.exist?(File.join(@root, "injected"))
-      end
-      File.write(@json, "{invalid")
-      _stdout, _stderr, status = cli([], terminal: false)
-      assert_equal 2, status.exitstatus
-      assert_equal before, [state(@a), state(@b)]
-    end
-  end
-
   # Native Git rejects proposal overlap, occupied destinations, patch tampering,
   # applicability errors, occupied additions and unsafe symlink destinations.
   def test_preflight_artifact_git_and_symlink_refusals_are_read_only
@@ -429,18 +255,12 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "file.txt"); File.write(File.join(@a, "file.txt"), "base\n") },
       -> { git(@a, "update-index", "--index-info", input: "100644 #{git(@a, 'rev-parse', 'HEAD:file.txt').strip} 1\tfile.txt\n") },
       -> { git(@a, "update-index", "--assume-unchanged", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
+      -> { git(@a, "update-index", "--skip-worktree", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
       -> { File.write(@task, "occupied") },
       -> { FileUtils.rmdir(File.dirname(@task)); File.write(File.dirname(@task), "occupied parent") },
       -> { FileUtils.mkdir_p(@task); File.write(File.join(@task, "nested.txt"), "occupied child") },
       -> { File.write(File.join(@a, ".git", "info", "exclude"), "tasks/NEW.yml\n") },
-      -> { File.binwrite(@patch_path, @patch + "tamper") },
-      -> { File.unlink(@patch_path) },
-      -> { File.rename(@patch_path, "#{@patch_path}.original"); File.symlink("#{@patch_path}.original", @patch_path) },
       -> { @patch = @patch.sub("@@ -0,0 +1,9 @@", "@@ -0,0 +1,99 @@"); File.binwrite(@patch_path, @patch); @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch); save_manifest },
-      -> { @manifest["paths"] = ["unexpected.txt"]; save_manifest },
-      -> { @patch = "diff --git a/file.txt b/moved.txt\nsimilarity index 100%\nrename from file.txt\nrename to moved.txt\n"; File.binwrite(@patch_path, @patch); @manifest["paths"] = ["moved.txt"]; @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch); save_manifest },
-      -> { @patch = @patch.sub("100644", "120000"); File.binwrite(@patch_path, @patch); @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch); save_manifest },
-      -> { FileUtils.rmdir(File.dirname(@task)); File.symlink(@b, File.dirname(@task)) }
     ]
     mutations.each_with_index do |mutation, index|
       fixture do
@@ -452,6 +272,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
           assert_includes stderr, 'proposal conflict: "file.txt"'
         elsif index == 3
           assert_includes stderr, 'unresolved merge/index entries: "file.txt"'
+        elsif [4, 5].include?(index)
+          assert_includes stderr, "hidden index flags"
         end
         assert_equal before, [state(@a), state(@b)]
       end
@@ -490,23 +312,19 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       assert_includes stderr, "SHA-256"
       refute File.exist?(@task)
     end
-    [1, 2, 3].product(%i[file head index]).each do |phase, mutation|
+    [1, 2, 3].each do |phase|
       fixture(nonportable: true) do
         concurrent = File.join(@a, NONPORTABLE_PATHS.fetch(phase - 1))
         changed_index = nil
         answers = Array.new(phase - 1, "y") + [lambda do
-          case mutation
-          when :file then File.write(concurrent, "concurrent")
-          when :head then git(@a, "commit", "--allow-empty", "-m", "concurrent")
-          when :index then git(@a, "update-index", "--chmod=+x", "file.txt")
-          end
+          File.write(concurrent, "concurrent")
           changed_index = state(@a)[1]
           "y"
         end]
         stdout, stderr, status = cli(answers)
         assert_equal 2, status.exitstatus, stdout
         assert_includes stderr, "changed"
-        assert_equal "concurrent", File.read(concurrent) if mutation == :file
+        assert_equal "concurrent", File.read(concurrent)
         assert_equal changed_index, state(@a)[1]
         assert_equal phase > 1, File.exist?(@task)
         refute_includes stdout, "committed locally"
@@ -516,32 +334,6 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         assert_includes stdout, "Apply outcome: #{expected_outcome}"
       end
     end
-    # Reuse each preview-only fixture, restoring only the injected change after
-    # each refusal. Every callback runs after preview, before application consent.
-    fixture do
-      [@a, @b].each do |repo|
-        local = File.join(repo, "local notes (dûm & author's).bin")
-        File.binwrite(local, "keep\x00\xff".b)
-        mutations = [
-          -> { File.write(local, "concurrent") },
-          -> { File.chmod(0o755, local) },
-          -> { File.unlink(local) },
-          -> { File.write(File.join(repo, "unexpected.bin"), "concurrent") }
-        ]
-        mutations.each do |mutation|
-          stdout, stderr, status = cli([-> { mutation.call; "y" }])
-          assert_equal 2, status.exitstatus, stdout + stderr
-          assert_includes stderr, "changed since review"
-          refute File.exist?(@task)
-          assert_empty git(@a, "diff", "--cached", "--name-only")
-          assert_empty git(@b, "diff", "--cached", "--name-only")
-          File.binwrite(local, "keep\x00\xff".b)
-          File.chmod(0o644, local)
-          unexpected = File.join(repo, "unexpected.bin")
-          File.unlink(unexpected) if File.exist?(unexpected)
-        end
-      end
-    end
     fixture do
       cli(%w[y n])
       before = state(@a)
@@ -549,15 +341,6 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       assert_equal 2, status.exitstatus
       assert_match(/proposal conflict|already occupied/, stderr)
       assert_equal before, state(@a)
-    end
-    ["data", "tool"].each do |name|
-      fixture do
-        repo = name == "data" ? @a : @b
-        _stdout, stderr, status = cli([-> { git(repo, "commit", "--allow-empty", "-m", "concurrent"); "y" }])
-        assert_equal 2, status.exitstatus
-        assert_includes stderr, "changed"
-        refute File.exist?(@task)
-      end
     end
     fixture do
       File.write(File.join(@b, ".gitignore"), "/tmp/\n")
@@ -580,13 +363,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   # Even exit-zero validation cannot modify target/sibling source unnoticed.
   # Ignored generated coverage is narrowly allowed and can coexist with commit.
   def test_validation_source_changes_refuse_and_generated_output_is_bounded
-    ["File.write(#{NONPORTABLE_PATHS.last.dump}, 'changed')",
-     'File.write(File.join(ENV.fetch("AGENT_CODING_TOOL_DATA_DIR"), "file.txt"), "changed")',
-     "File.write(#{IGNORED_PATH.dump}, 'changed')",
-     'File.unlink("local.bin")',
-     'File.chmod(0o755, "local.bin")',
-     'File.write("unexpected.bin", "changed")',
-     'File.write("verify.rb", "changed"); exit 23'].each do |script|
+    ['File.write(File.join(ENV.fetch("AGENT_CODING_TOOL_DATA_DIR"), "file.txt"), "changed")'].each do |script|
       fixture(script: script, nonportable: true) do
         File.binwrite(File.join(@b, "local.bin"), "keep\x00\xff".b)
         stdout, stderr, status = cli(%w[y y y])

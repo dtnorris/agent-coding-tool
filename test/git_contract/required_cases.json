@@ -1,4 +1,8 @@
 {
+  "test/git_contract/apply_handoff_contract.rb": [
+    "ApplyHandoffContract#test_complete_run_decision_matrices_with_native_parity",
+    "ApplyHandoffContract#test_strict_transport_and_ambient_git_refusal"
+  ],
   "test/git_contract/feedback_contract.rb": [
     "FeedbackContract#test_bytes_exit_and_signal",
     "FeedbackContract#test_spawn_exception_and_invalid_deadline",

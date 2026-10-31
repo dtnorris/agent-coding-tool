@@ -294,11 +294,41 @@
     "RunEvidenceTest#test_regular_finder_metadata_coexists_with_run_and_checkpoint_selection": [],
     "RunEvidenceTest#test_inventory_refuses_symlinks_and_unknown_entries": [],
     "RunEvidenceTest#test_durable_limits_stop_and_expiry": [],
-    "RunEvidenceTest#test_budget_boundaries_and_grant_closure": []
+    "RunEvidenceTest#test_budget_boundaries_and_grant_closure": [],
+    "RunEvidenceTest#test_adapter_ledger_transient_contention": [],
+    "RunEvidenceTest#test_adapter_ledger_persistent_contention": [],
+    "RunEvidenceTest#test_adapter_ledger_stop_and_expiry_after_contention": [],
+    "RunEvidenceTest#test_tunnel_status_is_closed_and_independent_of_candidate_identity": []
   },
   "test/incidental_metadata_test.rb": {
     "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental": [],
     "IncidentalMetadataTest#test_status_filters_only_proven_untracked_metadata": [],
     "IncidentalMetadataTest#test_closeout_hash_compatibility_and_explicit_evidence": []
+  },
+  "test/tunnel_credential_test.rb": {
+    "TunnelCredentialTest#test_dotenv_quotes_precedence_and_explicit_path": [],
+    "TunnelCredentialTest#test_dotenv_is_data_and_only_requested_key_is_returned": [],
+    "TunnelCredentialTest#test_invalid_inputs_are_fixed_and_do_not_prompt": [],
+    "TunnelCredentialTest#test_preserved_opaque_reason_and_safe_replacement": []
+  },
+  "test/evidence_tunnel_test.rb": {
+    "EvidenceTunnelTest#test_owner_retries_transient_ledger_contention": [],
+    "EvidenceTunnelTest#test_owner_bounds_sustained_initial_contention": [],
+    "EvidenceTunnelTest#test_owner_retries_contention_while_ready": [],
+    "EvidenceTunnelTest#test_owner_contention_cannot_defer_expiry": [],
+    "EvidenceTunnelTest#test_owner_bounds_sustained_contention_after_start": [],
+    "EvidenceTunnelTest#test_owner_stops_retrying_at_cached_expiry": [],
+    "EvidenceTunnelTest#test_owner_refuses_genuine_ledger_errors": [],
+    "EvidenceTunnelTest#test_owner_observes_stop_during_readiness": [],
+    "EvidenceTunnelTest#test_owner_observes_wall_expiry_during_readiness": [],
+    "EvidenceTunnelTest#test_owner_observes_monotonic_expiry_during_readiness": [],
+    "EvidenceTunnelTest#test_owner_observes_controller_loss_during_readiness": [],
+    "EvidenceTunnelTest#test_owner_observes_interruption_during_readiness": [],
+    "EvidenceTunnelTest#test_owner_observes_startup_deadline_during_readiness": [],
+    "EvidenceTunnelTest#test_readiness_bounds_slow_headers": [],
+    "EvidenceTunnelTest#test_readiness_bounds_slow_body": [],
+    "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls": [],
+    "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch": [],
+    "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch": []
   }
 }

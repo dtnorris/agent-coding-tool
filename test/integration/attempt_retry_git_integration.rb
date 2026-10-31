@@ -162,6 +162,48 @@ class AttemptRecoveryTest < Minitest::Test
     output
   end
 
+  # Runs real recovery/launcher decisions with exact finite lsof observations.
+  # Only boot identity and lsof results are injected; native Git, PID checks,
+  # locks, validation and durable writes execute normally. Returns the block's
+  # result; unexpected or unconsumed requests raise even during a refusal.
+  def with_decision_liveness(checks)
+    observations = if checks.zero?
+                     []
+                   else
+                     reports.flat_map { |report| report.fetch("worktrees").fetch("entries") }.map do |entry|
+                       recovery_observation(nil, "lsof", "-n", "-P", "+D", entry.fetch("path"), exit_code: 1)
+                     end * checks
+                   end
+    replay = GitContract::Replay.new(observations)
+    liveness = AgentCodingTool::RetryLiveness.new(capture: replay)
+    AgentCodingTool::RetryLiveness.stub(:host_identity, { "fixture_boot" => "deterministic external identity" }) do
+      AgentCodingTool::RetryLiveness.stub(:new, liveness) { yield }
+    end
+  ensure
+    assert replay.verify! if replay
+  end
+
+  # Runs repeated recovery commands through the real public parser in-process.
+  # Returns the CLI's integer result and raw streams; unexpected external
+  # requests raise. Full launches and cold restart journeys remain native.
+  def decision_cli(*args, liveness_checks: 0)
+    raise ArgumentError, "not a recovery decision command" unless %w[record worktrees close-attempt prepare].include?(args.first)
+
+    out, err = StringIO.new, StringIO.new
+    with_decision_liveness(liveness_checks) do
+      result = AgentCodingTool::CLI.run(args, root: Dir.pwd, data_root: @data, out: out, err: err)
+      [result, out.string, err.string]
+    end
+  end
+
+  # Requires success from a real in-process decision command and returns stdout.
+  # CLI refusals become assertion failures; strict observation errors propagate.
+  def decision_succeeds(*args, **options)
+    status, output, error = decision_cli(*args, **options)
+    assert_equal 0, status, "#{args.inspect}: #{error}"
+    output
+  end
+
   # Returns reports sorted by independently recorded attempt number.
   def reports
     Dir.glob("#{@data}-runs/T/*/handoff.json").map { |path| JSON.parse(File.binread(path)) }.sort_by { |report| report.fetch("attempt") }
@@ -341,7 +383,8 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # Public cold CLI journey changes both membership and access between attempts.
+  # Native launches change both membership and access between attempts; repeated
+  # recovery decisions use the public parser in-process with exact lsof results.
   # Native Git ownership remains real; fake worker/sandbox/boot/lsof boundaries
   # are the same as this suite's other journeys. No inference or host isolation
   # acceptance is claimed. Old evidence/resources remain protected and unchanged.
@@ -349,7 +392,7 @@ class AttemptRecoveryTest < Minitest::Test
     fixture(readers: 2) do
       succeeds("launch", "T", "--codex")
       first = reports.first
-      succeeds("record", "T", "blocked")
+      decision_succeeds("record", "T", "blocked")
       task = YAML.safe_load_file(File.join(@data, "tasks", "T.yml"))
       repositories = task.fetch("repositories")
       repositories.fetch("writer")["access"] = "read_only"
@@ -357,13 +400,13 @@ class AttemptRecoveryTest < Minitest::Test
       repositories["added"] = repositories.delete("reader2").merge("access" => "write")
       File.write(File.join(@data, "tasks", "T.yml"), YAML.dump(task))
       old = bytes(File.dirname(first.fetch("worktrees_path")))
-      succeeds("worktrees", "T")
-      status, _output, error = cli("prepare", "T", "--retry")
+      decision_succeeds("worktrees", "T")
+      status, _output, error = decision_cli("prepare", "T", "--retry")
       assert_equal 2, status
       assert_includes error, "explicit close-attempt required"
-      succeeds("close-attempt", "T", "--dry-run")
-      succeeds("close-attempt", "T")
-      succeeds("prepare", "T", "--retry")
+      decision_succeeds("close-attempt", "T", "--dry-run", liveness_checks: 1)
+      decision_succeeds("close-attempt", "T", liveness_checks: 3)
+      decision_succeeds("prepare", "T", "--retry", liveness_checks: 1)
       succeeds("launch", "T", "--codex")
       second = reports.last
       assert_equal 2, second.fetch("attempt")
@@ -372,7 +415,7 @@ class AttemptRecoveryTest < Minitest::Test
       entries = second.fetch("worktrees").fetch("entries")
       assert_equal "read_only", entries.find { |entry| entry["name"] == "writer" }.fetch("access")
       assert_equal %w[added reader1], entries.select { |entry| entry["access"] == "write" }.map { |entry| entry.fetch("name") }.sort
-      assert_equal 2, JSON.parse(succeeds("worktrees", "T")).fetch("attempts").length
+      assert_equal 2, JSON.parse(decision_succeeds("worktrees", "T")).fetch("attempts").length
       assert_operator second.fetch("sandbox_probe").fetch("protected_paths"), :>=, first.fetch("worktrees").fetch("entries").length
       assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
       first.fetch("worktrees").fetch("entries").each do |entry|
@@ -550,7 +593,11 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # Nonzero and invalid-final reports are execution facts, separate from result.
+  # Actual nonzero and invalid-final execution facts each retain a cold native
+  # launch. Their closeout/fresh-preparation decisions need no second worker:
+  # create/inspect the new native inventory from the real prepared state instead.
+  # The public exit-zero and historical journeys own the complete second launch,
+  # sandbox protection, prompt consumption and cold reconstruction handoffs.
   def test_unsuccessful_execution_statuses_can_close_and_retry
     %w[nonzero invalid].each do |mode|
       fixture do
@@ -558,11 +605,43 @@ class AttemptRecoveryTest < Minitest::Test
         assert_equal(mode == "nonzero" ? 7 : 0, cli("launch", "T", "--codex").first)
         first = reports.first
         assert_equal(mode == "invalid" ? "invalid_final" : "exited", first.fetch("status"))
-        succeeds("record", "T", "needs_judgment")
-        succeeds("close-attempt", "T")
-        succeeds("prepare", "T", "--retry")
-        File.write(File.join(@fixture, "mode"), "clean")
-        succeeds("launch", "T", "--codex")
+        assert_equal(mode == "nonzero" ? 7 : 0, first.fetch("exit_status"))
+        assert_equal(mode != "invalid", first.fetch("final_valid"))
+        old = bytes(File.dirname(first.fetch("worktrees_path"))).merge(bytes(first.fetch("workspace")))
+                   .to_h { |path, content| [path, [content, File.stat(path).mode & 0o777]] }
+        decision_succeeds("record", "T", "needs_judgment")
+        before = bytes
+        status, _output, error = decision_cli("prepare", "T", "--retry")
+        assert_equal 2, status
+        assert_includes error, "explicit close-attempt required"
+        assert_equal before, bytes
+        decision_succeeds("close-attempt", "T", liveness_checks: 3)
+        decision_succeeds("prepare", "T", "--retry", liveness_checks: 1)
+        prepared = @states.load("T")
+        refute_equal first.fetch("prepared_at"), prepared.fetch("prepared_at")
+        assert_equal first.fetch("preparation"), prepared.fetch("snapshot")
+        assert_nil prepared["result"]
+        assert_nil prepared["started_at"]
+        coordinator = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data, out: StringIO.new, err: StringIO.new).send(:coordinator)
+        assert_equal File.binread(prepared.fetch("prompt_path")), coordinator.launch_prompt("T").b
+        # Exercise the launcher's real terminal-status/reused-preparation gate
+        # for each produced failure, without repeating preflight and execution.
+        launcher = AgentCodingTool::Launcher.new(coordinator: coordinator, data_root: @data,
+          source_root: Dir.pwd, out: StringIO.new, err: StringIO.new)
+        with_decision_liveness(1) do
+          assert_equal [first.fetch("invocation_id")], launcher.send(:prior_runs!, "T", prepared).map { |report| report.fetch("invocation_id") }
+        end
+        task = AgentCodingTool::TaskStore.new(File.join(@data, "tasks")).load("T")
+        manager = AgentCodingTool::WorktreeManager.new(root: @visible,
+          record_path: File.join(@fixture, "retry-inventory.json"), attempt_paths: true, invocation_id: "native-retry-handoff")
+        assert_equal ["verified"], manager.creation_readiness!(task: task, snapshot: prepared.fetch("snapshot")).map { |row| row.fetch("status") }
+        inventory = manager.create(task_id: "T", attempt: 2, task: task, snapshot: prepared.fetch("snapshot"))
+        assert_equal inventory, manager.inspect!
+        entry = inventory.fetch("entries").fetch(0)
+        refute_equal first.fetch("workspace"), entry.fetch("path")
+        assert_equal @base, git("rev-parse", "HEAD", directory: entry.fetch("path"))
+        assert_equal "act/T/attempt-2", git("branch", "--show-current", directory: entry.fetch("path"))
+        assert_equal old, old.keys.to_h { |path| [path, [File.binread(path), File.stat(path).mode & 0o777]] }
       end
     end
   end
@@ -775,9 +854,9 @@ class AttemptRecoveryTest < Minitest::Test
         sibling = bytes(File.dirname(sibling_report.fetch("worktrees_path"))).merge(bytes(sibling_report.fetch("workspace")))
         sibling_state = @states.load("B")
         sibling_head = git("rev-parse", "refs/heads/act/B/attempt-1", directory: File.join(@fixture, "writer"))
-        succeeds("record", "T", "blocked")
-        succeeds("close-attempt", "T")
-        succeeds("prepare", "T", "--retry")
+        decision_succeeds("record", "T", "blocked")
+        decision_succeeds("close-attempt", "T", liveness_checks: 3)
+        decision_succeeds("prepare", "T", "--retry", liveness_checks: 1)
         succeeds("launch", "T", "--codex", "--allow-write-collision")
         assert_equal sibling, sibling.keys.to_h { |path| [path, File.binread(path)] }
         assert_equal sibling_state, @states.load("B")

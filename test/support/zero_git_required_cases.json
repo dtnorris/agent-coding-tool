@@ -1,0 +1,18 @@
+[
+  "NoGitExecutionVerifier#test_coverage_context_cannot_be_deleted_or_replaced",
+  "NoGitExecutionVerifier#test_unsetenv_others_cannot_omit_coverage_context",
+  "NoGitExecutionVerifier#test_approved_child_starts_coverage_and_writes_evidence",
+  "NoGitExecutionVerifier#test_malicious_process_and_pipe_routes",
+  "NoGitExecutionVerifier#test_product_refusal_cannot_swallow_boundary",
+  "NoGitExecutionVerifier#test_approved_binary_transport_and_single_use",
+  "NoGitExecutionVerifier#test_text_and_signal_status",
+  "NoGitExecutionVerifier#test_permit_binds_bootstrap_argv_environment_and_native_entry",
+  "NoGitExecutionVerifier#test_descendants_and_ordinary_prohibition",
+  "NoGitExecutionVerifier#test_changed_identities_and_spawn_error",
+  "NoGitExecutionVerifier#test_audit_scope",
+  "SourceIdentityVerifier#test_normal_loose_ref_and_source_hash",
+  "SourceIdentityVerifier#test_detached_packed_and_loose_precedence",
+  "SourceIdentityVerifier#test_worktree_pointer_and_commondir",
+  "SourceIdentityVerifier#test_absent_and_unsupported_layouts",
+  "SourceIdentityVerifier#test_fake_state_cannot_redirect_source_provenance"
+]

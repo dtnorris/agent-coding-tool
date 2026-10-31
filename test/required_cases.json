@@ -475,6 +475,8 @@
       "ManualParallelLaunchTest#test_preflight_races_refuse_before_reservation",
       "ManualParallelLaunchTest#test_automatic_and_explicit_delivery_remain_disabled",
       "ManualParallelLaunchTest#test_manual_candidate_refuses_and_terminal_non_candidate_remains_nonblocking",
+      "ManualParallelLaunchTest#test_manual_worker_missed_release_expires_and_is_reaped",
+      "ManualParallelLaunchTest#test_manual_preflight_observations_retain_native_parity_and_refuse_omissions",
       "ManualParallelLaunchTest#test_manual_overlap_retains_candidate_when_source_moves_during_execution"
     ],
     "test/integration/multi_delivery_git_integration.rb": [

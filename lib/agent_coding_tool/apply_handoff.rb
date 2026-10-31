@@ -339,14 +339,19 @@ module AgentCodingTool
         identity = RepositoryIdentity.resolve(git!(repo, "remote", "get-url", @config.default_remote).strip)
         raise Error, "wrong repository identity" unless identity == repo.fetch(:identity)
         head = git!(repo, "rev-parse", "HEAD").strip
-        tracked = git!(repo, "ls-files", "-z", "--cached").split("\0")
-        unmerged = git!(repo, "ls-files", "--unmerged", "-z").split("\0").map { |entry| entry.split("\t", 2).last }.uniq
+        # One NUL-delimited inventory keeps stage, flags and arbitrary path
+        # bytes together. Untracked entries have a distinct "? " prefix; only
+        # ordinary stage-zero H entries may contribute to the preserved index.
+        others, entries = git!(repo, "ls-files", "--stage", "-v", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+                              .partition { |entry| entry.start_with?("? ") }
+        unmerged = entries.reject { |entry| entry.split("\t", 2).first.end_with?(" 0") }.map { |entry| entry.split("\t", 2).last }.uniq
         raise Error, "#{name}: unresolved merge/index entries: #{unmerged.map(&:dump).join(', ')}" unless unmerged.empty?
-        flags = git!(repo, "ls-files", "-v", "-z")
-        raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless flags.split("\0").all? { |entry| entry.start_with?("H ") }
+        raise Error, "hidden index flags (assume-unchanged/skip-worktree) are unsupported" unless entries.all? { |entry| entry.start_with?("H ") }
+        index = entries.map { |entry| entry.delete_prefix("H ") + "\0" }.join
+        tracked = entries.map { |entry| entry.split("\t", 2).last }
+        others.map! { |entry| entry.delete_prefix("? ") }
         initial_head = @initial ? @initial.fetch(name).fetch(:head) : head
         initial_paths = git!(repo, "ls-tree", "-r", "--name-only", "-z", initial_head).split("\0")
-        others = git!(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
         ignored = git!(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard").split("\0")
         [others, ignored].each do |paths|
           paths.reject! do |path|
@@ -370,7 +375,7 @@ module AgentCodingTool
                  directory: [File.stat(root).dev, File.stat(root).ino],
                  git_directory: git!(repo, "rev-parse", "--absolute-git-dir"),
                  branch: git!(repo, "rev-parse", "--symbolic-full-name", "HEAD"),
-                 index: git!(repo, "ls-files", "--stage", "-z"),
+                 index: index,
                  index_diff: git!(repo, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv") }]
       end
     end

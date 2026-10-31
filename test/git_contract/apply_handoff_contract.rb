@@ -32,7 +32,7 @@ class ApplyHandoffContract < Minitest::Test
 
   # Calls the real owned native pipe implementation, recording exact requests
   # and native results. Marks partition requests at actual confirmation reads.
-  # Returns [run result, records, marks]; native failures remain test failures.
+  # Returns result, records, marks and initial snapshots; native failures fail.
   def native_run(answers)
     # Match the public CLI driver's removal of only its synthetic skill preload;
     # retain arbitrary inherited options, especially child coverage instrumentation.
@@ -52,7 +52,7 @@ class ApplyHandoffContract < Minitest::Test
     code = native.run(@json)
     assert_equal 0, code, out.string + err.string
     input.verify!
-    [[code, out.string, err.string], records, marks]
+    [[code, out.string, err.string], records, marks, native.instance_variable_get(:@initial)]
   ensure
     ENV["RUBYOPT"] = previous_rubyopt
   end
@@ -121,6 +121,16 @@ class ApplyHandoffContract < Minitest::Test
   # Assertions and strict request consumption fail closed on lost transitions.
   def test_complete_run_decision_matrices_with_native_parity
     fixture(nonportable: true) do
+      # Native parity covers tabs and newlines in tracked names.
+      # Each combined inventory must reconstruct the original four raw reads.
+      raw_path = "raw\tline\nname.bin".b
+      File.binwrite(File.join(@a, raw_path), "protected\x00\xfe".b)
+      File.chmod(0o755, File.join(@a, raw_path))
+      git(@a, "add", "--", raw_path)
+      git(@a, "commit", "-m", "raw index path")
+      @bases[0] = git(@a, "rev-parse", "HEAD").strip
+      @manifest["repositories"]["data"]["baseline"] = @bases[0]
+      save_manifest
       executed = Hash.new(0)
       [@a, @b].each { |repo| File.binwrite(File.join(repo, "local.bin"), "keep\x00\xff".b) }
       @saved_manifest = Marshal.dump(@manifest)
@@ -135,7 +145,7 @@ class ApplyHandoffContract < Minitest::Test
       declined, declined_records, = native_run(["no"])
       assert_equal 0, declined.first, declined.inspect
       assert_equal initial_files, [file_state(@a), file_state(@b)]
-      result, records, marks = native_run(%w[yes yes yes])
+      result, records, marks, initial_states = native_run(%w[yes yes yes])
       assert_equal 0, result.first, result.inspect
       assert_includes result[1], "sibling validation passed"
       assert_includes result[1], "committed locally"
@@ -144,6 +154,16 @@ class ApplyHandoffContract < Minitest::Test
       assert_equal @bases[0], git(@a, "rev-parse", "HEAD^").strip
       assert_equal initial_files[0], file_state(@a).reject { |path, _value| path == "tasks/NEW.yml" }
       assert_equal initial_files[1], file_state(@b)
+      restore_world
+      listing = records.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first.split("\0")
+      untracked, indexed = listing.partition { |entry| entry.start_with?("? ") }
+      assert_equal git(@a, "ls-files", "--stage", "-z").b, indexed.map { |entry| entry.delete_prefix("H ") + "\0" }.join
+      assert_equal git(@a, "ls-files", "-z", "--cached").b.split("\0"), indexed.map { |entry| entry.split("\t", 2).last }
+      assert_equal git(@a, "ls-files", "-v", "-z").b.split("\0"), indexed.map { |entry| "H " + entry.split("\t", 2).last }
+      assert_equal git(@a, "ls-files", "-z", "--others", "--exclude-standard").b.split("\0"), untracked.map { |entry| entry.delete_prefix("? ") }
+      assert_equal git(@a, "ls-files", "--stage", "-z").b, initial_states.fetch("data").fetch(:index)
+      assert_equal git(@b, "ls-files", "--stage", "-z").b, initial_states.fetch("tool").fetch(:index)
+      assert_includes indexed.map { |entry| entry.split("\t", 2).last }, raw_path
       preview = records.take(marks.fetch(0))
       application = records[marks.fetch(0)...marks.fetch(1)]
       validation = records[marks.fetch(1)...marks.fetch(2)]
@@ -180,7 +200,7 @@ class ApplyHandoffContract < Minitest::Test
           [@a, @b].each { |repo| File.unlink(File.join(repo, "local.bin")) }
           selected = records.map do |record|
             output = record.fetch(:result).first
-            output = output.split("\0").reject { |path| path == "local.bin" }.map { |path| "#{path}\0" }.join if record.fetch(:argv).include?("--others")
+            output = output.split("\0").reject { |path| ["local.bin", "? local.bin"].include?(path) }.map { |path| "#{path}\0" }.join if record.fetch(:argv).include?("--others")
             output = output.lines.reject { |line| line == "?? local.bin\n" }.join if record.fetch(:argv)[1] == "status"
             record.merge(result: [output, *record.fetch(:result).drop(1)])
           end
@@ -274,8 +294,8 @@ class ApplyHandoffContract < Minitest::Test
           if %i[head sibling_head].include?(mutation)
             inspection = changed_output(inspection, %w[git rev-parse HEAD], mutation == :head ? @a : @b, "#{'c' * 40}\n")
           elsif mutation == :index
-            native_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -z] }.fetch(:result).first
-            inspection = changed_output(inspection, %w[git ls-files --stage -z], @a, native_index.sub("100644", "100755"))
+            native_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @a, native_index.sub("100644", "100755"))
           end
           answers = Array.new(phase - 1, "y") + [lambda do
             File.binwrite(@patch_path, "tampered") if mutation == :patch
@@ -302,7 +322,8 @@ class ApplyHandoffContract < Minitest::Test
           restore_world
           inspection = snapshot
           if mutation == :addition
-            inspection = changed_output(inspection, %w[git ls-files -z --others --exclude-standard], repo, "local.bin\0unexpected.bin\0")
+            native_listing = inspection.find { |record| record.fetch(:cwd) == repo && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], repo, native_listing + "? unexpected.bin\0")
           end
           local = File.join(repo, "local.bin")
           answer = lambda do
@@ -334,7 +355,8 @@ class ApplyHandoffContract < Minitest::Test
         inspection = after_step
         execution = validation_prefix
         if mutation == :addition
-          inspection = changed_output(inspection, %w[git ls-files -z --others --exclude-standard], @b, "local.bin\0unexpected.bin\0")
+          native_listing = inspection.find { |record| record.fetch(:cwd) == @b && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+          inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @b, native_listing + "? unexpected.bin\0")
         elsif mutation == :failing_source
           execution = validation_prefix[0...-1] + [validation_prefix.last.merge(result: ["".b, "".b, 23])]
         end

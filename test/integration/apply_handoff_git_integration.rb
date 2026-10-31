@@ -255,6 +255,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "file.txt"); File.write(File.join(@a, "file.txt"), "base\n") },
       -> { git(@a, "update-index", "--index-info", input: "100644 #{git(@a, 'rev-parse', 'HEAD:file.txt').strip} 1\tfile.txt\n") },
       -> { git(@a, "update-index", "--assume-unchanged", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
+      -> { git(@a, "update-index", "--skip-worktree", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
       -> { File.write(@task, "occupied") },
       -> { FileUtils.rmdir(File.dirname(@task)); File.write(File.dirname(@task), "occupied parent") },
       -> { FileUtils.mkdir_p(@task); File.write(File.join(@task, "nested.txt"), "occupied child") },
@@ -271,6 +272,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
           assert_includes stderr, 'proposal conflict: "file.txt"'
         elsif index == 3
           assert_includes stderr, 'unresolved merge/index entries: "file.txt"'
+        elsif [4, 5].include?(index)
+          assert_includes stderr, "hidden index flags"
         end
         assert_equal before, [state(@a), state(@b)]
       end

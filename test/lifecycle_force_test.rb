@@ -207,7 +207,8 @@ class LifecycleForceTest < Minitest::Test
       store = AgentCodingTool::StateStore.new(File.join(data, "state"))
       code, _out, error = invoke(aliased_data, coordinator, "received", "T", "--force")
       assert_equal 2, code
-      assert_includes error, "unsafe override state target"
+      # Hard-reset admission rejects this unapproved alias before override I/O.
+      assert_includes error, "hard reset: unsafe symlinked root"
       refute File.exist?(store.state_path("T"))
 
       manager = AgentCodingTool::WorktreeManager

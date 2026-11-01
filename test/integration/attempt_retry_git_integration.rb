@@ -1008,7 +1008,7 @@ class AttemptRecoveryTest < Minitest::Test
     history = JSON.parse(succeeds("worktrees", "T"))
     assert_equal 1, history.fetch("attempts").length
     assert_equal archive, history.fetch("resets").fetch(0).fetch("archive")
-    assert_includes succeeds("status", "T"), archive
+    assert_includes succeeds("status", "T", "--full"), archive
     assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-1", directory: File.join(@fixture, "writer"))
   end
 
@@ -1133,7 +1133,7 @@ class AttemptRecoveryTest < Minitest::Test
         refute_equal "complete", receipt.fetch("phase")
         assert_equal 2, cli("prepare", "T").first
         assert_equal 2, cli("launch", "T", "--codex").first
-        assert_includes succeeds("status", "T"), "unfinished hard reset"
+        assert_includes succeeds("status", "T", "--full"), "unfinished hard reset"
         hard_reset_succeeds("reset", "--hard", "T")
         assert_equal [receipt.fetch("archive")], reset_receipts.map { |record| record.fetch("archive") }
         assert_equal "complete", reset_receipts.fetch(0).fetch("phase")
@@ -1385,7 +1385,7 @@ class AttemptRecoveryTest < Minitest::Test
       task["depends_on"] = []
       task.fetch("repositories").fetch("writer")["path"] = File.join(@fixture, "missing-repository")
       File.write(task_path, YAML.dump(task))
-      output = succeeds("status", "T")
+      output = succeeds("status", "T", "--full")
       assert_includes output, "T: BLOCKED"
       assert_includes output, "configuration: writer: repository path does not exist"
     end

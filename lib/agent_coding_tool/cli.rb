@@ -423,7 +423,7 @@ module AgentCodingTool
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
-        opts.on("--allow-write-collision", "authorize isolated development, including unverified manual reservations") { options[:allow_write_collision] = true }
+        opts.on("--allow-write-collision", "permit unverified manual overlap; verified managed overlap is automatic") { options[:allow_write_collision] = true }
         opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
         opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
       end
@@ -1309,6 +1309,10 @@ module AgentCodingTool
 
       kind = if override.dig("launch", "unverified_manual_conflicts")
                "operator-authorized development; new worker checked at launch; external isolation/liveness unverified; managed delivery disabled"
+             elsif override.dig("launch", "admission_basis") == "default_verified_managed"
+               "default managed admission; last verified ACT launch; current liveness unavailable"
+             elsif override.dig("launch", "admission_basis") == "explicit_permission"
+               "explicit permission; last verified ACT launch; current liveness unavailable"
              else
                override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
              end
@@ -1747,6 +1751,7 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+                              verified managed overlap is automatic; manual overlap requires the flag
           checkpoint export TASK --workspace PATH --base SHA --artifact PATH [--remote NAME]
                               canonical-format-check candidate; no host state writes or test attestation
           checkpoint record TASK --workspace PATH [--artifact PATH]

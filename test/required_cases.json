@@ -240,7 +240,7 @@
       "NextTest#test_next_rejects_arguments_without_reading_or_changing_state"
     ],
     "test/parallel_launch_test.rb": [
-      "ParallelLaunchTest#test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
+      "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
       "ParallelLaunchTest#test_advanced_main_makes_parallel_prepared_baselines_incompatible",
       "ParallelLaunchTest#test_manual_in_flight_worker_remains_unverified_with_launch_flag",
@@ -549,7 +549,9 @@
       "ParallelDeliveryTest#test_tampered_advanced_sibling_validation_blocks_delivery",
       "ParallelDeliveryTest#test_automatic_then_explicit_cli_delivery_keep_separate_task_candidates",
       "ParallelDeliveryTest#test_overlap_refusal_matrix_preserves_sibling_and_unpublished_candidate",
-      "ParallelDeliveryTest#test_automatic_delivery_while_verified_sibling_remains_running"
+      "ParallelDeliveryTest#test_automatic_delivery_while_verified_sibling_remains_running",
+      "ParallelDeliveryTest#test_admission_evidence_history_and_mixed_manual_permission",
+      "ParallelDeliveryTest#test_default_admission_rechecks_conflicts_at_each_setup_boundary"
     ],
     "test/integration/publisher_git_integration.rb": [
       "PublisherTest#test_default_publishes_only_lifecycle_files_and_preserves_other_index_content",
@@ -627,7 +629,7 @@
       "LauncherTest#test_external_report_after_worker_handoff_blocks_automatic_and_multi_delivery"
     ],
     "test/parallel_launch_test.rb": [
-      "ParallelLaunchTest#test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
+      "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
       "ParallelLaunchTest#test_advanced_main_makes_parallel_prepared_baselines_incompatible",
       "ParallelLaunchTest#test_manual_in_flight_worker_remains_unverified_with_launch_flag",

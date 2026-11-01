@@ -19,9 +19,12 @@ module AgentCodingTool
 
     # Uses explicit operator paths and existing grant facts. No path is discovered
     # from cwd, a task-specific package, source HEAD or historical process IDs.
-    def initialize(session:, grant:, env_file:, client:, runtime_dir:, out:, err:)
+    # Optional spawn accepts the Process.spawn envelope and returns a child PID;
+    # the native default preserves process options and spawn exceptions.
+    def initialize(session:, grant:, env_file:, client:, runtime_dir:, out:, err:, spawn: nil)
       @path, @grant, @env_file, @client, @runtime_dir = session, grant, env_file, client, runtime_dir
       @out, @err = out, err
+      @spawn = spawn || Process.method(:spawn)
     end
 
     # Starts one approved nonrenewable admission and waits in the foreground.
@@ -219,7 +222,7 @@ module AgentCodingTool
           return 2
         end
         environment = clean_environment.merge("CONTROL_PLANE_API_KEY" => key)
-        pid = Process.spawn(environment, @client, "run", "--config", File.join(@path, "tunnel.json"),
+        pid = @spawn.call(environment, @client, "run", "--config", File.join(@path, "tunnel.json"),
           unsetenv_others: true, pgroup: true, in: File::NULL, out: File::NULL, err: File::NULL, chdir: @path)
         environment.clear
         key = nil

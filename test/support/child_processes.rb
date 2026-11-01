@@ -10,6 +10,12 @@ module ChildProcesses
   FIXTURES = File.realpath(File.join(__dir__, "fixtures")).freeze
 
   HASHES = {
+    "process_family" => "ac335450fd2d2acf30f9a3503a41878108c40784b362fbefc9aee5359f3aebec",
+    "evidence_cli" => "70b60a59ecfb86888f8a4cdbe68c06ea304ea9c1ff092d7b5024346d134d42d0",
+    "launcher_cli" => "a3db63829a6695c0deb038fab6c6b51d49a58c73e6693d6fb74b34e14fd41ec1",
+    "external_activity" => "612f9cc2995860dde1be2a590c18c6b67b51aee96e4121c1906add87cac1c48f",
+    "state_reader" => "26c64e87985ca8bc2c23110e0434893cd81b857072bc2c0fe8ba4ff2723446bb",
+    "planning_consumer" => "bcd6a01ccf04860afcd409e3ac8cfc4a82ea43afda995c7763fb4dd3edf47a90",
     "status" => "2b3b1ffc56c1774ddaf4c11329d6da73984e588cf95ed74049d97a13bc0beeee",
     "manual_worker" => "405dc429f07e250755eb0a4406d7e5afdf47338412ec7e3e517a467a3f89f2e7",
     "cold_cli" => "c0fcdc00673b283c718fd8c93aa3b27b92590afa76eecf26009d98af0b516a69",
@@ -45,6 +51,20 @@ module ChildProcesses
     approval = permit(name, arguments: arguments, environment: environment, endpoint: endpoint, options: { pgroup: true })
     NoGitExecution.with_permit(approval) do
       GitContract::Native.new(seconds: seconds).capture3(approval.environment, *approval.argv, stdin_data: input)
+    end
+  end
+
+  # Opens genuine Open3 pipes under a single-use permit, releasing the permit
+  # before user code can launch another reviewed child. Streams and waiter are
+  # closed/joined exactly as Open3's block API; native errors propagate.
+  def self.popen(name, arguments: [], environment: {}, endpoint: nil)
+    approval = permit(name, arguments: arguments, environment: environment, endpoint: endpoint)
+    streams = NoGitExecution.with_permit(approval) { Open3.popen3(approval.environment, *approval.argv) }
+    begin
+      yield(*streams)
+    ensure
+      streams.take(3).each { |stream| stream.close unless stream.closed? }
+      streams.last.join
     end
   end
 end

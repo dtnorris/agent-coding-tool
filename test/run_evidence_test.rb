@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require_relative "support/child_processes"
 require "stringio"
 require "timeout"
 require "socket"
@@ -690,9 +691,15 @@ class RunEvidenceTest < Minitest::Test
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
-    output, error, status = Open3.capture3(RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", *arguments)
+    output, error, status = ChildProcesses.capture('evidence_cli', arguments: arguments)
     assert status.success?, "CLI #{arguments.first} failed: #{error}"
     JSON.parse(output)
+  end
+
+  # Yields real public CLI pipes and reaped status under one exact child permit.
+  # No observer replaces process, lock, EOF or byte-stream behavior.
+  def popen_evidence(*arguments, &block)
+    ChildProcesses.popen('evidence_cli', arguments: arguments, &block)
   end
 
   # Real kernel contention is released only after a fresh public CLI observes
@@ -702,25 +709,15 @@ class RunEvidenceTest < Minitest::Test
     @session.admit
     @session.charge(wire: 123, decoded: 45)
     before = @session.status
-    probe = <<~'RUBY'
-      trace = TracePoint.new(:c_return) do |event|
-        next unless event.method_id == :flock
-        STDERR.puts(event.return_value == false ? "LOCK_CONTENDED" : "LOCK_ACQUIRED")
-        STDERR.flush
-      end
-      trace.enable
-      load ARGV.shift
-    RUBY
-    command = [RbConfig.ruby, "-e", probe, File.expand_path("../bin/agent-coding-tool", __dir__),
-      "evidence", "stop", "--session", @session_path]
+    command = ['--trace-lock', 'stop', '--session', @session_path]
     File.open(File.join(@session_path, "lock"), File::RDWR) do |lock|
       assert lock.flock(File::LOCK_EX | File::LOCK_NB)
-      output, error, status = Open3.capture3(*command)
+      output, error, status = ChildProcesses.capture('evidence_cli', arguments: command)
       refute status.success?
       assert_empty output
       assert_includes error, "session.busy"
       refute JSON.parse(File.binread(File.join(@session_path, "state.json")))["stopped"]
-      Open3.popen3(*command) do |input, output, error, waiter|
+      popen_evidence(*command) do |input, output, error, waiter|
         input.close
         assert IO.select([error], [], [], 5), "stop never observed the contended lock"
         assert_equal "LOCK_CONTENDED\n", error.gets
@@ -758,8 +755,7 @@ class RunEvidenceTest < Minitest::Test
     end
     flags = ["--task", "FIXTURE", "--attempt", "1", "--invocation", "invocation-1", "--codex-session", "codex-1"]
     manifest = cli("select", "--session", path, *flags)
-    command = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "serve", "--session", path]
-    Open3.popen3(*command) do |input, output, error, waiter|
+    popen_evidence('serve', '--session', path) do |input, output, error, waiter|
       exchange = lambda do |request|
         input.write(JSON.generate(request) + "\n")
         input.flush
@@ -818,7 +814,7 @@ class RunEvidenceTest < Minitest::Test
     assert_equal "complete", read["status"]
     # Controller EOF closes a newly owned foreground process; no signal or
     # historical PID lookup is used. Waiting independently observes direct exit.
-    Open3.popen3(RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "serve", "--session", @session_path) do |input, output, error, waiter|
+    popen_evidence('serve', '--session', @session_path) do |input, output, error, waiter|
       input.close
       assert Timeout.timeout(5) { waiter.value }.success?
       assert_empty output.read
@@ -830,7 +826,7 @@ class RunEvidenceTest < Minitest::Test
     @grant["limits"]["seconds"] = 1
     write_json(@grant_path, @grant)
     cli("start", "--session", expiry_path, "--grant", @grant_path)
-    Open3.popen3(RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "serve", "--session", expiry_path) do |_input, output, error, waiter|
+    popen_evidence('serve', '--session', expiry_path) do |_input, output, error, waiter|
       assert Timeout.timeout(5) { waiter.value }.success?
       assert_empty output.read
       assert_operator error.read.bytesize, :<=, 4096

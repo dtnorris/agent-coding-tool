@@ -29,6 +29,15 @@ class PlanningGuidanceTest < Minitest::Test
       assert status.success?, error
       assert_equal prompt, cold
 
+      # A reviewed cold launcher still requires the actual shared-world handoff.
+      # Losing it cannot fall back to native Git or reserve the prepared task.
+      before = directory_bytes(@data)
+      _output, error, status = ChildProcesses.capture('launcher_cli', arguments: %w[launch T --codex],
+        environment: launcher_environment)
+      refute status.success?
+      assert_includes error, 'missing launcher world handoff'
+      assert_equal before, directory_bytes(@data)
+
       # Verifies that the journey assertion notices a missing required handoff.
       broken = prompt.sub(CodingSkillSupport::PLANNING_TEXT, "")
       assert_raises(Minitest::Assertion) { assert_planning_handoff(broken) }
@@ -418,22 +427,7 @@ class PlanningGuidanceTest < Minitest::Test
   # failures classified as InvalidState. It uses inherited hermetic fixture pins.
   def cold_consume(dir, root: AgentCodingTool::PromptRenderer::SKILL_ROOT,
                    pin: AgentCodingTool::PromptRenderer::PLANNING_SKILL_IDENTITY)
-    script = <<~'RUBY'
-      require "agent_coding_tool"
-      dir, root, pin = ARGV
-      renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: JSON.parse(pin))
-      coordinator = AgentCodingTool::Coordinator.new(
-        task_store: AgentCodingTool::TaskStore.new(File.join(dir, "tasks")),
-        state_store: AgentCodingTool::StateStore.new(File.join(dir, "state")),
-        repo_inspector: nil, prompt_renderer: renderer, prompt_root: File.join(dir, "state", "prompts"))
-      begin
-        STDOUT.binmode.write(coordinator.launch_prompt("T"))
-      rescue AgentCodingTool::InvalidState => error
-        warn error.message
-        exit 2
-      end
-    RUBY
-    Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script, dir, root, JSON.generate(pin))
+    ChildProcesses.capture('planning_consumer', arguments: [dir, root, JSON.generate(pin)])
   end
 
   # Verifies all unsupported adoption/consumption paths leave saved bytes intact.

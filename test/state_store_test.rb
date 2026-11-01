@@ -3,6 +3,7 @@
 require "minitest/mock"
 require "stringio"
 require_relative "test_helper"
+require_relative "support/child_processes"
 
 # Exercises persistence boundaries only with synthetic state in temporary roots.
 class StateStoreTest < Minitest::Test
@@ -295,8 +296,7 @@ class StateStoreTest < Minitest::Test
 
   # Loads state in an independent Ruby process; raises if the reader fails.
   def cold_load(root)
-    script = 'require "json"; require "agent_coding_tool"; puts JSON.generate(AgentCodingTool::StateStore.new(ARGV.fetch(0)).load("T1"))'
-    output, error, status = Open3.capture3(RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-e", script, root)
+    output, error, status = ChildProcesses.capture('state_reader', arguments: [root])
     assert status.success?, error
     JSON.parse(output)
   end

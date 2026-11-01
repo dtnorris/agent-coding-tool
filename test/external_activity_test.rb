@@ -3,6 +3,7 @@
 require "stringio"
 require "timeout"
 require_relative "test_helper"
+require_relative "support/child_processes"
 require "minitest/mock"
 
 # Offline decision/persistence matrix; native/cold-process journeys live with the
@@ -33,6 +34,16 @@ class ExternalActivityTest < Minitest::Test
   # Reports one deterministic payload; optional values exercise each decision seam.
   def report(id = "A", **options)
     @activity.report(id, reporter: "operator", kind: "fake-codex", **options)
+  end
+
+  # Spawns an independently guarded writer with the exact fixture invocation.
+  # Returns its genuine PID; callers reap and compare competing exit statuses.
+  def spawn_activity(operation, id: 'A', identifier: nil)
+    approval = ChildProcesses.permit('external_activity',
+      arguments: [@data, operation, id, *[identifier].compact])
+    NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv)
+    end
   end
 
   # Runs public CLI parsing/projection with real stores and a fake Git boundary.
@@ -306,14 +317,7 @@ class ExternalActivityTest < Minitest::Test
         assert_includes cli("start", "A", expected: 2), "reservation lock"
       end
       children = %w[A B].map do |id|
-        fork do
-          begin
-            report(id, identifier: "shared")
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_activity('report', id: id, identifier: 'shared')
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }.sort
       assert_equal [0, 2], results
@@ -448,31 +452,13 @@ class ExternalActivityTest < Minitest::Test
     fixture do
       @coordinator.prepare("A")
       children = 2.times.map do
-        fork do
-          begin
-            report
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_activity('report')
       end
       assert_equal [0, 2], children.map { |child| Process.wait2(child).last.exitstatus }.sort
       original = @activity.show("A").fetch("active").fetch("observation_id")
       @activity.end_activity("A", original, disposition: "ended")
       children = ["report", "start"].map do |operation|
-        fork do
-          begin
-            if operation == "report"
-              report(identifier: "racing-worker")
-            else
-              @activity.with_lock { |lock| @coordinator.start("A", reservation_lock: lock) }
-            end
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_activity(operation, identifier: 'racing-worker')
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }
       assert results.all? { |status| [0, 2].include?(status) }

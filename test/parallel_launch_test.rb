@@ -33,11 +33,16 @@ class ParallelLaunchTest < Minitest::Test
   end
 
   def spawn_cli_worker(id)
-    Process.spawn(
-      { "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-      RbConfig.ruby, File.join(Dir.pwd, "bin", "agent-coding-tool"), "launch", id, "--codex",
-      chdir: Dir.pwd, out: File.join(@root, "first-out"), err: File.join(@root, "first-err")
-    )
+    approval = ChildProcesses.permit('launcher_cli', arguments: ['launch', id, '--codex'],
+      environment: launcher_environment, endpoint: launcher_endpoint, options: { chdir: Dir.pwd })
+    pid = File.open(File.join(@root, 'first-out'), 'wb') do |output|
+      File.open(File.join(@root, 'first-err'), 'wb') do |error|
+        NoGitExecution.with_permit(approval) do
+          Process.spawn(approval.environment, *approval.argv, **approval.options, out: output, err: error)
+        end
+      end
+    end
+    register_fixture_process(pid)
   end
 
   def stop_cli_worker(host, child)
@@ -75,7 +80,7 @@ class ParallelLaunchTest < Minitest::Test
         assert_equal @base, git("rev-parse", "HEAD", chdir: second.fetch("workspace"))
         assert_equal "act/T/attempt-1", git("branch", "--show-current", chdir: running.fetch("workspace"))
         assert_equal "act/B/attempt-1", git("branch", "--show-current", chdir: second.fetch("workspace"))
-        assert_equal "", git("status", "--porcelain", chdir: @ordinary)
+        assert_equal "", git("status", "--porcelain", "--untracked-files=all", chdir: @ordinary)
         refute_includes second.fetch("argv"), running.fetch("workspace")
         assert_includes File.binread(second.fetch("stdin_path")), running.fetch("workspace")
         authorization = second.fetch("collision_authorization")
@@ -98,8 +103,9 @@ class ParallelLaunchTest < Minitest::Test
         assert_equal "verified", checkpoint.verify("B", workspace: second.fetch("workspace")).fetch("status")
 
         File.write(File.join(@ordinary, "file.txt"), "integrated later\n")
-        git("commit", "-am", "advance main", chdir: @ordinary)
-        git("push", "origin", "main", chdir: @ordinary)
+        git("add", "--", "file.txt", chdir: @ordinary)
+        git("commit", "-m", "advance main", chdir: @ordinary)
+        git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         assert_equal "STALE", @coordinator.status("B").fetch("status")
         assert_equal "verified", checkpoint.verify("B").fetch("status")
         assert_equal @base, handoff("B").fetch("preparation").fetch("alias").fetch("pushed_sha")
@@ -145,8 +151,9 @@ class ParallelLaunchTest < Minitest::Test
       begin
         child = wait_for_running("T").fetch("child_pid")
         File.write(File.join(@ordinary, "file.txt"), "new main\n")
-        git("commit", "-am", "advance main", chdir: @ordinary)
-        git("push", "origin", "main", chdir: @ordinary)
+        git("add", "--", "file.txt", chdir: @ordinary)
+        git("commit", "-m", "advance main", chdir: @ordinary)
+        git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         @coordinator.prepare("B")
         error = assert_raises(AgentCodingTool::InvalidState) {
           launcher.launch("B", allow_write_collision: true)

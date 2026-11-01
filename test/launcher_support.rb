@@ -2,6 +2,8 @@
 
 require 'minitest/mock'
 require_relative 'support/child_processes'
+require_relative 'support/memory_git/broker'
+require_relative 'feedback_runtime'
 
 # Only external boundaries are replaced in decision tests. Coordinator lifecycle,
 # prompt rendering, locks, trust checks and durable evidence use production code.
@@ -85,12 +87,46 @@ module LauncherSupport
     settings = options.reject { |key, _value| pipes.key?(key) }
     forwarded = environment.dup
     forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
-    forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker
+    forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker || ENV['ACT_TEST_MEMORY_ENDPOINT']
     approval = ChildProcesses.permit('launcher_worker', arguments: command, environment: forwarded,
       options: settings, endpoint: @memory_broker&.endpoint)
-    NoGitExecution.with_permit(approval) do
+    pid = NoGitExecution.with_permit(approval) do
       Process.spawn(approval.environment, *approval.argv, **approval.options, **pipes)
     end
+    register_fixture_process(pid)
+  end
+
+  # Binds a newly spawned direct fixture child to its kernel birth identity.
+  # Returns the PID; unavailable inspection or foreign parentage raises.
+  def register_fixture_process(pid)
+    identity = FeedbackRuntime.identity(pid)
+    raise GitContract::UnexpectedObservation, 'fixture child identity unavailable' unless
+      identity && identity.fetch('pid') == pid && identity.fetch('parent') == Process.pid
+    (@fixture_processes ||= {})[pid] = identity
+    pid
+  end
+
+  # Adapts only production's exact Darwin parent/group query for a registered
+  # live child or its direct descendant. Observations come from libproc, never
+  # handoff expectations. Missing observations return failure; foreign/reused
+  # identities and changed argv/options raise without starting a process.
+  def fixture_process_capture(command, options)
+    unless options.empty? && command.length == 7 &&
+           command.take(6) == ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p'] &&
+           command.last.is_a?(String) && command.last.match?(/\A[1-9][0-9]*\z/)
+      raise GitContract::UnexpectedObservation, 'unexpected process query'
+    end
+    pid = Integer(command.last)
+    observed = FeedbackRuntime.identity(pid)
+    return ['', 'fixture process observation unavailable', status_result(false)] unless observed
+
+    registered = (@fixture_processes || {})[pid] || (@fixture_processes || {})[observed.fetch('parent')]
+    anchor = registered && FeedbackRuntime.identity(registered.fetch('pid'))
+    unless registered && observed.fetch('pid') == pid && anchor == registered &&
+           (registered.fetch('pid') != pid || observed == registered)
+      raise GitContract::UnexpectedObservation, 'unowned or reused fixture process'
+    end
+    ["#{observed.fetch('parent')} #{observed.fetch('group')}\n", '', status_result(true)]
   end
 
   def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true,
@@ -108,7 +144,7 @@ module LauncherSupport
   # Unknown setup forms fail rather than fall back to a captured native method.
   def setup_git(*args, chdir: nil)
     raise MemoryGit::Mismatch, "missing launcher world" unless @memory_world
-    result = @memory_world.call(["git", *args], cwd: chdir)
+    result = (@memory_broker || @memory_world).call(["git", *args], cwd: chdir)
     raise "Git fixture failed: #{result.stderr}" unless result.success?
     result.stdout.strip
   end
@@ -117,23 +153,30 @@ module LauncherSupport
   # All remotes are private; mutable_remote remains a legacy keyword. Real worker
   # execution is explicit and guarded; setup/model/protocol failures propagate.
   def fixture(git: false, process: false, mutable_remote: false)
-    Dir.mktmpdir('act-launch-') do |root|
+    # Keep the owned broker's w.sock below Darwin's sockaddr_un path ceiling
+    # even under the longer reconstructed worker TMPDIR. No external fallback.
+    Dir.mktmpdir('al-') do |root|
       @root = File.realpath(root)
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = @root
       @unit_workspace = nil
+      @memory_broker = nil
+      @fixture_processes = {}
       @dep_ordinary = nil
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
       @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
       if git
-        checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
-        @base = checkout.head
+        @ordinary_checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @base = @ordinary_checkout.head
       else
         FileUtils.mkdir_p([@ordinary, @remote])
         File.write(File.join(@ordinary, 'file.txt'), "base\n")
         @base = 'a' * 40
       end
-      MemoryGit::Session.with(@memory_world) do
+      transport = git ? ->(argv, **fields) { (@memory_broker || @memory_world).call(argv, **fields) } : nil
+      MemoryGit::Session.with(transport) do
         File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root, 'worktree_root' => File.join(@root, 'worktrees')))
         write_task(@data, id: 'T', repositories: { 'repo' => { 'access' => 'write', 'path' => @ordinary } })
         write_fake
@@ -156,13 +199,32 @@ module LauncherSupport
         end
       end
     ensure
-      @memory_world&.verify!
+      begin
+        @memory_broker&.close
+        @memory_world&.verify!
+      ensure
+        ENV['TMPDIR'] = previous_tmpdir
+      end
     end
+  end
+
+  # Starts the existing bounded shared-world broker only for a cold launcher.
+  # Parent commands then use the same authority; missing/unsafe sockets raise.
+  def launcher_endpoint
+    @memory_broker ||= MemoryGit::Broker.new(world: @memory_world, directory: @root, case_id: name)
+    @memory_broker.endpoint
+  end
+
+  # Exact cold public-launch environment; no credentials/config are imported.
+  def launcher_environment
+    { 'PATH' => "#{@root}:#{ENV.fetch('PATH')}", 'AGENT_CODING_TOOL_DATA_DIR' => @data,
+      'ACT_LAUNCH_ROOT' => @root, 'ACT_TEST_CODING_SKILL' => ENV.fetch('ACT_TEST_CODING_SKILL') }
   end
 
   # Exact external preflight observations for existing ordinary decision cases.
   # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
+    return fixture_process_capture(command, options) if command.first == 'ps'
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
       return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
     end
@@ -183,15 +245,32 @@ module LauncherSupport
       raise GitContract::UnexpectedObservation, 'unexpected Git options' unless options.keys == [:chdir]
     end
     if command.first == 'git' && @memory_world
-      return @memory_world.call(command, cwd: options.fetch(:chdir)).to_ary
+      return (@memory_broker || @memory_world).call(command, cwd: options.fetch(:chdir)).to_ary
     end
     if command.first.is_a?(Hash)
       env = command.shift
-      allowed_options = [{ unsetenv_others: true },
-                         { chdir: File.join(@root, 'worktrees', 'T', 'repo'), unsetenv_others: true }]
+      # Probe cwd comes from the durable owned inventory, including attempt and
+      # non-T task layouts. A nearby or unrecorded directory is never eligible.
+      reports = Dir.glob("#{@data}-runs/*/*/handoff.json").filter_map do |path|
+        record = JSON.parse(File.binread(path))
+        record if record['schema_version'] == AgentCodingTool::Launcher::SCHEMA && record['worktrees'].is_a?(Hash)
+      end
+      workspaces = reports.flat_map do |record|
+        record.fetch('worktrees').fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+      end
+      allowed_options = [{ unsetenv_others: true }] + workspaces.map do |path|
+        { chdir: path, unsetenv_others: true }
+      end
       raise GitContract::UnexpectedObservation, 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
                                                     allowed_options.include?(options)
       raise GitContract::UnexpectedObservation, "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
+      expected_environment = %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
+      if command.include?('act-probe')
+        report = reports.find { |record| record['workspace'] == options[:chdir] }
+        raise GitContract::UnexpectedObservation, 'unowned sandbox cwd' unless report
+        expected_environment.merge!('TMPDIR' => report.fetch('fixture').fetch('path'), 'CODEX_HOME' => env.fetch('CODEX_HOME'))
+      end
+      raise GitContract::UnexpectedObservation, 'changed preflight environment' unless env == expected_environment
       case command
       when ['--version'] then [@fake_version, '', status_result(true)]
       when ['exec', '--help'] then [@fake_help, '', status_result(true)]
@@ -204,7 +283,9 @@ module LauncherSupport
         raise GitContract::UnexpectedObservation, 'unsupported top-level sandbox flag or inherited configuration' unless
           prefix.length.even? && prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? } &&
           File.directory?(home) && (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
-          home != ENV['CODEX_HOME'] && !home.start_with?("#{@root}/")
+          home != ENV['CODEX_HOME'] && home != env.fetch('TMPDIR') &&
+          File.dirname(home) == @root && File.basename(home).match?(/\Aact-sandbox-config-\d{8}-\d+-[a-z0-9]+\z/) &&
+          !workspaces.any? { |path| home == path || home.start_with?(path + '/') }
         @observed_sandbox_home = home
         raise GitContract::UnexpectedObservation, 'legacy or unenforced sandbox invocation' unless
           command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&

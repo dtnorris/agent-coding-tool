@@ -278,3 +278,34 @@ not successful protocol tests. Independent OS process auditing remains unavailab
 TST-43 integrates the runner/coverage census; TST-45 owns complete integration,
 coverage retention and runtime acceptance. The existing native-Git baseline is
 not rerun or replaced by these component timings.
+
+The launcher fixture keeps its temporary files inside its case world, including
+command-local excludes and the private sandbox configuration home. Probe cwd and
+TMPDIR come from the current durable handoff; changed environments and unowned
+paths are refused. Cold launchers use the same leased broker as their parent.
+No broker starts for an in-process launch or prompt-only cold reader.
+The short `al-` case-directory prefix leaves room for `w.sock` under the
+reconstructed worker's longer TMPDIR; every path remains inside the case world.
+
+On Darwin, the launcher adapter answers only the exact production
+`ps -o ppid= -o pgid= -p PID` query, without process creation, using the existing
+`FeedbackRuntime.identity` libproc observer. Spawned fixture hosts/workers are
+registered by kernel PID/parent/group/birth; queries require that live identity
+or its direct child. Handoff reports never supply observed parent/group values.
+Unknown argv/options, foreign or reused identities raise; unavailable observations
+return failure. Production retains its parent/group and process/group liveness
+checks. The retained fixture-permissions case checks these positive and negative
+paths, including a real two-generation permitted Ruby family. This qualifies the
+observer only; the full cold parallel-launch journey still requires host sockets.
+
+`state_reader`, `planning_consumer`, `external_activity`, `launcher_cli` and
+`evidence_cli` are fixed, hash-pinned Ruby scripts at the existing permit seam.
+They retain actual processes, locks, streams and exit statuses. The interactive
+pipe helper releases its consumed permit before yielding, so another reviewed
+child can run while the first is alive. Each spawn still needs its own permit.
+The external-activity race uses fresh interpreters rather than inherited forks.
+
+These adapters do not authorize native Git or production's tunnel-owner fork.
+Tests requiring those native operations still need their original acceptance
+proof; a memory-world result cannot supply it. Socket denial blocks the existing
+broker tests and must remain visible, without a transport fallback or skip.

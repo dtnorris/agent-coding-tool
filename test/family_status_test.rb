@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "stringio"
+require "minitest/mock"
 require_relative "test_helper"
 
 # Exercises family presentation with the real coordinator/planner and in-memory
@@ -18,6 +19,10 @@ class FamilyStatusTest < Minitest::Test
   States = Struct.new(:rows) do
     # Returns an existing mapping or an empty state for an unprepared task.
     def load(id) = rows.fetch(id, {})
+
+    # Supplies the inert locator required to construct the mocked reset reader.
+    # No file exists here; the scoped reset-history boundary prevents I/O.
+    def state_path(id) = File.join("/unused", "state", "#{id}.yml")
   end
 
   # Declares an empty external-evidence boundary for this in-memory display
@@ -27,6 +32,13 @@ class FamilyStatusTest < Minitest::Test
     def active_snapshot = []
     # Returns no conflicts for any task in this no-observation fixture.
     def conflicts(*, **) = []
+  end
+
+  # Declares no hard-reset history for these task/state presentation fixtures.
+  # Real reset persistence and interrupted-operation fencing use native tests.
+  class NoResetHistory
+    # Returns no receipts for the supplied task; never reads or changes files.
+    def history(_id) = []
   end
 
   # Counts resolution/probe calls; pushed freshness is deterministic and offline.
@@ -558,6 +570,10 @@ class FamilyStatusTest < Minitest::Test
   def client(coordinator, out: StringIO.new, err: StringIO.new)
     cli = AgentCodingTool::CLI.new(root: "/unused", data_root: "/unused", out:, err:)
     cli.instance_variable_set(:@coordinator, coordinator)
+    # Keep both successful and refused public calls inside the declared boundary.
+    cli.define_singleton_method(:run) do |arguments|
+      AgentCodingTool::TaskReset.stub(:new, NoResetHistory.new) { super(arguments) }
+    end
     cli
   end
 

@@ -68,7 +68,8 @@ class CheckpointTest < Minitest::Test
   end
 
   # Negative gate controls retain lifecycle bytes and exact process outcomes.
-  # Receipt failures are mandatory failures even after successful child execution.
+  # Receipt failures are mandatory failures even after successful child execution;
+  # command receipts retain binary diagnostics when final persistence fails.
   def test_forced_gate_failures_preserve_bytes_results_and_required_audit
     fixture do |root, data, _ordinary, workspace, _base|
       diagnostics = StringIO.new
@@ -124,12 +125,23 @@ class CheckpointTest < Minitest::Test
       end
       checkpoint.stub(:write_once!, failure) do
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 7"], force: true)
+          checkpoint.gate("T", workspace: workspace,
+            command: [RbConfig.ruby, "-e", 'STDOUT.binmode.write("\x00\xff".b); STDERR.binmode.write("\xfe\x00".b); exit 7'], force: true)
         end
         assert_match(/"exit_code"\s*=>\s*7/, error.message)
       end
       commands = Dir.glob(File.join(directory, "gate-*.command.json")).map { |path| JSON.parse(File.binread(path)) }
-      assert commands.any? { |receipt| receipt.dig("command_outcome", "exit_code") == 7 }
+      retained_command = commands.find { |receipt| receipt.dig("command_outcome", "exit_code") == 7 }
+      refute_nil retained_command
+      assert_equal "complete", retained_command.dig("output", "status")
+      assert_equal evidence.fetch("sha256"), retained_command.dig("candidate", "sha256")
+      { "stdout" => "\x00\xff".b, "stderr" => "\xfe\x00".b }.each do |stream, expected|
+        captured = retained_command.fetch("output").fetch("streams").fetch(stream)
+        assert_equal expected, File.binread(File.join(directory, captured.fetch("file")))
+        assert_equal expected.bytesize, captured.fetch("bytes")
+        assert_equal Digest::SHA256.hexdigest(expected), captured.fetch("sha256")
+      end
+      refute File.exist?(File.join(directory, "gate-#{retained_command.fetch('invocation_id')}.finished.json"))
       File.write(File.join(workspace, "changed.txt"), "tampered\n")
       assert_raises(AgentCodingTool::InvalidState) do
         checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
@@ -445,7 +457,14 @@ class CheckpointTest < Minitest::Test
       assert_equal 3, receipt.dig("observed", "summary", "assertions")
       assert_equal "passed", receipt.fetch("candidate_validation")
       assert_equal "verified", receipt.fetch("post_check")
-      assert_equal({ "status" => "not_captured" }, receipt.fetch("output"))
+      assert_equal "complete", receipt.dig("output", "status")
+      %w[stdout stderr].each do |stream|
+        spec = receipt.fetch("output").fetch("streams").fetch(stream)
+        retained = File.join(directory, spec.fetch("file"))
+        assert_equal "complete", spec["status"]
+        assert_equal Digest::SHA256.file(retained).hexdigest, spec["sha256"]
+        assert_equal File.size(retained), spec["bytes"]
+      end
       before = Dir.glob(File.join(directory, "gate-*.json")).to_h { |path| [path, File.binread(path)] }
       temporary = File.join(root, "alternate-tmp")
       Dir.mkdir(temporary)

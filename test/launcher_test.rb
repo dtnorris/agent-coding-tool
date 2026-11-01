@@ -53,6 +53,9 @@ class LauncherTest < Minitest::Test
       assert consumed.start_with?(prompt + "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---")
       assert_includes consumed, "Worker-only tools, including connected GitHub integration, are unverified before startup"
       assert_includes consumed, "not a CLI refresh"
+      assert_includes consumed, "--repository repo"
+      assert_includes consumed, "candidate and companion apply/package JSON"
+      assert_includes consumed, "Managers first use scoped discover/refresh"
       assert_includes @out.string, "progress"
       assert_includes @err.string, "stderr progress"
       assert_equal "Final worker response", File.read(evidence.fetch("final_path"))

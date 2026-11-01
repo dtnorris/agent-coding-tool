@@ -1133,7 +1133,7 @@ class AttemptRecoveryTest < Minitest::Test
         refute_equal "complete", receipt.fetch("phase")
         assert_equal 2, cli("prepare", "T").first
         assert_equal 2, cli("launch", "T", "--codex").first
-        assert_includes succeeds("status", "T"), "unfinished hard reset"
+        assert_includes succeeds("status", "T", "--full"), "unfinished hard reset"
         hard_reset_succeeds("reset", "--hard", "T")
         assert_equal [receipt.fetch("archive")], reset_receipts.map { |record| record.fetch("archive") }
         assert_equal "complete", reset_receipts.fetch(0).fetch("phase")

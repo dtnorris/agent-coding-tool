@@ -109,6 +109,22 @@ class EvidenceTunnelTest < Minitest::Test
       @session.status.slice("expires_at", "admitted_at", "requests", "wire_bytes", "decoded_bytes")
   end
 
+  # A full foreground sink is an explicit bounded failure, not a hidden loss of
+  # observation. Real ledger shutdown and existing owned cleanup still execute.
+  def test_activity_backpressure_is_visible_and_cannot_block_cleanup
+    event = { "at" => Time.now.utc.iso8601(6), "operation" => "read", "bytes" => 0,
+      "wire_bytes" => 20, "result" => "refused" }
+    File.write(File.join(@path, "activity.jsonl"), "ACT_SHARE #{JSON.generate(event)}\n", perm: 0o600)
+    @out.define_singleton_method(:write_nonblock) { |*_arguments, **_options| :wait_writable }
+    receipt = owner(stop_on_ready: false) { flunk "readiness after logging failure" }
+    assert_equal "activity", receipt["stage"]
+    assert_equal "activity_failed", receipt["reason"]
+    assert_equal "stopped", receipt["admission_stop"]
+    assert_equal @spawned, @cleaned
+    assert_equal 2, @exit_code
+    assert_empty @out.string
+  end
+
   # Sustained contention is finite even before an expiry can be read; no client starts.
   def test_owner_bounds_sustained_initial_contention
     contend

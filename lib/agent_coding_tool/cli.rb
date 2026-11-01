@@ -70,6 +70,7 @@ module AgentCodingTool
     def run(argv)
       command = argv.shift
       case command
+      when "share" then return share_command(argv)
       when "apply" then return apply_command(argv)
       when "evidence" then return evidence_command(argv)
       when "status" then status_command(argv)
@@ -103,10 +104,51 @@ module AgentCodingTool
 
     private
 
+    # Public finite sharing opt-in; strict duration parsing precedes setup,
+    # grant or tunnel mutation. Returns a fixed safe actionable refusal on error.
+    def share_command(argv)
+      require_relative "share_controller"
+      action = argv.shift
+      if action.nil? || %w[help --help].include?(action)
+        @out.puts "share tunnel [--min N] (default 60); share TASK [--min N] (default 30); maximum 60 minutes"
+        @out.puts "share status; share revoke TASK; share stop. Delivered bytes cannot be recalled."
+        @out.puts "share setup --env-file PATH --client PATH --runtime-dir PATH --account ACCOUNT --workspace WORKSPACE --endpoint tunnel_ID/main"
+        return 0
+      end
+      options = {}
+      parser = OptionParser.new do |opts|
+        (ShareController::SETTINGS + ["min"]).each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      minutes = options.fetch("min", action == "tunnel" ? "60" : "30")
+      raise RunEvidenceReader::Refused, "share.minutes" unless minutes.match?(/\A[1-9][0-9]?\z/) && minutes.to_i <= 60
+      if action == "setup"
+        raise RunEvidenceReader::Refused, "share.fields" unless argv.empty? && options.keys.sort == ShareController::SETTINGS.sort
+      else
+        raise RunEvidenceReader::Refused, "share.fields" unless (options.keys - ["min"]).empty? &&
+          (!%w[status stop revoke].include?(action) || options.empty?) && argv.length == (action == "revoke" ? 1 : 0)
+      end
+      controller = ShareController.new(@data_root, out: @out, err: @err)
+      result = case action
+               when "setup" then controller.setup(options)
+               when "tunnel" then return controller.tunnel(minutes.to_i)
+               when "status", "stop" then controller.control(action)
+               when "revoke" then controller.task(argv.first, minutes: 30, revoke: true)
+               else controller.task(action, minutes: minutes.to_i)
+               end
+      @out.puts JSON.generate(result)
+      0
+    rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError
+      @err.puts "ERROR: share refused; use act share help, act share setup for missing facts, or act share tunnel for a new ready tunnel; inspect act share status before retrying."
+      2
+    end
+
     # Opens finite operator-granted read sessions; select/read use the same closed
     # reader as MCP. Returns zero or a fixed refusal, never executes evidence.
     def evidence_command(argv)
       action = argv.shift
+      return register_evidence_command(argv) if action == "register"
       require_relative "evidence_tunnel" if action == "open"
       options = {}
       parser = OptionParser.new do |opts|
@@ -153,6 +195,9 @@ module AgentCodingTool
         when "status" then result = session.status
         when "stop" then result = session.stop
         else
+          session.transaction do |state|
+            raise RunEvidenceReader::Refused, "share.use_tool" if session.sharing?(state)
+          end
           request = options.reject { |key, _value| key == "session" }.transform_keys do |key|
             { "task" => "task_id", "invocation" => "invocation_id", "codex-session" => "session_id" }.fetch(key, key)
           end.merge("operation" => action)
@@ -175,6 +220,25 @@ module AgentCodingTool
       end
       detail = error.is_a?(RunEvidenceReader::Refused) && error.message == "session.busy" ? " (session.busy)" : ""
       @err.puts "ERROR: evidence session refused#{detail}; check private grant, exact run identity and session status"
+      2
+    end
+
+    # Host-owned bounded adoption of a worker export package. Requires all exact
+    # run identities and the package digest; no global-latest or directory scan.
+    def register_evidence_command(argv)
+      options = {}
+      parser = OptionParser.new do |opts|
+        %w[task invocation codex-session package sha256].each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
+        opts.on("--attempt NUMBER", Integer) { |value| options["attempt"] = value }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      raise RunEvidenceReader::Refused, "registration.fields" unless argv.empty? && options.keys.sort == %w[task invocation codex-session package sha256 attempt].sort
+      identity = { "task_id" => options["task"], "attempt" => options["attempt"], "invocation_id" => options["invocation"], "session_id" => options["codex-session"] }
+      @out.puts JSON.generate(RunEvidenceStore.new(@data_root).register(identity, options["package"], options["sha256"]))
+      0
+    rescue RunEvidenceReader::Refused, SystemCallError, JSON::ParserError, OptionParser::ParseError
+      @err.puts "ERROR: evidence registration refused; check exact run, recorded fixture, package digest and bounded regular owned files."
       2
     end
 
@@ -281,6 +345,8 @@ module AgentCodingTool
         opts.on("--artifact PATH") { |value| options[:artifact] = value }
         opts.on("--base SHA") { |value| options[:base] = value }
         opts.on("--remote NAME") { |value| options[:remote] = value }
+        opts.on("--repository NAME") { |value| options[:repository] = value }
+        opts.on("--focused PATH") { |value| options[:focused] = value }
         opts.on("--destination PATH") { |value| options[:destination] = value }
         opts.on("--confirm-disconnected") { options[:confirm_disconnected] = true }
         opts.on("--attempt NUMBER", Integer) { |value| options[:attempt] = value }
@@ -291,7 +357,7 @@ module AgentCodingTool
         opts.on("--reason TEXT") { |value| options[:reason] = value }
       end
       parser.order!(argv)
-      if action != "export" && options.keys.any? { |key| %i[base remote].include?(key) }
+      if action != "export" && options.keys.any? { |key| %i[base remote repository focused].include?(key) }
         raise Error, "checkpoint: base and remote are export-only options"
       end
       if action != "gate" && options.keys.any? { |key| %i[seed selection observations force reason].include?(key) }
@@ -301,11 +367,11 @@ module AgentCodingTool
       result = case action
                when "export"
                  unless argv.empty? && options[:workspace] && options[:artifact] && options[:base] &&
-                        (options.keys - %i[workspace artifact base remote]).empty?
+                        (options.keys - %i[workspace artifact base remote repository focused]).empty?
                    raise Error, "checkpoint export requires --workspace PATH --base SHA --artifact PATH [--remote NAME]"
                  end
                  checkpoint.export(id, workspace: options.fetch(:workspace), base_sha: options.fetch(:base),
-                                   artifact: options.fetch(:artifact), remote: options.fetch(:remote, "origin"))
+                   artifact: options.fetch(:artifact), remote: options.fetch(:remote, "origin"), repository: options[:repository], focused: options[:focused])
                when "record"
                  raise Error, "checkpoint record requires --workspace" unless options[:workspace] && argv.empty? && !options[:destination] && !options[:attempt]
                  checkpoint.record(id, workspace: options.fetch(:workspace), artifact: options[:artifact])
@@ -1511,6 +1577,7 @@ module AgentCodingTool
         @out.puts "Worker milestone: authorized exempt task report; first transfer to operator for review and remaining host checks; no implementation checkpoint."
       end
       @out.puts "Write scope grants no publication authority; operator must review any configured automatic delivery before launch."
+      @out.puts "Evidence: launch supplies an export/package path; host evidence register retains worker claims, checkpoint gate captures validation. Use act share tunnel, then act share #{id}; managers discover exact scoped runs without pasted logs."
       prepared.fetch("write_collisions").each do |collision|
         repositories = collision.fetch("repositories")
         noun = repositories.length == 1 ? "repository" : "repositories"
@@ -1708,6 +1775,11 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)
+          share TASK [--min MINUTES]    grant/renew task visibility, default 30 (maximum 60)
+          share {status|stop}; share revoke TASK; share help
+                              zero tasks on startup; whole configured Work workspace audience
+                              setup required once; no execution/publication; delivered bytes cannot be recalled
           evidence open --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY --env-file /CANONICAL/ACT/.env
                         --client /CANONICAL/tunnel-client --runtime-dir SHARED_PRIVATE_DIRECTORY
                               foreground finite owner-approved tunnel; explicit canonical paths
@@ -1719,6 +1791,9 @@ module AgentCodingTool
           evidence read --session DIR --task TASK --attempt N --invocation ID --codex-session ID
                               --handle SHA --revision SHA --artifact NAME --offset N --length N
                               finite on-demand read only; external ingress requires owner approval
+          evidence register --task TASK --attempt N --invocation ID --codex-session ID
+                              --package PATH --sha256 SHA
+                              host copy from the exact recorded fixture; worker claims, not acceptance
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
                               baseline drift/unrelated untracked files warn; later changes refuse
@@ -1748,6 +1823,7 @@ module AgentCodingTool
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
           checkpoint export TASK --workspace PATH --base SHA --artifact PATH [--remote NAME]
+                              [--repository NAME [--focused PATH]]
                               canonical-format-check candidate; no host state writes or test attestation
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH | --attempt NUMBER]

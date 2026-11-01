@@ -3,17 +3,19 @@
 require "fileutils"
 require "securerandom"
 require_relative "run_evidence_store"
+require_relative "task_sharing"
 
 module AgentCodingTool
   # Durable, finite read admission, separate from ACT lifecycle/checkpoint state.
   # The external owner-approved ingress enforces the whole-workspace audience;
   # neither this ledger nor MCP context authenticates a conversation.
   class EvidenceSession
+    include TaskSharing
     Refused = RunEvidenceReader::Refused
     LIMITS = { "seconds" => 3600, "requests" => 8192,
       "wire_bytes" => 128 * 1024 * 1024, "decoded_bytes" => 64 * 1024 * 1024 }.freeze
-    TUNNEL_RESULT = { "stage" => %w[delivery readiness lifecycle],
-      "reason" => %w[client_start_failed deadline failed stopped expired exhausted interrupted controller_lost lost],
+    TUNNEL_RESULT = { "stage" => %w[delivery readiness lifecycle activity],
+      "reason" => %w[client_start_failed deadline failed stopped expired exhausted interrupted controller_lost lost activity_failed],
       "local_cleanup" => %w[not_started unknown blocked owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped],
       "admission_stop" => %w[stopped blocked], "retrieval" => %w[not_attested],
       "hosted_shutdown" => %w[not_observed], "saved_settings" => %w[not_modified] }.freeze
@@ -26,12 +28,13 @@ module AgentCodingTool
       grant = RunEvidenceStore.parse(RunEvidenceStore.bytes(grant_path, root: File.dirname(grant_path), private: true))
       raise Refused, "grant.fields" unless grant.is_a?(Hash) &&
         grant.keys.sort == %w[schema approved session_path data_root tasks artifacts transport limits].sort &&
-        grant["schema"] == "agent-coding-tool-evidence-grant/v1" && grant["approved"] == true
+        %w[agent-coding-tool-evidence-grant/v1 agent-coding-tool-task-sharing/v2].include?(grant["schema"]) && grant["approved"] == true
       limits = grant["limits"]
       raise Refused, "grant.limits" unless limits.is_a?(Hash) && limits.keys.sort == LIMITS.keys.sort &&
         LIMITS.all? { |name, maximum| limits[name].is_a?(Integer) && limits[name].between?(1, maximum) }
       tasks, artifacts, boundary = grant.values_at("tasks", "artifacts", "transport")
-      raise Refused, "grant.scope" unless tasks.is_a?(Array) && tasks.length.between?(1, 16) && tasks.uniq == tasks &&
+      sharing = grant["schema"] == "agent-coding-tool-task-sharing/v2"
+      raise Refused, "grant.scope" unless tasks.is_a?(Array) && tasks.length.between?(sharing ? 0 : 1, 16) && (!sharing || tasks.empty?) && tasks.uniq == tasks &&
         tasks.all? { |task| task.is_a?(String) && task.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) } &&
         artifacts.is_a?(Array) && !artifacts.empty? && artifacts.uniq == artifacts &&
         (artifacts - RunEvidenceReader::ARTIFACTS).empty? &&
@@ -52,6 +55,8 @@ module AgentCodingTool
         "admitted_at" => now, "expires_at" => now + limits.fetch("seconds"),
         "monotonic_start" => Process.clock_gettime(Process::CLOCK_MONOTONIC),
         "stopped" => false, "requests" => 0, "wire_bytes" => 0, "decoded_bytes" => 0, "selections" => {} }
+      state.merge!("scopes" => {}, "ready" => false) if sharing
+      File.open(File.join(path, "activity.jsonl"), File::WRONLY | File::CREAT | File::EXCL, 0o600, &:fsync) if sharing
       write(path, state)
       new(path).status
     rescue SystemCallError, JSON::ParserError, KeyError, TypeError
@@ -61,9 +66,11 @@ module AgentCodingTool
     # Atomically persists accounting before effects; fsync failures refuse rather
     # than treating unconfirmed counters as durable. Returns nil or raises.
     def self.write(path, state)
+      bytes = JSON.generate(state)
+      raise Refused, "session.capacity" if bytes.bytesize > RunEvidenceReader::MAX_FILE
       temporary = File.join(path, "state-#{SecureRandom.hex(8)}.tmp")
       File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
-        file.write(JSON.generate(state))
+        file.write(bytes)
         file.flush
         file.fsync
       end
@@ -130,8 +137,9 @@ module AgentCodingTool
     def status_for(state)
       result = state.slice("grant_sha256", "admitted_at", "expires_at", "requests", "wire_bytes", "decoded_bytes").merge(
         "status" => reason(state), "limits" => state.dig("grant", "limits"),
-        "selected_runs" => state.fetch("selections").values.map { |config| config.fetch("binding") })
+        "selected_runs" => state.fetch("selections").values.map { |config| config.fetch("config", config).fetch("binding") })
       result["tunnel"] = tunnel_result if File.exist?(File.join(@path, "tunnel-result.json")) || File.symlink?(File.join(@path, "tunnel-result.json"))
+      result["activity_failure"] = true if state["activity_failure"]
       result
     end
 
@@ -142,7 +150,8 @@ module AgentCodingTool
       raw = RunEvidenceStore.bytes(File.join(@path, "tunnel-result.json"), root: @path, private: true)
       result = RunEvidenceStore.parse(raw)
       raise Refused, "tunnel.receipt" unless raw.bytesize <= 4096 && result.is_a?(Hash) &&
-        result.keys.sort == TUNNEL_RESULT.keys.sort && TUNNEL_RESULT.all? { |key, allowed| allowed.include?(result[key]) }
+        (result.keys - TUNNEL_RESULT.keys - ["diagnostics"]).empty? && TUNNEL_RESULT.all? { |key, allowed| allowed.include?(result[key]) } &&
+        (!result.key?("diagnostics") || %w[ok failed].include?(result["diagnostics"]))
       result
     end
 
@@ -196,6 +205,7 @@ module AgentCodingTool
         current = reason(state)
         raise Refused, "lifecycle.#{current}" if %w[stopped expired].include?(current)
         grant = state.fetch("grant")
+        next shared_call(state, request) if sharing?(state)
         identities = RunEvidenceReader::IDENTITIES
         identity = request.slice(*identities)
         raise Refused, "selection.identity" unless identity.keys.sort == identities.sort &&

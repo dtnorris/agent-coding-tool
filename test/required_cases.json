@@ -371,6 +371,7 @@
       "WriteCollisionTest#test_cli_override_flag_allows_collision"
     ],
     "test/run_evidence_test.rb": [
+      "RunEvidenceTest#test_shared_oversized_transcript_chunks_and_source_refusals",
       "RunEvidenceTest#test_modern_transport_and_lossless_artifacts",
       "RunEvidenceTest#test_metadata_refusals_and_duplicate_json",
       "RunEvidenceTest#test_business_refusals",
@@ -389,7 +390,10 @@
       "RunEvidenceTest#test_tunnel_status_is_closed_and_independent_of_candidate_identity",
       "RunEvidenceTest#test_native_tunnel_cli_dotenv_two_sessions_and_negative_controls",
       "RunEvidenceTest#test_native_tunnel_lifecycle_and_exclusive_ownership",
-      "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero"
+      "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
+      "RunEvidenceTest#test_native_share_continuous_public_journey",
+      "RunEvidenceTest#test_shared_command_receipt_survives_missing_final_without_claiming_acceptance",
+      "RunEvidenceTest#test_shared_discovery_refresh_pagination_and_exact_invocation_binding"
     ],
     "test/incidental_metadata_test.rb": [
       "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental",
@@ -420,7 +424,20 @@
       "EvidenceTunnelTest#test_readiness_bounds_slow_body",
       "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls",
       "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch",
-      "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch"
+      "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch",
+      "EvidenceTunnelTest#test_activity_backpressure_is_visible_and_cannot_block_cleanup"
+    ],
+    "test/gate_capture_test.rb": [
+      "GateCaptureTest#test_binary_streams_empty_output_and_output_limit",
+      "GateCaptureTest#test_persistence_console_and_command_failures_are_independent"
+    ],
+    "test/task_sharing_test.rb": [
+      "TaskSharingTest#test_public_defaults_and_invalid_minutes_precede_mutation",
+      "TaskSharingTest#test_ready_two_tasks_renewal_clipping_and_nonrenewable_accounting",
+      "TaskSharingTest#test_existing_handles_revoke_expiry_stop_and_reopen",
+      "TaskSharingTest#test_concurrent_scope_edits_and_safe_activity_lines",
+      "TaskSharingTest#test_setup_binding_and_failed_startup_recovery",
+      "TaskSharingTest#test_context_refuses_symlinks_and_foreign_file_ownership"
     ],
     "test/lifecycle_force_test.rb": [
       "LifecycleForceTest#test_public_metadata_overrides_preserve_bytes_and_report_all_policy_facts",
@@ -670,7 +687,8 @@
       "RunEvidenceTest#test_native_stop_serializes_once_and_refuses_persistent_contention",
       "RunEvidenceTest#test_native_tunnel_cli_dotenv_two_sessions_and_negative_controls",
       "RunEvidenceTest#test_native_tunnel_lifecycle_and_exclusive_ownership",
-      "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero"
+      "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
+      "RunEvidenceTest#test_native_share_continuous_public_journey"
     ]
   }
 }

@@ -144,6 +144,22 @@ class ReadinessTest < Minitest::Test
           assert_equal 0, cli("launch", "T", "--codex", "--reasoning", "high"), @err.string
           report = JSON.parse(File.read(Dir.glob("#{@data}-runs/T/*/handoff.json").fetch(0)))
           candidate = JSON.parse(File.read(report.fetch("final_path")))
+          assert_includes File.binread(state.fetch("prompt_path")), "Managers first use scoped discover/refresh"
+          assert_includes File.binread(report.fetch("stdin_path")), "--repository repo"
+          assert_equal "registered_worker_claims", report.dig("worker_evidence", "status")
+          store = AgentCodingTool::RunEvidenceStore.new(@data)
+          identity = store.discover("T").fetch("runs").first.slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
+          config = store.select(identity, artifacts: AgentCodingTool::RunEvidenceReader::ARTIFACTS, manager: "fixture", shared: true)
+          reader = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym))
+          manifest = reader.call(identity.merge("operation" => "manifest", "revision" => nil), caller: "fixture")
+          registered = manifest.fetch("artifacts").select { |name, _| name.start_with?("worker:") }
+          assert_equal 2, registered.length
+          registered.each do |name, spec|
+            fetched = reader.call(identity.merge("operation" => "read", "revision" => manifest.fetch("revision"),
+              "artifact" => name, "offset" => 0, "length" => 16_384), caller: "fixture")
+            assert_equal File.binread(spec.fetch("path")), fetched.fetch("data").unpack1("m0")
+            assert_equal Digest::SHA256.file(spec.fetch("path")).hexdigest, fetched.fetch("sha256")
+          end
           assert_equal "unverified", report.dig("readiness", "worker_tools")
           assert_equal "verified", report.dig("readiness", "source_objects", 0, "status")
           assert_equal observation, candidate.fetch("startup_tools")

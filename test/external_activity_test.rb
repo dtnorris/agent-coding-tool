@@ -161,7 +161,7 @@ class ExternalActivityTest < Minitest::Test
       refute baseline.fetch("facts").key?("external_reservations")
       report(identifier: "SECRET-IDENTIFIER", note: "SECRET-NOTE", reference: "/private/SENTINEL")
       before = contents
-      Open3.stub(:capture3, ->(*) { raise "inspection launched a process" }) do
+      MemoryGit::Session.with_capture(->(*) { raise "inspection launched a process" }) do
         Process.stub(:kill, ->(*) { raise "inspection probed liveness" }) do
           2.times do
             cli("external", "show", "A")

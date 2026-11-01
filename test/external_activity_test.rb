@@ -36,16 +36,6 @@ class ExternalActivityTest < Minitest::Test
     @activity.report(id, reporter: "operator", kind: "fake-codex", **options)
   end
 
-  # Spawns an independently guarded writer with the exact fixture invocation.
-  # Returns its genuine PID; callers reap and compare competing exit statuses.
-  def spawn_activity(operation, id: 'A', identifier: nil)
-    approval = ChildProcesses.permit('external_activity',
-      arguments: [@data, operation, id, *[identifier].compact])
-    NoGitExecution.with_permit(approval) do
-      Process.spawn(approval.environment, *approval.argv)
-    end
-  end
-
   # Runs public CLI parsing/projection with real stores and a fake Git boundary.
   # Returns stdout; assertion failure retains stderr diagnostics in the failure.
   def cli(*arguments, expected: 0)
@@ -317,7 +307,7 @@ class ExternalActivityTest < Minitest::Test
         assert_includes cli("start", "A", expected: 2), "reservation lock"
       end
       children = %w[A B].map do |id|
-        spawn_activity('report', id: id, identifier: 'shared')
+        spawn_race("report", id, "shared")
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }.sort
       assert_equal [0, 2], results
@@ -452,13 +442,13 @@ class ExternalActivityTest < Minitest::Test
     fixture do
       @coordinator.prepare("A")
       children = 2.times.map do
-        spawn_activity('report')
+        spawn_race("report", "A")
       end
       assert_equal [0, 2], children.map { |child| Process.wait2(child).last.exitstatus }.sort
       original = @activity.show("A").fetch("active").fetch("observation_id")
       @activity.end_activity("A", original, disposition: "ended")
       children = ["report", "start"].map do |operation|
-        spawn_activity(operation, identifier: 'racing-worker')
+        spawn_race(operation, "A", "racing-worker")
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }
       assert results.all? { |status| [0, 2].include?(status) }
@@ -469,4 +459,14 @@ class ExternalActivityTest < Minitest::Test
       assert_raises(AgentCodingTool::InvalidState) { @activity.with_lock { |lock| @coordinator.start("A", allow_write_collision: true, reservation_lock: lock) } }
     end
   end
+
+  # Spawns one exact reviewed race script without inheriting mutable Ruby objects.
+  # Returns its native PID; the case waits for every competing process's status.
+  def spawn_race(operation, id, identifier = "")
+    approval = ChildProcesses.permit("external_race", arguments: [@data, operation, id, identifier])
+    NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv, **approval.options)
+    end
+  end
+
 end

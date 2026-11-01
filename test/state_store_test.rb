@@ -296,7 +296,7 @@ class StateStoreTest < Minitest::Test
 
   # Loads state in an independent Ruby process; raises if the reader fails.
   def cold_load(root)
-    output, error, status = ChildProcesses.capture('state_reader', arguments: [root])
+    output, error, status = ChildProcesses.capture("state_reader", arguments: [root], seconds: 5)
     assert status.success?, error
     JSON.parse(output)
   end

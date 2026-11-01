@@ -2,13 +2,16 @@
 
 require_relative "../test_helper"
 require_relative "../recovery_observations"
+require_relative "../support/memory_git/broker"
 require "minitest/mock"
+require_relative "../support/checkpoint_processes"
 
-# Native preservation/reconstruction and strict launch-binding refusal decisions.
+# Modeled history, physical preservation and strict launch-binding refusals.
 # All repositories, evidence, processes and candidate files are fixture-owned.
 class CheckpointTest < Minitest::Test
   include TestHelpers
   include RecoveryObservations
+  include CheckpointProcesses
 
   # Uses the real public CLI and local bare remote for the preserved-attempt
   # journey; cold verification proves no process-local lifecycle workaround.
@@ -34,7 +37,7 @@ class CheckpointTest < Minitest::Test
       assert_equal 0, cli.run(%w[record T needs_judgment --summary review]), err.string
       lifecycle = File.binread(state_path)
       marker = File.join(root, "validated")
-      arguments = ["checkpoint", "gate", "T", "--workspace", workspace, "--", RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'checked')", marker]
+      arguments = ["checkpoint", "gate", "T", "--workspace", workspace, "--", *gate_command("write", marker, "checked")]
       assert_equal 2, cli.run(arguments.dup), err.string
       refute File.exist?(marker)
       arguments.insert(3, "--force")
@@ -46,8 +49,7 @@ class CheckpointTest < Minitest::Test
       assert_equal "invocation_local_force", receipt.dig("lifecycle_exception", "consent")
       assert_equal "passed", receipt.fetch("candidate_validation")
       original_evidence.each { |path, bytes| assert_equal bytes, File.binread(path) }
-      cold_out, cold_err, cold_status = Open3.capture3({ "AGENT_CODING_TOOL_DATA_DIR" => data },
-        RbConfig.ruby, File.expand_path("../../bin/agent-coding-tool", __dir__),
+      cold_out, cold_err, cold_status = checkpoint_cli(root, { "AGENT_CODING_TOOL_DATA_DIR" => data },
         "checkpoint", "verify", "T", "--workspace", workspace)
       assert cold_status.success?, cold_err
       assert_equal "verified", JSON.parse(cold_out).fetch("status")
@@ -84,7 +86,7 @@ class CheckpointTest < Minitest::Test
       directory = File.dirname(evidence.fetch("path"))
       AgentCodingTool::ReservationLock.synchronize(data) do
         assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
         end
         assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T", workspace: workspace) }
       end
@@ -92,15 +94,15 @@ class CheckpointTest < Minitest::Test
       File.rename(pointer, "#{pointer}.saved")
       begin
         assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
         end
       ensure
         File.rename("#{pointer}.saved", pointer)
       end
       assert_equal lifecycle, File.binread(state_path)
-      [[9, [RbConfig.ruby, "-e", "exit 9"]],
-       [128 + Signal.list.fetch("TERM"), [RbConfig.ruby, "-e", "Process.kill('TERM', Process.pid)"]],
-       [127, [File.join(root, "missing-command")]]].each do |expected, command|
+      [[9, gate_command("exit", "9")],
+       [128 + Signal.list.fetch("TERM"), gate_command("signal")],
+       [127, [File.join(root, "no-git-missing-executable"), "--missing-executable-probe"]]].each do |expected, command|
         assert_equal expected, checkpoint.gate("T", workspace: workspace, command: command, force: true)
         assert_equal lifecycle, File.binread(state_path)
       end
@@ -115,7 +117,7 @@ class CheckpointTest < Minitest::Test
       end
       checkpoint.stub(:write_once!, failure) do
         assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "File.write(ARGV[0], 'ran')", marker], force: true)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("write", marker, "ran"), force: true)
         end
       end
       refute File.exist?(marker)
@@ -125,8 +127,7 @@ class CheckpointTest < Minitest::Test
       end
       checkpoint.stub(:write_once!, failure) do
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace,
-            command: [RbConfig.ruby, "-e", 'STDOUT.binmode.write("\x00\xff".b); STDERR.binmode.write("\xfe\x00".b); exit 7'], force: true)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("binary"), force: true)
         end
         assert_match(/"exit_code"\s*=>\s*7/, error.message)
       end
@@ -144,7 +145,7 @@ class CheckpointTest < Minitest::Test
       refute File.exist?(File.join(directory, "gate-#{retained_command.fetch('invocation_id')}.finished.json"))
       File.write(File.join(workspace, "changed.txt"), "tampered\n")
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
       end
       assert_equal lifecycle, File.binread(state_path)
       assert_equal "verified", YAML.safe_load_file(state_path).dig("checkpoint", "status")
@@ -153,19 +154,19 @@ class CheckpointTest < Minitest::Test
       File.write(File.join(workspace, "changed.txt"), "updated\n")
       assert_raises(AgentCodingTool::InvalidState) do
         checkpoint.gate("T", workspace: workspace,
-          command: [RbConfig.ruby, "-e", "File.write('changed.txt', 'changed by command')"], force: true)
+          command: gate_command("write", "changed.txt", "changed by command"), force: true)
       end
       assert_equal lifecycle, File.binread(state_path)
       File.write(File.join(workspace, "changed.txt"), "updated\n")
       state["id"] = "foreign"
       File.write(state_path, YAML.dump(state))
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
       end
       File.binwrite(state_path, lifecycle)
       File.binwrite(evidence.fetch("path"), "tampered artifact")
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
       end
       assert_equal lifecycle, File.binread(state_path)
     end
@@ -181,9 +182,17 @@ class CheckpointTest < Minitest::Test
       sibling = File.binread(states.state_path("S"))
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: StringIO.new)
       checkpoint.record("T", workspace: workspace)
-      coordinator = coordinator_for(data, "repo" => "a" * 40)
+      coordinator = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: data,
+        out: StringIO.new, err: StringIO.new).send(:coordinator)
       reader, writer = IO.pipe
-      pid = Process.spawn(RbConfig.ruby, "-e", "STDOUT.sync = true; puts 'ready'; sleep 20", out: writer, err: File::NULL)
+      release_reader, release_writer = IO.pipe
+      approval = ChildProcesses.permit("manual_worker", arguments: [File.join(root, "live-sentinel"), "20"])
+      pid = File.open(File::NULL, "w") do |null|
+        NoGitExecution.with_permit(approval) do
+          Process.spawn(approval.environment, *approval.argv, in: release_reader, out: writer, err: null)
+        end
+      end
+      release_reader.close
       writer.close
       begin
         assert IO.select([reader], nil, nil, 5), "fixture worker did not start"
@@ -193,7 +202,7 @@ class CheckpointTest < Minitest::Test
         coordinator.record("T", outcome: "complete", force: true)
         assert_equal "COMPLETE", coordinator.status("T").fetch("status")
         assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), force: true)
         end
         assert_equal 1, Process.kill(0, pid)
         assert_equal original_activity, coordinator.external_activity.show("T")
@@ -204,81 +213,99 @@ class CheckpointTest < Minitest::Test
         assert activity.fetch("active")
       ensure
         reader.close
-        Process.kill("TERM", pid)
-        Process.waitpid(pid)
+        release_writer.write("R")
+        release_writer.close
+        assert_equal 0, Timeout.timeout(2) { Process.wait2(pid).last.exitstatus }
       end
     end
   end
 
-  def self.seed
-    return @seed if @seed
-
-    root = Dir.mktmpdir("act-checkpoint-seed-")
-    ordinary = File.join(root, "ordinary")
-    remote = File.join(root, "remote.git")
-    _out, err, status = Open3.capture3("git", "init", "--initial-branch=main", ordinary)
-    raise err unless status.success?
-    [["user.email", "fixture@example.test"], ["user.name", "Fixture"]].each do |key, value|
-      _out, err, status = Open3.capture3("git", "config", key, value, chdir: ordinary)
-      raise err unless status.success?
-    end
-    { "changed.txt" => "old\n", "removed.txt" => "remove\n", "renamed.txt" => "rename\n" }.each do |path, value|
-      File.write(File.join(ordinary, path), value)
-    end
-    [%w[add -A], %w[commit -m baseline]].each do |args|
-      _out, err, status = Open3.capture3("git", *args, chdir: ordinary)
-      raise err unless status.success?
-    end
-    _out, err, status = Open3.capture3("git", "clone", "--bare", ordinary, remote)
-    raise err unless status.success?
-    Minitest.after_run { FileUtils.remove_entry(root) }
-    @seed = { ordinary: ordinary, remote: remote }
+  # Executes a cold public checkpoint against the same leased mutable world.
+  # Broker lifetime is bounded to the command and closed even on failure.
+  def checkpoint_cli(root, environment, *arguments)
+    broker = MemoryGit::Broker.new(world: @checkpoint_world, directory: root, case_id: 'checkpoint-public')
+    ChildProcesses.capture('checkpoint_cli', arguments: arguments, environment: environment, endpoint: broker.endpoint, seconds: 10)
+  ensure
+    broker&.close
   end
+
+  # Returns immutable baseline files; every case creates fresh mutable authority.
+  # No native Git storage, repository identity or persistent seed directory exists.
+  def self.seed
+    MemoryGit::Template.files({ "changed.txt" => "old\n", "removed.txt" => "remove\n", "renamed.txt" => "rename\n" })
+  end
+  # Executes only this fixture's modeled setup authority; returns stripped output.
+  # Unknown roots/forms and missing authority fail without a native fallback.
   def git(*args, chdir: nil)
-    out, err, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
+    raise MemoryGit::Mismatch, "no checkpoint setup authority" unless @checkpoint_world
+    out, err, status = @checkpoint_world.call(["git", *args], cwd: chdir)
     assert status.success?, err
     out.strip
   end
 
-  # Yields disposable task/state, candidate files and baseline identity. Native
-  # mode creates real local repositories; refusal-only mode declares Git reads
-  # at the call site and never claims to prove native ownership. Setup errors
+  # Yields disposable task/state, candidate files and modeled baseline identity.
+  # Native-family cases use fresh modeled repository authority; refusal-only
+  # cases declare exact reads at the call site. Setup/model errors
   # propagate and all fixture files are removed afterward.
   def fixture(native: true)
-    Dir.mktmpdir("act-checkpoint-test-") do |root|
+    # Keep the broker socket below macOS's path limit with its default TMPDIR.
+    Dir.mktmpdir("act-cp-") do |root|
       root = File.realpath(root)
       ordinary = File.join(root, "ordinary")
       remote = File.join(root, "remote.git")
       workspace = File.join(root, "workspace")
       data = File.join(root, "data")
       FileUtils.mkdir_p(File.join(data, "tasks"))
-      if native
-        FileUtils.cp_r(self.class.seed.fetch(:ordinary), ordinary)
-        FileUtils.cp_r(self.class.seed.fetch(:remote), remote)
-        base = git("rev-parse", "HEAD", chdir: ordinary)
-        git("remote", "add", "origin", remote, chdir: ordinary)
-        git("clone", ordinary, workspace)
-        git("remote", "set-url", "origin", remote, chdir: workspace)
-        git("checkout", "--detach", base, chdir: workspace)
-      else
-        base = "a" * 40
-        FileUtils.mkdir_p([ordinary, workspace])
-        File.write(File.join(workspace, "removed.txt"), "remove\n")
-        File.write(File.join(workspace, "renamed.txt"), "rename\n")
+      world = native ? MemoryGit::PatchWorld.new(root: root) : nil
+      @checkpoint_world = world
+      if world
+        # Exact native-generated binary bytes and independent before/after trees
+        # are stored as data; tests never invoke a binary codec or native Git.
+        %w[checkpoint-tracked-metadata checkpoint-legacy-metadata].each do |name|
+          descriptor = JSON.parse(File.binread(File.expand_path("../support/memory_git/fixtures/#{name}.json", __dir__)))
+          trees = %w[before after].to_h do |side|
+            [side.to_sym, descriptor.fetch(side).to_h { |entry|
+              [MemoryGit::PatchCase.hex_bytes(entry.fetch('path_hex')),
+               MemoryGit::Entry.new(MemoryGit::PatchCase.hex_bytes(entry.fetch('bytes_hex')), mode: entry.fetch('mode'))] }]
+          end
+          world.register_patch(MemoryGit::PatchCase.new(**trees,
+            bytes: descriptor.fetch('patch_base64').unpack1('m0'), sha256: descriptor.fetch('sha256'),
+            paths: descriptor.fetch('paths_hex').map { |hex| MemoryGit::PatchCase.hex_bytes(hex) },
+            numstat: MemoryGit::PatchCase.hex_bytes(descriptor.fetch('numstat_hex')), stat: descriptor.fetch('stat')))
+        end
       end
-      File.write(File.join(workspace, "changed.txt"), "updated\n")
-      File.write(File.join(workspace, "new.txt"), "untracked\n")
-      File.unlink(File.join(workspace, "removed.txt"))
-      File.rename(File.join(workspace, "renamed.txt"), File.join(workspace, "moved.txt"))
-      write_task(data, id: "T", repositories: { "repo" => { "access" => "write" } })
-      snapshot = { "repo" => {
-        "path" => ordinary, "remote" => "origin", "remote_url" => remote,
-        "branch" => "main", "pushed_sha" => base
-      } }
-      state = { "id" => "T", "prepared_at" => Time.now.utc.iso8601,
-                "started_at" => Time.now.utc.iso8601, "snapshot" => snapshot }
-      AgentCodingTool::StateStore.new(File.join(data, "state")).write("T", state)
-      yield root, data, ordinary, workspace, base
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = root
+      MemoryGit::Session.with(world) do
+        if native
+          checkout, = memory_repository(world, path: ordinary, remote: remote, template: self.class.seed)
+          @checkpoint_checkout = checkout
+          base = checkout.head
+          world.copy(checkout, path: workspace)
+          git("checkout", "--detach", base, chdir: workspace)
+        else
+          base = "a" * 40
+          FileUtils.mkdir_p([ordinary, workspace])
+          File.write(File.join(workspace, "removed.txt"), "remove\n")
+          File.write(File.join(workspace, "renamed.txt"), "rename\n")
+        end
+        File.write(File.join(workspace, "changed.txt"), "updated\n")
+        File.write(File.join(workspace, "new.txt"), "untracked\n")
+        File.unlink(File.join(workspace, "removed.txt"))
+        File.rename(File.join(workspace, "renamed.txt"), File.join(workspace, "moved.txt"))
+        write_task(data, id: "T", repositories: { "repo" => { "access" => "write", "path" => ordinary } })
+        snapshot = { "repo" => {
+          "path" => ordinary, "remote" => "origin", "remote_url" => remote,
+          "branch" => "main", "pushed_sha" => base
+        } }
+        state = { "id" => "T", "prepared_at" => Time.now.utc.iso8601,
+                  "started_at" => Time.now.utc.iso8601, "snapshot" => snapshot }
+        AgentCodingTool::StateStore.new(File.join(data, "state")).write("T", state)
+        yield root, data, ordinary, workspace, base
+      end
+    ensure
+      ENV['TMPDIR'] = previous_tmpdir
+      world&.verify!
     end
   end
 
@@ -324,15 +351,14 @@ class CheckpointTest < Minitest::Test
       fresh = AgentCodingTool::Checkpoint.new(data_root: data)
       assert_raises(AgentCodingTool::InvalidState) { fresh.recover("T", destination: destination) }
       refute File.exist?(destination)
-      reconstruction = <<~'RUBY'
-        require "agent_coding_tool"
-        puts JSON.generate(AgentCodingTool::Checkpoint.new(data_root: ARGV.fetch(0)).recover(
-          "T", destination: ARGV.fetch(1), confirm_disconnected: true))
-      RUBY
-      stdout, stderr, status = GitContract::Native.new.capture3(
-        RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__),
-        "-e", reconstruction, data, destination
-      )
+      broker = MemoryGit::Broker.new(world: @checkpoint_world, directory: root, case_id: 'checkpoint-recovery')
+      begin
+        stdout, stderr, status = ChildProcesses.capture('cold_cli',
+          arguments: ['checkpoint', 'recover', 'T', '--destination', destination, '--confirm-disconnected'],
+          environment: { 'AGENT_CODING_TOOL_DATA_DIR' => data }, endpoint: broker.endpoint, seconds: 5)
+      ensure
+        broker.close
+      end
       assert status.success?, stderr
       assert_equal "reconstructed", JSON.parse(stdout).fetch("status")
       assert_equal "updated\n", File.read(File.join(destination, "changed.txt"))
@@ -355,7 +381,7 @@ class CheckpointTest < Minitest::Test
       File.binwrite(truncated, File.binread(old.fetch("path"))[0, 20])
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: truncated) }
       tracked_only = File.join(root, "tracked-only.patch")
-      File.binwrite(tracked_only, Open3.capture3("git", "diff", "--binary", "HEAD", chdir: workspace).first)
+      File.binwrite(tracked_only, @checkpoint_world.call(%w[git diff --binary HEAD], cwd: workspace).stdout)
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: tracked_only) }
       empty = File.join(root, "empty.patch")
       File.binwrite(empty, "")
@@ -384,13 +410,13 @@ class CheckpointTest < Minitest::Test
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data)
       marker = File.join(root, "ran")
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: ["touch", marker])
+        checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker))
       end
       refute File.exist?(marker)
       old = checkpoint.record("T", workspace: workspace)
       File.write(File.join(workspace, "new.txt"), "changed again\n")
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: ["touch", marker])
+        checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker))
       end
       refute File.exist?(marker)
       assert_equal "stale", AgentCodingTool::StateStore.new(File.join(data, "state")).load("T").dig("checkpoint", "status")
@@ -403,10 +429,10 @@ class CheckpointTest < Minitest::Test
       assert_equal old.fetch("record_file"), refreshed.fetch("previous_record")
       out, err = StringIO.new, StringIO.new
       cli = AgentCodingTool::CLI.new(root: root, data_root: data, out: out, err: err)
-      assert_equal 0, cli.run(["checkpoint", "gate", "T", "--workspace", workspace, "--", "touch", marker]), err.string
+      assert_equal 0, cli.run(["checkpoint", "gate", "T", "--workspace", workspace, "--", *gate_command("touch", marker)]), err.string
       assert File.file?(marker)
       assert_raises(AgentCodingTool::InvalidState) do
-        checkpoint.gate("T", workspace: workspace, command: ["/bin/sh", "-c", "printf changed > new.txt"])
+        checkpoint.gate("T", workspace: workspace, command: gate_command("write", "new.txt", "changed"))
       end
       assert_equal "stale", AgentCodingTool::StateStore.new(File.join(data, "state")).load("T").dig("checkpoint", "status")
     end
@@ -420,27 +446,21 @@ class CheckpointTest < Minitest::Test
       cli = File.expand_path("../../bin/agent-coding-tool", __dir__)
       environment = { "AGENT_CODING_TOOL_DATA_DIR" => data, "SEED" => "51565",
                       "TESTOPTS" => "--name subset", "ACT_RECEIPT_SECRET" => "secret-canary" }
-      stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, cli,
+      stdout, stderr, status = checkpoint_cli(root, environment,
         "checkpoint", "record", "T", "--workspace", workspace)
       assert status.success?, stderr
       record = JSON.parse(stdout)
       directory = File.dirname(record.fetch("path"))
       report_path = File.join(directory, "first.observation.json")
-      command = [RbConfig.ruby, "-rjson", "-e", <<~'RUBY', report_path]
-        report = { schema_version: "agent-coding-tool-gate-observation/v1", seed: 31046,
-          selection: "subset", summary: { tests: 2, assertions: 3, failures: 0, errors: 0, skips: 0 } }
-        File.open(ARGV.fetch(0), "wx", 0o600) { |file| file.write(JSON.generate(report)) }
-        STDOUT.binmode.write("seed=31046\n\x00\xff".b)
-        STDERR.binmode.write("\x80error-stream\x00\n".b)
-      RUBY
-      stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, "-rjson", cli,
+      command = gate_command("observation", report_path)
+      stdout, stderr, status = checkpoint_cli(root, environment,
         "checkpoint", "gate", "T", "--workspace", workspace,
         "--requested-seed", "51565", "--requested-selection", "subset", "--observations", report_path, "--", *command)
       assert status.success?, stderr
       assert_equal "seed=31046\n\x00\xff0\n".b, stdout.b
       assert_equal "\x80error-stream\x00\n".b, stderr.b.gsub(/^Checkpoint gate receipt: .*\n/n, "")
       reader = 'puts JSON.generate(Dir.glob(File.join(ARGV.fetch(0), "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) })'
-      stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-rjson", "-e", reader, directory)
+      stdout, stderr, status = ChildProcesses.capture("checkpoint_validator", arguments: ["receipts", directory])
       assert status.success?, stderr
       receipt = JSON.parse(stdout).fetch(0)
       assert_equal AgentCodingTool::Checkpoint::GATE_SCHEMA, receipt.fetch("schema_version")
@@ -469,8 +489,8 @@ class CheckpointTest < Minitest::Test
       temporary = File.join(root, "alternate-tmp")
       Dir.mkdir(temporary)
       changed = environment.merge("TMPDIR" => temporary, "TESTOPTS" => "--name other")
-      stdout, stderr, status = Open3.capture3(changed, RbConfig.ruby, cli,
-        "checkpoint", "gate", "T", "--workspace", workspace, "--requested-selection", "other", "--", RbConfig.ruby, "-e", "exit 0")
+      stdout, stderr, status = checkpoint_cli(root, changed,
+        "checkpoint", "gate", "T", "--workspace", workspace, "--requested-selection", "other", "--", *gate_command("exit", "0"))
       assert status.success?, stderr
       receipts = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
       assert_equal 2, receipts.length
@@ -498,9 +518,9 @@ class CheckpointTest < Minitest::Test
       record = checkpoint.record("T", workspace: workspace)
       directory = File.dirname(record.fetch("path"))
       commands = [
-        [RbConfig.ruby, "-e", 'STDOUT.binmode.write("\x00\xff".b); STDERR.binmode.write("\xfe\x00".b); exit 7'],
-        [RbConfig.ruby, "-e", 'Process.kill("TERM", Process.pid)'],
-        [File.join(root, "missing-command")]
+        gate_command("binary"),
+        gate_command("signal"),
+        [File.join(root, "no-git-missing-executable"), "--missing-executable-probe"]
       ]
       commands.each_with_index do |command, index|
         # Original command failure rule; candidate verification is exercised by
@@ -533,11 +553,11 @@ class CheckpointTest < Minitest::Test
       end
       checkpoint.stub(:system, replacement) do
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
         end
         assert_includes error.message, "candidate changed during validation"
       end
-      command = [RbConfig.ruby, "-e", 'File.write("new.txt", "mutated")']
+      command = gate_command("write", "new.txt", "mutated")
       error = assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: command) }
       assert_includes error.message, "stale implementation"
       receipt = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }.find { |row| row.fetch("argv") == command }
@@ -545,7 +565,7 @@ class CheckpointTest < Minitest::Test
       assert_equal "failed", receipt.fetch("post_check")
       assert_equal "failed", receipt.fetch("candidate_validation")
       marker = File.join(root, "must-not-run")
-      refused = ["touch", marker]
+      refused = gate_command("touch", marker)
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: refused) }
       refute File.exist?(marker)
       receipt = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }.find { |row| row.fetch("argv") == refused }
@@ -569,14 +589,14 @@ class CheckpointTest < Minitest::Test
         write_once.call(path, bytes)
       end
       checkpoint.stub(:write_once!, failing_receipt) do
-        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "8"))
         end
         assert_equal "checkpoint: validation command failed (8)", error.message
         File.write(File.join(workspace, "new.txt"), "changed")
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
         end
         assert_includes error.message, "stale implementation"
       end
@@ -603,7 +623,7 @@ class CheckpointTest < Minitest::Test
       diagnostics.truncate(0)
       diagnostics.rewind
       checkpoint.stub(:write_once!, sync_failure) do
-        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
       end
       assert_includes diagnostics.string, "crash durability unconfirmed"
       refute_includes diagnostics.string, "Checkpoint gate receipt:"
@@ -623,14 +643,14 @@ class CheckpointTest < Minitest::Test
       File.symlink(reused, link)
       marker = File.join(root, "must-not-run")
       [reused, link, File.join(root, "foreign.observation.json")].each do |path|
-        assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker], observations: path) }
+        assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker), observations: path) }
       end
       refute File.exist?(marker)
       absent = File.join(directory, "absent.observation.json")
-      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], observations: absent)
+      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"), observations: absent)
       invalid = File.join(directory, "invalid.observation.json")
       assert_equal 0, checkpoint.gate("T", workspace: workspace, observations: invalid,
-        command: [RbConfig.ruby, "-e", 'File.write(ARGV[0], %q({"secret":"secret-canary"}), mode: "wx", perm: 0o600)', invalid])
+        command: gate_command("invalid", invalid))
       receipts = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
       assert_equal 3, receipts.count { |row| row.dig("command_outcome", "status") == "not_run" }
       assert_equal 2, receipts.count { |row| row.dig("observed", "status") == "unavailable_or_invalid" }
@@ -647,7 +667,7 @@ class CheckpointTest < Minitest::Test
         assert_equal "unavailable_or_invalid", checkpoint.send(:gate_observations, path, "T", state).fetch("status")
       end
       File.chmod(0o755, directory)
-      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker]) }
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker)) }
       refute File.exist?(marker)
     end
   end
@@ -681,7 +701,7 @@ class CheckpointTest < Minitest::Test
       File.symlink(foreign, record.fetch("path"))
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T") }
       marker = File.join(root, "must-not-run")
-      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: ["touch", marker]) }
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker)) }
       refute File.exist?(marker)
     end
   end
@@ -749,7 +769,7 @@ class CheckpointTest < Minitest::Test
       metadata.each { |path| File.binwrite(path, "changed Finder bytes") }
       File.unlink(metadata.last)
       assert_equal 0, cli.run(["checkpoint", "verify", "T", "--workspace", workspace]), err.string
-      gate = [RbConfig.ruby, "-e", 'File.binwrite(".DS_Store", "gate metadata")']
+      gate = gate_command("write", ".DS_Store", "gate metadata")
       assert_equal 0, cli.run(["checkpoint", "gate", "T", "--workspace", workspace, "--", *gate]), err.string
       assert_equal "gate metadata", File.binread(File.join(workspace, ".DS_Store"))
       artifact = File.join(root, "candidate.patch")
@@ -764,7 +784,7 @@ class CheckpointTest < Minitest::Test
       assert_equal "explicit artifact must be verified", File.binread(explicit_artifact)
       git("add", "-f", "--", ".DS_Store", chdir: workspace)
       assert_equal 2, cli.run(["checkpoint", "verify", "T", "--workspace", workspace])
-      git("reset", "--", ".DS_Store", chdir: workspace)
+      git("reset", "-q", "--", ".DS_Store", chdir: workspace)
       metadata_only_run = File.join(File.dirname(run_dir), "metadata-only-run")
       Dir.mkdir(metadata_only_run)
       File.write(File.join(metadata_only_run, ".DS_Store"), "no handoff")
@@ -786,7 +806,7 @@ class CheckpointTest < Minitest::Test
       git("commit", "-m", "tracked fixture metadata", chdir: ordinary)
       base = git("rev-parse", "HEAD", chdir: ordinary)
       tracked_workspace = File.join(root, "tracked-workspace")
-      git("clone", ordinary, tracked_workspace)
+      @checkpoint_world.copy(@checkpoint_checkout, path: tracked_workspace)
       git("remote", "set-url", "origin", File.join(root, "remote.git"), chdir: tracked_workspace)
       store = AgentCodingTool::StateStore.new(File.join(data, "state"))
       state = store.load("T")
@@ -918,11 +938,11 @@ class CheckpointTest < Minitest::Test
         checkpoint = AgentCodingTool::Checkpoint.new(data_root: data_root, err: diagnostics)
         marker = File.join(root, "ran")
         assert_equal 0, checkpoint.gate("T", workspace: workspace,
-          command: [RbConfig.ruby, "-e", 'File.write(ARGV.fetch(0), "ran")', marker])
+          command: gate_command("write", marker, "ran"))
         assert_equal "ran", File.read(marker)
         File.unlink(marker)
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "8"))
         end
         assert_equal "checkpoint: validation command failed (8)", error.message
         assert_includes diagnostics.string, "crash durability unconfirmed"
@@ -930,14 +950,14 @@ class CheckpointTest < Minitest::Test
         assert_equal "occupied", File.read(storage)
         observations = File.join(storage, "unsafe.observation.json")
         assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: ["touch", marker], observations: observations)
+          checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker), observations: observations)
         end
         refute File.exist?(marker)
       end
       File.unlink(storage)
       diagnostics = StringIO.new
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
-      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+      assert_equal 0, checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
       receipts = Dir.glob(File.join(storage, "checkpoints", "T", "*", "gate-*.finished.json"))
       assert_equal 1, receipts.length
       receipt = JSON.parse(File.binread(receipts.fetch(0)))
@@ -962,9 +982,9 @@ class CheckpointTest < Minitest::Test
         check_directory.call(id, state, create: false)
       end
       checkpoint.stub(:directory!, unavailable) do
-        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+        assert_equal 0, checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 8"])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "8"))
         end
         assert_equal "checkpoint: validation command failed (8)", error.message
         replacement = lambda do |*argv, **options|
@@ -973,7 +993,7 @@ class CheckpointTest < Minitest::Test
         end
         checkpoint.stub(:system, replacement) do
           error = assert_raises(AgentCodingTool::InvalidState) do
-            checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"])
+            checkpoint.gate("T", workspace: workspace, command: gate_command("exit", "0"))
           end
           assert_equal "checkpoint: candidate changed during validation", error.message
         end
@@ -998,7 +1018,7 @@ class CheckpointTest < Minitest::Test
       marker = File.join(root, "must-not-run")
       aliased = AgentCodingTool::Checkpoint.new(data_root: File.join(alias_root, "data"), err: diagnostics)
       error = assert_raises(AgentCodingTool::InvalidState) do
-        aliased.gate("T", workspace: workspace, command: ["touch", marker])
+        aliased.gate("T", workspace: workspace, command: gate_command("touch", marker))
       end
       assert_equal "checkpoint: symlinked evidence path", error.message
       storage = "#{data}-runs"
@@ -1013,7 +1033,7 @@ class CheckpointTest < Minitest::Test
           File.write(task_path, YAML.dump(task))
         end
         error = assert_raises(AgentCodingTool::InvalidState) do
-          checkpoint.gate("T", workspace: workspace, command: ["touch", marker])
+          checkpoint.gate("T", workspace: workspace, command: gate_command("touch", marker))
         end
         assert_equal "checkpoint: symlinked evidence path", error.message
         refute File.exist?(marker)
@@ -1041,9 +1061,10 @@ class CheckpointTest < Minitest::Test
       assert_equal "exempt", AgentCodingTool::Checkpoint.new(data_root: data).verify("T").fetch("status")
       diagnostics = StringIO.new
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
-      assert_equal 0, checkpoint.gate("T", workspace: data, command: [RbConfig.ruby, "-e", "exit 0"])
+      assert_equal 0, checkpoint.gate("T", workspace: data, command: gate_command("exit", "0"))
       if File.realpath(data) != data
-        refute File.exist?("#{data}-runs")
+        # Reservation locking creates the canonical run root before receipt setup.
+        assert_equal ["launch.lock"], Dir.children("#{data}-runs")
         assert_includes diagnostics.string, "crash durability unconfirmed"
         refute_includes diagnostics.string, "Checkpoint gate receipt:"
       else

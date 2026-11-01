@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'minitest/mock'
+require_relative 'support/fake_inspector'
 require_relative 'support/child_processes'
 require_relative 'support/memory_git/broker'
 require_relative 'feedback_runtime'
@@ -168,8 +169,8 @@ module LauncherSupport
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
       @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
       if git
-        @ordinary_checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
-        @base = @ordinary_checkout.head
+        @memory_checkout, @memory_remote = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @base = @memory_checkout.head
       else
         FileUtils.mkdir_p([@ordinary, @remote])
         File.write(File.join(@ordinary, 'file.txt'), "base\n")
@@ -201,24 +202,45 @@ module LauncherSupport
     ensure
       begin
         @memory_broker&.close
-        @memory_world&.verify!
       ensure
+        @memory_broker = nil
         ENV['TMPDIR'] = previous_tmpdir
+        @memory_world&.verify!
       end
     end
   end
 
-  # Starts the existing bounded shared-world broker only for a cold launcher.
-  # Parent commands then use the same authority; missing/unsafe sockets raise.
-  def launcher_endpoint
-    @memory_broker ||= MemoryGit::Broker.new(world: @memory_world, directory: @root, case_id: name)
-    @memory_broker.endpoint
+  # Starts the existing leased broker once for a cold public launcher. Builders
+  # must finish first; subsequent parent and child commands share this authority.
+  # Returns the owner; bind/protocol errors propagate without execution fallback.
+  def launcher_broker
+    @memory_broker ||= MemoryGit::Broker.new(world: @memory_world, directory: @root,
+      case_id: "launcher-#{@data}")
   end
 
-  # Exact cold public-launch environment; no credentials/config are imported.
-  def launcher_environment
-    { 'PATH' => "#{@root}:#{ENV.fetch('PATH')}", 'AGENT_CODING_TOOL_DATA_DIR' => @data,
-      'ACT_LAUNCH_ROOT' => @root, 'ACT_TEST_CODING_SKILL' => ENV.fetch('ACT_TEST_CODING_SKILL') }
+  # Captures the public CLI in a fresh guarded interpreter. Registered sibling
+  # birth identities cross only this exact permitted environment; the child
+  # rechecks live kernel identities. Status is genuinely reaped.
+  def cold_launcher(*arguments, fixture: "launcher_cli", environment: {})
+    endpoint = launcher_broker.endpoint
+    ChildProcesses.capture(fixture, arguments: [@root, @data, *arguments],
+      environment: environment.merge("ACT_TEST_LAUNCHER_PROCESSES" => JSON.generate(@fixture_processes || {})),
+      endpoint: endpoint, seconds: 15)
+  end
+
+  # Starts a live public CLI without waiting for it. The caller owns termination
+  # and reaping; IO handles are opened here so the exact permit checks real pipes.
+  def start_cold_launcher(*arguments, stdout:, stderr:)
+    approval = ChildProcesses.permit("launcher_cli", arguments: [@root, @data, *arguments],
+      endpoint: launcher_broker.endpoint,
+      environment: { "ACT_TEST_LAUNCHER_PROCESSES" => JSON.generate(@fixture_processes || {}) })
+    File.open(stdout, "w") do |output|
+      File.open(stderr, "w") do |error|
+        NoGitExecution.with_permit(approval) do
+          register_fixture_process(Process.spawn(approval.environment, *approval.argv, out: output, err: error))
+        end
+      end
+    end
   end
 
   # Exact external preflight observations for existing ordinary decision cases.

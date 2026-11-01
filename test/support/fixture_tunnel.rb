@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "agent_coding_tool/evidence_tunnel"
+require_relative "../../lib/agent_coding_tool/evidence_tunnel"
 
 # Native fake-client tests own no hosted endpoint. Only their exact synthetic
 # executable and endpoint bypass host-client inventory; kernel endpoint locks,
@@ -19,13 +19,7 @@ module FixtureTunnelInventory
     nil
   end
 
-  # Declared external pipe-transport readiness, used where the worker sandbox
-  # forbids both TCP and Unix listeners. Native HTTP readiness tests stay intact.
-  def ready?
-    return super unless ENV["ACT_FIXTURE_TUNNEL_PIPES"] == "1" && @client == ENV["ACT_FIXTURE_TUNNEL_CLIENT"] &&
-      File.basename(@client) == "fixture-client"
-    File.file?(File.join(@path, "fixture-ready"))
-  end
+
 end
 
 AgentCodingTool::EvidenceTunnel.prepend(FixtureTunnelInventory)

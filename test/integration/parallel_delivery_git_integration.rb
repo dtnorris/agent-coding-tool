@@ -2,12 +2,14 @@
 
 require_relative "../test_helper"
 require_relative "../launcher_support"
+require_relative "../support/validation_processes"
 require "timeout"
 
-# Real disposable Git/process evidence with simulated publication only; no network.
+# Shared modeled Git and real process evidence with simulated publication; no network.
 class ParallelDeliveryTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
+  include ValidationProcesses
 
   # Tracks independent feature identities and can simulate a lost push response.
   class Provider
@@ -64,11 +66,18 @@ class ParallelDeliveryTest < Minitest::Test
   end
 
   # Runs fixture decision matrices with a controlled terminal open-file boundary.
-  # Git, process execution, artifacts, worktree verification and locks remain real.
+  # Git uses shared authority; process execution, artifacts, verification and locks remain real.
   def delivery_fixture(**options)
     fixture(git: true, process: true, **options) do
+      @memory_world.build_commit(@memory_checkout,
+        files: @memory_checkout.tree.entries.merge(validation_files({})),
+        message: 'fixed validator', advance: true)
+      @base = @memory_checkout.head
+      setup_git('push', 'origin', 'HEAD:refs/heads/main', chdir: @ordinary)
       @terminal_liveness = TerminalLiveness.new
-      AgentCodingTool::CleanupLiveness.stub(:new, @terminal_liveness) { yield }
+      with_validation_processes do
+        AgentCodingTool::CleanupLiveness.stub(:new, @terminal_liveness) { yield }
+      end
     end
   end
 
@@ -84,18 +93,22 @@ class ParallelDeliveryTest < Minitest::Test
     FileUtils.mkdir_p(root, mode: 0o700)
     File.write(File.join(root, "#{id}.yml"), YAML.dump(
       "allowed_paths" => ["worker-change.txt", "file.txt"], "base_branch" => "main",
-      "commands" => [["ruby", "-e", "puts '2 tests, 3 assertions, 0 failures, 0 errors, 0 skips'"]],
+      "commands" => [validation_command],
       "max_seconds" => 30, "min_tests" => 2, "min_assertions" => 3,
       "publication_guard" => { "trigger_assessment" => "simulated publication, zero cost" }))
   end
 
   # Prepares and executes two independent fake workers; returns simulated boundaries.
   # Both workers use production ownership/artifact capture and a fake sandbox probe.
-  def independent_runs
+  def independent_runs(explicit: false)
     write_task(@data, id: "B", repositories: { "alias" => { "access" => "write", "path" => @ordinary } })
     %w[T B].each { |id| @coordinator.prepare(id) }
     assert_equal 0, launcher(real_sandbox_probe: true).launch("T")
-    assert_equal 0, launcher(real_sandbox_probe: true).launch("B", allow_write_collision: true)
+    assert_equal 0, launcher(real_sandbox_probe: true).launch("B", allow_write_collision: explicit)
+    report, = run_for("B")
+    assert_equal explicit ? "explicit_permission" : "default_verified_managed",
+                 report.fetch("collision_authorization").fetch("admission_basis")
+    assert_equal report.fetch("collision_authorization"), @store.load("B").dig("write_collision_override", "launch")
     %w[T B].each do |id|
       report, = run_for(id)
       File.write(File.join(report.fetch("workspace"), "file.txt"), "candidate #{id}\n")
@@ -109,7 +122,7 @@ class ParallelDeliveryTest < Minitest::Test
   def test_both_delivery_orders_preserve_independent_candidates_and_recover
     [%w[T B], %w[B T]].each do |order|
       delivery_fixture(mutable_remote: true) do
-        provider, guard = independent_runs
+        provider, guard = independent_runs(explicit: order.first == "B")
         checkpoints = %w[T B].to_h do |id|
           report, = run_for(id)
           [id, AgentCodingTool::Checkpoint.new(data_root: @data).record(id, workspace: report.fetch("workspace"))]
@@ -125,10 +138,19 @@ class ParallelDeliveryTest < Minitest::Test
             provider.fail_after_push = false
           end
           assert_equal "draft_pr", manager.deliver(id, run_dir:).fetch("stage")
+          if index.zero? && id == "T"
+            write_task(@data, id: "C", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+            @coordinator.prepare("C")
+            assert_equal 0, launcher(real_sandbox_probe: true).launch("C")
+            third, = run_for("C")
+            assert_equal %w[B T], third.dig("collision_authorization", "verified_conflicts").map { |row| row.fetch("task_id") }
+            assert_equal "CANDIDATE", @coordinator.status("T").fetch("status")
+            assert_equal 3, %w[T B C].map { |task_id| run_for(task_id).first.fetch("workspace") }.uniq.length
+          end
           assert_equal sibling_before, File.binread(@store.state_path(sibling))
           detail = JSON.parse(File.binread(File.join(run_dir, "delivery.json")))
           assert_equal "candidate #{id}\n", setup_git("show", "#{detail.fetch('commit_sha')}:file.txt", chdir: report.fetch("workspace")) + "\n"
-          assert_equal @base, setup_git("rev-parse", "refs/heads/main", chdir: @remote)
+          assert_equal @base, setup_git("ls-remote", "--exit-code", "origin", "refs/heads/main", chdir: @ordinary).split.first
           assert_equal "CANDIDATE", @coordinator.status(id).fetch("status")
           handoff = @coordinator.status(id).fetch("candidate_handoff")
           assert_equal report.fetch("attempt"), handoff.fetch("attempt")
@@ -142,8 +164,9 @@ class ParallelDeliveryTest < Minitest::Test
         assert_equal 2, provider.prs.length
         before = @store.load(order.first)
         File.write(File.join(@ordinary, "file.txt"), "advanced main\n")
-        setup_git("commit", "-am", "advance main", chdir: @ordinary)
-        setup_git("push", "origin", "main", chdir: @ordinary)
+        setup_git("add", "-A", chdir: @ordinary)
+        setup_git("commit", "-m", "advance main", chdir: @ordinary)
+        setup_git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         status = @coordinator.status(order.first)
         assert_equal "STALE_CANDIDATE", status.fetch("status")
         assert_equal "not approved", status.dig("candidate_handoff", "integration")
@@ -210,7 +233,7 @@ class ParallelDeliveryTest < Minitest::Test
       constructor = AgentCodingTool::DeliveryManager.method(:new)
       factory = ->(**options) { constructor.call(**options, provider:, guard:) }
       AgentCodingTool::DeliveryManager.stub(:new, factory) do
-        assert_equal 0, launcher(real_sandbox_probe: true).launch("B", allow_write_collision: true), @err.string
+        assert_equal 0, launcher(real_sandbox_probe: true).launch("B"), @err.string
         assert_equal "CANDIDATE", @coordinator.status("B").fetch("status")
         assert_equal "IN_FLIGHT", @coordinator.status("T").fetch("status")
         cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data, out: @out, err: @err)
@@ -220,6 +243,116 @@ class ParallelDeliveryTest < Minitest::Test
       end
       assert_equal %w[act/B/attempt-1 act/T/attempt-1], provider.pushes.sort
       assert_equal @base, setup_git("rev-parse", "main", chdir: @ordinary)
+    end
+  end
+
+  # Reuses terminal native workers for admission evidence/permission controls.
+  # Historical explicit evidence remains readable; tampering refuses both launch
+  # and delivery. Mixed manual overlap still needs a flag and permanently defers
+  # managed delivery, even after the manual reservation ends.
+  def test_admission_evidence_history_and_mixed_manual_permission
+    delivery_fixture do
+      provider, guard = independent_runs(explicit: true)
+      report, run_dir = run_for("B")
+      path = File.join(run_dir, "handoff.json")
+      original = File.binread(path)
+      write_task(@data, id: "C", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+      @coordinator.prepare("C")
+      before_pid = File.binread(File.join(@root, "worker-pid"))
+      report.fetch("collision_authorization")["admission_basis"] = "default_verified_managed"
+      File.binwrite(path, JSON.generate(report))
+      error = assert_raises(AgentCodingTool::InvalidState) { launcher(real_sandbox_probe: true).launch("C") }
+      assert_match(/invocation differs from its verified start/, error.message)
+      manager = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator, provider:, guard:)
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("B", run_dir:) }
+      assert_match(/invocation differs from its verified start/, error.message)
+      assert_empty provider.pushes
+      refute @store.load("C")["started_at"]
+      assert_equal before_pid, File.binread(File.join(@root, "worker-pid"))
+
+      # Model the pre-addition format from an actual explicit launch; no other
+      # bindings or original verification observations are changed.
+      report = JSON.parse(original)
+      report.fetch("collision_authorization").delete("admission_basis")
+      report.fetch("execution_state").dig("write_collision_override", "launch").delete("admission_basis")
+      state = @store.load("B")
+      state.dig("write_collision_override", "launch").delete("admission_basis")
+      @store.write("B", state)
+      File.binwrite(path, JSON.generate(report))
+      assert AgentCodingTool::AttemptRecovery.new(data_root: @data).inspect("B").first.fetch("blockers").empty?
+      @terminal_liveness.unknown = true
+      [false, true].each do |explicit|
+        error = assert_raises(AgentCodingTool::InvalidState) {
+          launcher(real_sandbox_probe: true).launch("C", allow_write_collision: explicit)
+        }
+        assert_includes error.message, "terminal worker liveness is uncertain"
+        refute @store.load("C")["started_at"]
+        assert_equal before_pid, File.binread(File.join(@root, "worker-pid"))
+      end
+      @terminal_liveness.unknown = false
+
+      write_task(@data, id: "MANUAL", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+      @coordinator.prepare("MANUAL")
+      @coordinator.start("MANUAL")
+      error = assert_raises(AgentCodingTool::InvalidState) { launcher(real_sandbox_probe: true).launch("C") }
+      assert_includes error.message, "launch requires --allow-write-collision"
+      refute @store.load("C")["started_at"]
+      assert_equal before_pid, File.binread(File.join(@root, "worker-pid"))
+      assert_equal 0, launcher(real_sandbox_probe: true).launch("C", allow_write_collision: true)
+      mixed, mixed_dir = run_for("C")
+      assert_equal %w[B T], mixed.dig("collision_authorization", "verified_conflicts").map { |row| row.fetch("task_id") }
+      assert_equal ["MANUAL"], mixed.dig("collision_authorization", "unverified_manual_conflicts").map { |row| row.fetch("task_id") }
+      assert_equal "explicit_permission", mixed.dig("collision_authorization", "admission_basis")
+      @coordinator.record("MANUAL", outcome: "blocked")
+      error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("C", run_dir: mixed_dir) }
+      assert_includes error.message, "managed delivery disabled for this attempt"
+      assert_empty provider.pushes
+    end
+  end
+
+  # Changes to the sibling reservation after creation, probing or the last
+  # fixture check must be observed before start/spawn. Each failed target keeps
+  # its own truthful preflight evidence; the original candidate is restored.
+  def test_default_admission_rechecks_conflicts_at_each_setup_boundary
+    delivery_fixture do
+      @coordinator.prepare("T")
+      assert_equal 0, launcher(real_sandbox_probe: true).launch("T")
+      original = @store.load("T")
+      before_pid = File.binread(File.join(@root, "worker-pid"))
+      %i[checked_status! sandbox_probe! verify_fixture!].each do |boundary|
+        target = "C-#{boundary.to_s.delete('!')}"
+        write_task(@data, id: target, repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
+        @coordinator.prepare(target)
+        instance = launcher(real_sandbox_probe: true)
+        operation = instance.method(boundary)
+        store, calls = @store, 0
+        instance.define_singleton_method(boundary) do |*args|
+          result = operation.call(*args)
+          calls += 1
+          mutation_due = case boundary
+                         when :checked_status! then calls == 2
+                         when :verify_fixture! then calls == 3
+                         else true
+                         end
+          if mutation_due
+            ended = store.load("T")
+            ended.delete("started_at")
+            ended["result"] = { "outcome" => "blocked" }
+            store.write("T", ended)
+          end
+          result
+        end
+        error = assert_raises(AgentCodingTool::InvalidState) { instance.launch(target) }
+        phase = { checked_status!: "during worktree setup", sandbox_probe!: "during sandbox probe",
+                  verify_fixture!: "before reservation" }.fetch(boundary)
+        assert_includes error.message, "parallel worker set changed #{phase}"
+        refute @store.load(target)["started_at"]
+        assert_equal before_pid, File.binread(File.join(@root, "worker-pid"))
+        failed, = run_for(target)
+        assert_equal "preflight_failed", failed.fetch("status")
+        assert File.file?(File.join(run_for("T").first.fetch("workspace"), "worker-change.txt"))
+        @store.write("T", original)
+      end
     end
   end
 
@@ -308,9 +441,8 @@ class ParallelDeliveryTest < Minitest::Test
       write_task(@data, id: "B", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       %w[T B].each { |id| @coordinator.prepare(id) }
       write_fake("sleep")
-      host = Process.spawn({ "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-        RbConfig.ruby, File.join(Dir.pwd, "bin", "agent-coding-tool"), "launch", "T", "--codex",
-        out: File.join(@root, "host-out"), err: File.join(@root, "host-err"))
+      host = start_cold_launcher("launch", "T", "--codex",
+        stdout: File.join(@root, "host-out"), stderr: File.join(@root, "host-err"))
       child = nil
       begin
         running = Timeout.timeout(8) do

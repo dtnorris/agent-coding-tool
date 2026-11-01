@@ -65,7 +65,7 @@ module AgentCodingTool
         { "task_id" => other.fetch("id"), "status" => other_state["started_at"] ? "IN_FLIGHT" : "CANDIDATE",
           "repositories" => shared }
       end
-      verified = reject_unknown_reservations!(id, bases, allow_write_collision: true)
+      verified = reject_unknown_reservations!(id, bases)
       return verified if verified.empty?
 
       own = verify_conflicting_worker!(task, state,
@@ -144,14 +144,14 @@ module AgentCodingTool
         state = @coordinator.prepare(id, reservation_lock: lock).fetch("state")
       end
       validate_preparation!(task, state)
-      checked_status!(id, allow_write_collision: allow_write_collision)
+      checked_status!(id)
       prompt = File.binread(state.fetch("prompt_path"))
       raise InvalidState, "#{id}: generated prompt changed; explicitly prepare again" unless prompt == @coordinator.launch_prompt(id).b
       names = task.fetch("repositories").filter_map { |key, spec| key if spec.fetch("access") == "write" }
       bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
       verified_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+                                                         allow_manual_overlap: allow_write_collision)
       manual_conflicts = @manual_conflicts
       config = Config.load(File.join(@data_root, "config.yml"))
       root = WorktreeManager.canonical_system_path(config.worktree_root)
@@ -212,13 +212,13 @@ module AgentCodingTool
         @report["workspaces"] = workspaces
         save_report
         names.each { |name| verify_checkout!(workspaces.fetch(name), state.fetch("snapshot").fetch(name)) }
-        heads = checked_status!(id, allow_write_collision: allow_write_collision)
+        heads = checked_status!(id)
         @report["launch_checked_at"] = Time.now.utc.iso8601
         @report["launch_heads"] = heads
         changed_write!(task, state, @report.fetch("launch_heads"))
         manager.inspect!
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+                                                         allow_manual_overlap: allow_write_collision)
         identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees") } }
         unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
@@ -228,10 +228,10 @@ module AgentCodingTool
           AttemptRecovery.new(data_root: @data_root, transport: @transport).protected_paths(id, before_attempt: attempt)
         provision_fixture!(inventory)
         sandbox_probe!(inventory, workspace, run_dir)
-        heads = checked_status!(id, allow_write_collision: allow_write_collision)
+        heads = checked_status!(id)
         changed_write!(task, state, heads)
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+                                                         allow_manual_overlap: allow_write_collision)
         unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during sandbox probe; inspect and retry"
         end
@@ -244,6 +244,7 @@ module AgentCodingTool
         @report["argv"] = command
         if @collisions.any? || manual_conflicts.any?
           @report["collision_authorization"] = {
+            "admission_basis" => allow_write_collision ? "explicit_permission" : "default_verified_managed",
             "task_id" => id, "attempt" => attempt, "invocation_id" => @report.fetch("invocation_id"),
             "prepared_at" => state.fetch("prepared_at"), "conflicts" => @collisions,
             "authorities" => @report.fetch("writable_authorities"),
@@ -262,7 +263,7 @@ module AgentCodingTool
         manager.inspect!
         verify_fixture!(inventory)
         final_conflicts = reject_unknown_reservations!(id, bases,
-          allow_write_collision: allow_write_collision, allow_manual_overlap: true)
+          allow_manual_overlap: allow_write_collision)
         unless identity.call(final_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed before reservation; inspect and retry"
         end
@@ -274,6 +275,9 @@ module AgentCodingTool
         @report["execution_state"] = state_store.load(id)
         @report["status"] = "reserved"
         save_report
+        if @report["collision_authorization"] && manual_conflicts.empty?
+          @err.puts "PARALLEL DEVELOPMENT: verified ACT-managed overlap at launch (#{@report['collision_authorization']['admission_basis']}); integration and publication remain separate."
+        end
         result = execute(command, lock)
         if result == 0 && @report["status"] == "exited"
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
@@ -371,13 +375,15 @@ module AgentCodingTool
       end
     end
 
-    def checked_status!(id, allow_write_collision: false)
+    # Returns fresh prepared heads and observes conflicts for the ownership
+    # verifier. Invalid lifecycle, dependencies or freshness raise InvalidState;
+    # overlap alone is decided by reject_unknown_reservations!, not a flag.
+    def checked_status!(id)
       external_activity.assert_clear!(id)
       heads = nil
       status = @coordinator.statuses([id], strict_freshness: true) { |observed| heads = observed }.first
       raise InvalidState, "#{id}: launch blocked: #{status['status']} #{status['reason']}" unless status.fetch("status") == "PREPARED"
       @collisions = status.fetch("write_collisions", [])
-      raise InvalidState, "#{id}: unresolved write collision" if @collisions.any? && !allow_write_collision
       status.fetch("state").fetch("snapshot").to_h do |name, repo|
         [name, repo.slice("remote_url", "branch").merge("pushed_sha" => heads.fetch(repo.values_at("remote_url", "branch")))]
       end
@@ -466,7 +472,7 @@ module AgentCodingTool
     # Returns verified managed siblings and separately records manual reservations.
     # Launch may admit a no-run IN_FLIGHT reservation with explicit permission;
     # delivery never may. Damaged/partial managed evidence still raises InvalidState.
-    def reject_unknown_reservations!(id, bases, allow_write_collision:, allow_manual_overlap: false)
+    def reject_unknown_reservations!(id, bases, allow_manual_overlap: false)
       external_activity.assert_clear!(id)
       # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
       # pass also sees stale manual starts and orphaned host evidence. Historical
@@ -484,10 +490,13 @@ module AgentCodingTool
         next if shared.empty?
         next unless other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete"
 
-        if allow_manual_overlap && allow_write_collision && other_state["started_at"] && !other_state["result"] &&
+        if other_state["started_at"] && !other_state["result"] &&
            all_reports.none? { |report| report["task_id"] == other_id } &&
            !File.exist?(File.join(@run_root, other_id)) && !File.symlink?(File.join(@run_root, other_id)) &&
            !other_state.dig("write_collision_override", "launch")
+          unless allow_manual_overlap
+            raise InvalidState, "launch: #{other_id} has an unresolved in-flight reservation: manual write collision; manual worker isolation and activity are unverified; launch requires --allow-write-collision; managed delivery refuses manual overlap"
+          end
           target = store.load(id).fetch("snapshot")
           repositories = target.keys.select { |name| bases.include?(target.fetch(name)) &&
             shared.any? { |key| other_state.fetch("snapshot").fetch(key).values_at("remote_url", "branch") ==
@@ -502,7 +511,7 @@ module AgentCodingTool
           next
         end
 
-        if allow_write_collision && shared.any? { |name|
+        if shared.any? { |name|
           previous = other_state.fetch("snapshot").fetch(name)
           bases.none? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
             previous.values_at("remote_url", "branch", "pushed_sha") }
@@ -511,7 +520,7 @@ module AgentCodingTool
         end
 
         collision = @collisions.find { |row| row.fetch("task_id") == other_id }
-        unless allow_write_collision && collision && %w[IN_FLIGHT CANDIDATE].include?(collision.fetch("status"))
+        unless collision && %w[IN_FLIGHT CANDIDATE].include?(collision.fetch("status"))
           raise InvalidState, "launch: #{other_id} has an unresolved in-flight reservation or candidate write reservation; operator judgment required"
         end
         matching = all_reports.select { |row| row["task_id"] == other_id &&

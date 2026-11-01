@@ -160,11 +160,9 @@ class PreflightRecoveryTest < Minitest::Test
         File.binwrite(report_path, original_report)
       end
       refute recovery.preflight("T").fetch("abandoned")
-      # Change the bound commit directly; this is a modeled Git identity fault,
-      # while evidence files and resource-preservation assertions remain real.
-      checkout = @memory_world.send(:locate, path)
-      @memory_world.build_commit(checkout, files: checkout.tree.entries,
-        message: 'changed', advance: true)
+      File.write(File.join(path, "file.txt"), "changed head\n")
+      git("add", "--", "file.txt", chdir: path)
+      git("commit", "-m", "changed", chdir: path)
       assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
       assert_equal original_inventory, File.binread(report.fetch("worktrees_path"))
     end

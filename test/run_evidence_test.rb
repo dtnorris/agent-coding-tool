@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require_relative "support/child_processes"
+require_relative "support/memory_git/broker"
 require "stringio"
 require "timeout"
 require "socket"
@@ -10,6 +11,7 @@ require "minitest/mock"
 # Deterministic ACT records stand in only for the external worker/checkpoint
 # producer. All selection, transport, accounting and byte reading are real.
 class RunEvidenceTest < Minitest::Test
+  include TestHelpers
   # Builds canonical private fixture paths and one completed managed run.
   def setup
     @temporary = File.realpath(Dir.mktmpdir("act-evidence-"))
@@ -32,6 +34,8 @@ class RunEvidenceTest < Minitest::Test
 
   # Removes only this test's disposable records, never real ACT evidence.
   def teardown
+    @sharing_broker&.close
+    @sharing_world&.verify!
     FileUtils.remove_entry(@temporary)
   end
 
@@ -691,15 +695,51 @@ class RunEvidenceTest < Minitest::Test
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
-    output, error, status = ChildProcesses.capture('evidence_cli', arguments: arguments)
+    output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", "evidence", *arguments], seconds: 8)
     assert status.success?, "CLI #{arguments.first} failed: #{error}"
     JSON.parse(output)
   end
 
-  # Yields real public CLI pipes and reaped status under one exact child permit.
-  # No observer replaces process, lock, EOF or byte-stream behavior.
-  def popen_evidence(*arguments, &block)
-    ChildProcesses.popen('evidence_cli', arguments: arguments, &block)
+  # Observes live public status within one deadline. Only the exact nonblocking
+  # busy refusal is retried; persistent contention, other failures and bad JSON
+  # still fail. Each fresh CLI keeps the genuine ledger and child-process guard.
+  def cli_status_when_available(path, seconds: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    busy = "ERROR: evidence session refused (session.busy); check private grant, exact run identity and session status\n"
+    loop do
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      flunk "CLI status remained busy after #{seconds}s" unless remaining.positive?
+      output, error, status = ChildProcesses.capture("evidence_cli",
+        arguments: ["plain", "evidence", "status", "--session", path], seconds: remaining)
+      unless status.exitstatus == 2 && output.empty? && error == busy
+        assert status.success?, "CLI status failed: #{error}"
+        return JSON.parse(output)
+      end
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      IO.select(nil, nil, nil, [0.01, remaining].min) if remaining.positive?
+    end
+  end
+
+  # Yields live pipes and a genuine waiter for one exact public evidence child.
+  # The caller owns EOF/signals and bounded waits; the permit preserves coverage.
+  def evidence_process(*arguments, mode: "plain", environment: {}, cwd: nil, &block)
+    options = { pgroup: true }
+    options[:chdir] = cwd if cwd
+    approval = ChildProcesses.permit("evidence_cli", arguments: [mode, *arguments],
+      environment: environment, options: options)
+    pipes = NoGitExecution.with_permit(approval) do
+      Open3.popen3(approval.environment, *approval.argv, **approval.options)
+    end
+    block.call(*pipes)
+  ensure
+    if pipes
+      pipes.first(3).each { |pipe| pipe.close unless pipe.closed? }
+      unless pipes.last.join(8)
+        Process.kill("KILL", -pipes.last.pid) rescue Errno::ESRCH
+        pipes.last.join
+        raise Timeout::Error, "owned evidence child did not finish"
+      end
+    end
   end
 
   # Real kernel contention is released only after a fresh public CLI observes
@@ -709,15 +749,15 @@ class RunEvidenceTest < Minitest::Test
     @session.admit
     @session.charge(wire: 123, decoded: 45)
     before = @session.status
-    command = ['--trace-lock', 'stop', '--session', @session_path]
+    command = ["evidence", "stop", "--session", @session_path]
     File.open(File.join(@session_path, "lock"), File::RDWR) do |lock|
       assert lock.flock(File::LOCK_EX | File::LOCK_NB)
-      output, error, status = ChildProcesses.capture('evidence_cli', arguments: command)
+      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["flock", *command], seconds: 8)
       refute status.success?
       assert_empty output
       assert_includes error, "session.busy"
       refute JSON.parse(File.binread(File.join(@session_path, "state.json")))["stopped"]
-      popen_evidence(*command) do |input, output, error, waiter|
+      evidence_process(*command, mode: "flock") do |input, output, error, waiter|
         input.close
         assert IO.select([error], [], [], 5), "stop never observed the contended lock"
         assert_equal "LOCK_CONTENDED\n", error.gets
@@ -755,7 +795,8 @@ class RunEvidenceTest < Minitest::Test
     end
     flags = ["--task", "FIXTURE", "--attempt", "1", "--invocation", "invocation-1", "--codex-session", "codex-1"]
     manifest = cli("select", "--session", path, *flags)
-    popen_evidence('serve', '--session', path) do |input, output, error, waiter|
+    command = ["evidence", "serve", "--session", path]
+    evidence_process(*command) do |input, output, error, waiter|
       exchange = lambda do |request|
         input.write(JSON.generate(request) + "\n")
         input.flush
@@ -814,7 +855,7 @@ class RunEvidenceTest < Minitest::Test
     assert_equal "complete", read["status"]
     # Controller EOF closes a newly owned foreground process; no signal or
     # historical PID lookup is used. Waiting independently observes direct exit.
-    popen_evidence('serve', '--session', @session_path) do |input, output, error, waiter|
+    evidence_process("evidence", "serve", "--session", @session_path) do |input, output, error, waiter|
       input.close
       assert Timeout.timeout(5) { waiter.value }.success?
       assert_empty output.read
@@ -826,7 +867,7 @@ class RunEvidenceTest < Minitest::Test
     @grant["limits"]["seconds"] = 1
     write_json(@grant_path, @grant)
     cli("start", "--session", expiry_path, "--grant", @grant_path)
-    popen_evidence('serve', '--session', expiry_path) do |_input, output, error, waiter|
+    evidence_process("evidence", "serve", "--session", expiry_path) do |_input, output, error, waiter|
       assert Timeout.timeout(5) { waiter.value }.success?
       assert_empty output.read
       assert_operator error.read.bytesize, :<=, 4096
@@ -839,44 +880,8 @@ class RunEvidenceTest < Minitest::Test
   # The client key appears only in this declared synthetic assertion and .env.
   def tunnel_fixture
     client = File.join(@temporary, "fixture-client")
-    source = <<~'RUBY'
-      require "json"
-      require "socket"
-      require "open3"
-      require "shellwords"
-      exit 41 unless ENV["CONTROL_PLANE_API_KEY"] == "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
-      exit 42 if ENV.key?("OPENAI_TUNNEL_KEY") || ENV.key?("OTHER_SECRET")
-      config = JSON.parse(File.binread(ARGV.fetch(2)))
-      capacity = config.dig("admin_ui", "log_buffer_events")
-      exit 45 unless capacity.is_a?(Integer) && capacity.positive?
-      command = Shellwords.split(config.fetch("mcp").fetch("commands").first.fetch("command"))
-      exit 43 unless command.take(2) == ["/usr/bin/env", "-i"]
-      exit 44 if command.any? { |argument| argument.include?(ENV.fetch("CONTROL_PLANE_API_KEY")) }
-      input, output, waiter = Open3.popen2(*command)
-      wire = UNIXServer.new("wire")
-      health = TCPServer.new("127.0.0.1", 0)
-      Thread.new do
-        loop do
-          connection = health.accept
-          connection.gets
-          connection.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-          connection.close
-        end
-      end
-      File.write(config.fetch("health").fetch("url_file"), "http://127.0.0.1:#{health.addr[1]}\n", perm: 0o600)
-      connection = wire.accept
-      while (frame = connection.gets)
-        input.write(frame)
-        input.flush
-        response = output.gets
-        break unless response
-        connection.write(response)
-      end
-      input.close
-      waiter.value
-    RUBY
-    RubyVM::InstructionSequence.compile(source)
-    File.write(client, "#!#{RbConfig.ruby}\n" + source, perm: 0o700)
+    source = File.binread(File.join(ChildProcesses::FIXTURES, "tunnel_client.rb"))
+    File.write(client, source, perm: 0o700)
     @dotenv = File.join(@temporary, ".env")
     File.write(@dotenv, "OPENAI_TUNNEL_KEY='ACT29_SYNTHETIC_CREDENTIAL_7fQ9'\nOTHER_SECRET=unrelated-sentinel\n", perm: 0o600)
     @runtime = File.join(@temporary, "shared-runtime")
@@ -892,16 +897,16 @@ class RunEvidenceTest < Minitest::Test
     @grant["transport"]["endpoint"] = "tunnel_fixture/main"
     @grant["limits"]["seconds"] = seconds
     grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), @grant)
-    arguments = [RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-r", File.expand_path("support/fixture_tunnel.rb", __dir__), File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+    arguments = ["evidence", "open",
       "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
-    arguments = controller_loss_command + arguments.drop(6) if controller_loss
     environment = { "OPENAI_TUNNEL_KEY" => nil, "CONTROL_PLANE_API_KEY" => nil, "OTHER_SECRET" => nil,
       "ACT_FIXTURE_TUNNEL_CLIENT" => client }
-    Open3.popen3(environment, *arguments, chdir: @temporary) do |input, output, error, waiter|
+    evidence_process(*arguments, mode: controller_loss ? "controller_loss" : "plain",
+      environment: environment, cwd: @temporary) do |input, output, error, waiter|
       begin
         assert IO.select([output], [], [], 5), "public tunnel startup did not finish"
         line = output.gets
-        assert line, "public tunnel startup refused before READY"
+        assert line, "public tunnel startup refused before READY: #{error.read unless line}"
         assert_equal "ready", JSON.parse(line)["status"]
         wire = Dir.chdir(path) { UNIXSocket.new("wire") }
         yield wire, waiter, path
@@ -925,9 +930,8 @@ class RunEvidenceTest < Minitest::Test
     client = tunnel_fixture
     original_dotenv = File.binread(@dotenv)
     original_mode = File.stat(@dotenv).mode
-    output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, RbConfig.ruby,
-      "-I", File.expand_path("../lib", __dir__), "-e",
-      'require "agent_coding_tool"; AgentCodingTool::CLI.run(["help"]); abort "unexpected dotenv loading" if defined?(Dotenv)', chdir: @temporary)
+    output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["help_no_dotenv"],
+      environment: { "OPENAI_TUNNEL_KEY" => nil }, seconds: 5)
     assert status.success?, error
     refute_includes output, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
     later = write_run(2)
@@ -968,7 +972,7 @@ class RunEvidenceTest < Minitest::Test
       end
       bad = exchange.call(rpc("tools/call", {}, meta: metadata(tool: true).merge("unknown" => "private-context")))
       assert_equal "metadata.unknown_member", bad.dig("error", "data", "stage")
-      assert_equal 2, cli("status", "--session", path)["selected_runs"].length
+      assert_equal 2, cli_status_when_available(path)["selected_runs"].length
       assert_equal "stopped", cli("stop", "--session", path)["status"]
     end
     adapter_diagnostics = File.binread(File.join(@temporary, "tunnel-first", "adapter-diagnostics.jsonl"))
@@ -999,29 +1003,33 @@ class RunEvidenceTest < Minitest::Test
     end
   end
 
-  # Returns a test-only public CLI bootstrap. USR1 exits the controller with a
-  # distinct status without the cooperative TERM wait, while Ruby at_exit can
-  # finalize coverage. This stimulus does not prove SIGKILL behavior.
-  def controller_loss_command
-    [RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-r", File.expand_path("support/fixture_tunnel.rb", __dir__), "-e", 'trap("USR1") { exit 86 }; load ARGV.shift',
-      File.expand_path("../bin/agent-coding-tool", __dir__)]
-  end
-
   # Proves independent expiry/controller-loss cleanup, endpoint collision and
   # nonrenewable session accounting through actual public process boundaries.
   # An unrelated live child is a sentinel and must survive every owned teardown.
   def test_native_tunnel_lifecycle_and_exclusive_ownership
     client = tunnel_fixture
-    sentinel = Process.spawn(RbConfig.ruby, "-e", "sleep 30", out: File::NULL, err: File::NULL)
+    release_read, release_write = IO.pipe
+    ready_read, ready_write = IO.pipe
+    sentinel = nil
+    approval = ChildProcesses.permit("manual_worker", arguments: [File.join(@temporary, "unrelated-sentinel"), "30"])
+    File.open(File::NULL, "w") do |null|
+      sentinel = NoGitExecution.with_permit(approval) do
+        Process.spawn(approval.environment, *approval.argv, in: release_read, out: ready_write, err: null)
+      end
+    end
+    release_read.close
+    ready_write.close
+    assert_equal "ready\n", Timeout.timeout(2) { ready_read.gets }
     with_tunnel(client, "controller-loss", controller_loss: true) do |wire, waiter, path|
       wire.write(JSON.generate(rpc("ping")) + "\n")
       assert IO.select([wire], [], [], 3), "lifecycle probe response missing"
       assert JSON.parse(wire.gets)["result"]
       before = cli("status", "--session", path)
-      arguments = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+      arguments = ["evidence", "open",
         "--session", path, "--grant", File.join(@temporary, "controller-loss-grant.json"),
         "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
-      output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments)
+      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
+        environment: { "OPENAI_TUNNEL_KEY" => nil }, seconds: 5)
       refute status.success?
       assert_empty output
       assert_includes error, "tunnel.session_reused"
@@ -1031,7 +1039,8 @@ class RunEvidenceTest < Minitest::Test
       proposal = @grant.merge("session_path" => occupied)
       write_json(File.join(@temporary, "occupied-grant.json"), proposal)
       occupied_arguments = arguments.map { |value| value == path ? occupied : value == File.join(@temporary, "controller-loss-grant.json") ? File.join(@temporary, "occupied-grant.json") : value }
-      _output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *occupied_arguments)
+      _output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *occupied_arguments],
+        environment: { "OPENAI_TUNNEL_KEY" => nil }, seconds: 5)
       refute status.success?
       assert_includes error, "tunnel.occupied"
       refute File.exist?(occupied)
@@ -1052,7 +1061,8 @@ class RunEvidenceTest < Minitest::Test
       assert_raises(Errno::ECONNREFUSED) { TCPSocket.new(health.host, health.port) }
       assert_equal before.values_at("wire_bytes", "decoded_bytes", "expires_at", "limits"),
         after.values_at("wire_bytes", "decoded_bytes", "expires_at", "limits")
-      _output, error, status = Open3.capture3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments)
+      _output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
+        environment: { "OPENAI_TUNNEL_KEY" => nil }, seconds: 5)
       refute status.success?
       assert_includes error, "tunnel.session_reused"
       assert_equal after, cli("stop", "--session", path)
@@ -1068,9 +1078,10 @@ class RunEvidenceTest < Minitest::Test
     end
   ensure
     if sentinel
-      Process.kill("TERM", sentinel)
-      Process.waitpid(sentinel)
+      Process.kill("TERM", sentinel) rescue Errno::ESRCH
+      Process.waitpid(sentinel) rescue Errno::ECHILD
     end
+    [release_read, release_write, ready_read, ready_write].compact.each { |pipe| pipe.close unless pipe.closed? }
   end
 
   # Credential rejection happens locally without a prompt. Wrong delivery to
@@ -1085,9 +1096,9 @@ class RunEvidenceTest < Minitest::Test
         "transport" => @grant.fetch("transport").merge("endpoint" => "tunnel_fixture/main"),
         "limits" => @grant.fetch("limits").merge("seconds" => 1))
       grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), proposal)
-      arguments = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__), "evidence", "open",
+      arguments = ["evidence", "open",
         "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
-      Open3.popen3({ "OPENAI_TUNNEL_KEY" => nil }, *arguments) do |input, output, error, waiter|
+      evidence_process(*arguments, environment: { "OPENAI_TUNNEL_KEY" => nil }) do |input, output, error, waiter|
         input.close
         if name == "stopped-startup"
           Timeout.timeout(3) { IO.select(nil, nil, nil, 0.02) until File.exist?(File.join(path, "tunnel.json")) }
@@ -1097,7 +1108,9 @@ class RunEvidenceTest < Minitest::Test
         assert_empty output.read
         diagnostics = error.read
         refute_includes diagnostics, "wrong-synthetic-delivery"
-        result = JSON.parse(File.binread(File.join(path, "tunnel-result.json")))
+        receipt_path = File.join(path, "tunnel-result.json")
+        assert File.file?(receipt_path), "tunnel receipt absent: #{diagnostics}"
+        result = JSON.parse(File.binread(receipt_path))
         assert_equal "readiness", result["stage"]
         assert_includes %w[expired stopped], result["reason"]
         assert_equal "not_attested", result["retrieval"]
@@ -1107,16 +1120,17 @@ class RunEvidenceTest < Minitest::Test
     end
   end
 
-  # Uses fresh public processes, real native checkpoint preservation/capture and
+  # Uses fresh public processes, real checkpoint preservation/capture and
   # the actual reader/adapter. Only the worker records and hosted client are
-  # external fakes. Independent file hashes prove failed and passing diagnostics.
+  # external fakes; Git uses the shared memory contract. Independent file hashes
+  # prove failed and passing diagnostics. Host acceptance still uses native Git.
   def test_native_share_continuous_public_journey
     FileUtils.remove_entry(File.join("#{@data}-runs", "checkpoints", "FIXTURE"))
-    seed = TestHelpers.git_seed
     source = File.join(@temporary, "source")
-    FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), source)
-    base = seed.fetch(:base)
-    remote = File.join(seed.fetch(:root), "remote.git")
+    remote = File.join(@temporary, "remote.git")
+    @sharing_world = MemoryGit::PatchWorld.new(root: @temporary)
+    checkout, = memory_repository(@sharing_world, path: source, remote: remote)
+    base = checkout.head
     snapshot = { "source" => { "path" => source, "remote" => "origin", "remote_url" => remote,
       "branch" => "main", "pushed_sha" => base } }
     FileUtils.mkdir_p(File.join(@data, "tasks"), mode: 0o700)
@@ -1130,8 +1144,11 @@ class RunEvidenceTest < Minitest::Test
     report_path = File.join(@first[:run], "handoff.json")
     report = JSON.parse(File.binread(report_path))
     ownership = File.join(@first[:run], "worktrees.json")
-    inventory = AgentCodingTool::WorktreeManager.new(root: worktrees, record_path: ownership).create(
-      task_id: "FIXTURE", attempt: 1, task: task, snapshot: snapshot)
+    inventory = MemoryGit::Session.with(@sharing_world) do
+      AgentCodingTool::WorktreeManager.new(root: worktrees, record_path: ownership).create(
+        task_id: "FIXTURE", attempt: 1, task: task, snapshot: snapshot)
+    end
+    @sharing_broker = MemoryGit::Broker.new(world: @sharing_world, directory: @temporary, case_id: "share-journey")
     workspace = inventory.fetch("entries").first.fetch("path")
     prepared_at = "2026-01-01T00:00:00Z"
     AgentCodingTool::StateStore.new(File.join(@data, "state")).write("FIXTURE",
@@ -1144,10 +1161,11 @@ class RunEvidenceTest < Minitest::Test
       "fixture" => { "path" => exports, "device" => stat.dev, "inode" => stat.ino, "uid" => stat.uid })
     write_json(report_path, report)
     File.write(File.join(workspace, "file.txt"), "candidate\n")
-    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil }
-    command = [RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__)]
+    # Keep checkpoint scratch indexes and objects inside this case's memory world.
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
     run_cli = lambda do |*arguments, success: true|
-      output, error, status = Open3.capture3(environment, *command, *arguments)
+      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
+        environment: environment, endpoint: @sharing_broker.endpoint, seconds: 15)
       assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
       [output, error]
     end
@@ -1184,48 +1202,20 @@ class RunEvidenceTest < Minitest::Test
     client = tunnel_fixture
     run_cli.call("share", "setup", "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime,
       "--account", "fixture-account", "--workspace", "fixture-workspace", "--endpoint", "tunnel_fixture/main")
-    # The external service boundary uses private pipes: this worker's sandbox
-    # denies TCP/Unix bind. Credential delivery and the ACT adapter remain real.
-    File.write(client, "#!#{RbConfig.ruby}\n" + <<~'RUBY', perm: 0o700)
-      require "json"
-      require "open3"
-      require "shellwords"
-      trap("TERM") { } # External fake remains live until the owner's final KILL.
-      exit 41 unless ENV["CONTROL_PLANE_API_KEY"] == "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
-      exit 42 if ENV.key?("OPENAI_TUNNEL_KEY") || ENV.key?("OTHER_SECRET")
-      config = JSON.parse(File.binread(ARGV.fetch(2)))
-      command = Shellwords.split(config.fetch("mcp").fetch("commands").first.fetch("command"))
-      input, output, waiter = Open3.popen2(*command)
-      File.mkfifo("requests", 0o600)
-      File.mkfifo("responses", 0o600)
-      File.write("fixture-ready", "ready", perm: 0o600)
-      File.open("requests", "rb") do |requests|
-        File.open("responses", "wb") do |responses|
-          while (frame = requests.gets)
-            input.write(frame); input.flush
-            response = output.gets
-            break unless response
-            responses.write(response); responses.flush
-          end
-        end
-      end
-      input.close
-      waiter.value
-    RUBY
-    File.open(client, "a") { |file| file.puts "sleep 10 # bounded external service lifetime; ACT owns cleanup" }
-    tunnel_command = [RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-r", File.expand_path("support/fixture_tunnel.rb", __dir__),
-      command.last, "share", "tunnel", "--min", "30"]
+    # Use the same reviewed external client and real socket/adapter boundary as
+    # existing tunnel tests; Git authority is shared with each fresh CLI child.
     original_hashes = nil
     2.times do |iteration|
-      Open3.popen3(environment.merge("ACT_FIXTURE_TUNNEL_CLIENT" => client, "ACT_FIXTURE_TUNNEL_PIPES" => "1"), *tunnel_command) do |input, output, error, waiter|
+      evidence_process("share", "tunnel", "--min", "30",
+        environment: environment.merge("ACT_FIXTURE_TUNNEL_CLIENT" => client)) do |input, output, error, waiter|
         begin
           assert IO.select([output], [], [], 5), "tunnel startup missing"
           assert_equal [], JSON.parse(output.gets)["tasks"]
           assert IO.select([output], [], [], 5), "tunnel readiness missing"
           assert_equal "ready", JSON.parse(output.gets)["status"]
           path = JSON.parse(File.binread("#{@data}-sharing/active.json")).fetch("session")
-          wire = File.open(File.join(path, "requests"), "wb")
-          responses = File.open(File.join(path, "responses"), "rb")
+          wire = Dir.chdir(path) { UNIXSocket.new("wire") }
+          responses = wire
           requests_sent = 0
           exchange = lambda do |arguments, success: true|
             requests_sent += 1
@@ -1257,8 +1247,8 @@ class RunEvidenceTest < Minitest::Test
               observation = File.join(File.dirname(record.fetch("path")), "passing.observation.json")
               arguments = ["checkpoint", "gate", "FIXTURE", "--workspace", workspace]
               arguments += ["--observations", observation] if exit_code.zero?
-              source = 'STDOUT.binmode.write("out\x00\xff".b); STDERR.binmode.write("err\x80".b); if ARGV[1]; File.write(ARGV[1], JSON.generate(schema_version: "agent-coding-tool-gate-observation/v1", summary: {tests: 1, failures: 0}), perm: 0600); end; exit Integer(ARGV.fetch(0))'
-              arguments += ["--", RbConfig.ruby, "-rjson", "-e", source, exit_code.to_s]
+              arguments += ["--", RbConfig.ruby,
+                File.join(ChildProcesses::FIXTURES, "checkpoint_validator.rb"), "share", exit_code.to_s]
               arguments << observation if exit_code.zero?
               run_cli.call(*arguments, success: exit_code.zero?)
               failed_selection = exchange.call(@first[:identity].merge("operation" => "select")) unless exit_code.zero?
@@ -1341,9 +1331,10 @@ class RunEvidenceTest < Minitest::Test
           refute_includes line, @temporary
           refute_includes line, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
         ensure
-          _stop_output, stop_error, stop_status = Open3.capture3(environment, *command, "share", "stop")
+          _stop_output, stop_error, stop_status = ChildProcesses.capture("evidence_cli",
+            arguments: ["plain", "share", "stop"], environment: environment, seconds: 8)
           wire&.close
-          responses&.close
+          responses&.close unless responses&.closed?
           input.close
           # Drain activity concurrently: a full console pipe must not prevent cleanup.
           drain = Thread.new { output.read }

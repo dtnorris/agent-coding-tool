@@ -114,6 +114,37 @@ liveness and integration gates, and uses a temporary command-local Finder exclud
 for native Git removal after rechecking cleanliness. It uses no force removal,
 individual metadata deletion, persistent ignore change or system setting.
 
+## Remind a task manager of the outcome
+
+```sh
+act manage ACT-33
+act manage ACT-33 --stdout
+```
+
+`manage TASK` replaces the current clipboard with a deterministic reminder using
+macOS `pbcopy`, then confirms success. Paste it above your update to the manager.
+`--stdout` prints exactly the same reminder without touching the clipboard and
+works on other platforms. Missing, failed or timed-out `pbcopy` returns nonzero
+with the stdout recovery command; it never reports a successful copy.
+
+The four-sentence scaffold quotes the current local `tasks/TASK.yml` goal in
+full, normalizing whitespace only; a goal may itself contain multiple sentences.
+It includes the task path and SHA-256 of the exact source bytes, asks the manager
+to read that source's complete acceptance criteria and constraints, reconcile
+your update with established evidence, choose the smallest necessary next step,
+and stop at accepted completion. Acceptance and constraints are referenced, not
+automatically summarized or pasted in full. The manager still needs access to
+the identified source; the hash proves neither remote freshness nor acceptance.
+
+Only that task file is read: no state, prepared prompt, logs, other tasks,
+repository inspection, network or model calls. Local edits affect the next
+reminder; it does not represent an active worker's pinned preparation. No task,
+lifecycle, checkpoint or repository data is written. Unknown/traversing IDs,
+mismatched IDs, malformed YAML, missing goals/acceptance, symlinks, nonregular
+files, invalid UTF-8/control bytes, sources over 64 KiB and reminders over 8 KiB
+refuse before copying; content is never silently truncated. Clipboard replacement
+is the requested side effect, not repository or publication authorization.
+
 ## Apply a worker handoff
 
 A worker supplies a handoff with two download links, for example:
@@ -878,19 +909,28 @@ Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch uses a collision override only for this invocation when
-`--allow-write-collision` is present. Managed siblings still require verified
+Launch admits compatible verified managed overlap by default, without
+`--allow-write-collision`. Managed siblings still require verified
 ACT-owned task/attempt evidence, distinct worktrees at the same prepared
 writable baseline, and known process state. A manual `IN_FLIGHT` reservation
-without managed run evidence may overlap even when its activity is unknown or
+without managed run evidence requires explicit `--allow-write-collision` and
+may then overlap even when its activity is unknown or
 active, or its historical preparation differs. The new task must be fresh and
 pass every normal native worktree, Git identity, prompt and sandbox check.
 The second worker's sandbox probe also denies writes to verified managed
-sibling worktrees. Ordinary launch still
-rejects a write/write collision; read-only overlap does not require the flag.
-The override records task, attempt, invocation, conflicts, authorities and
+sibling worktrees. Mixed managed/manual overlap also requires explicit permission.
+Read-only overlap does not require the flag. Failed ownership, baseline,
+sandbox or liveness checks refuse in either mode; repository overlap alone
+does not establish compatibility or semantic merge safety.
+The admission records task, attempt, invocation, conflicts, authorities and
 verified sibling ownership separately from unverified manual reservations in
-private handoff evidence and lifecycle state. Manual-overlap diagnostics say
+private handoff evidence and lifecycle state. `collision_authorization.admission_basis`
+is `default_verified_managed` or `explicit_permission`, reflecting whether the
+operator actually supplied the flag. The historical `write_collision_override.launch`
+container retains the same bound evidence for existing consumers, including
+default admission; its presence alone does not imply explicit permission.
+Historical records without the added basis retain their original meaning.
+Manual-overlap diagnostics say
 `operator_authorized_manual_overlap`; they never certify the external worker.
 It expires with that attempt. Manual `start --allow-write-collision` retains
 its human assertion contract and cannot be used to bypass launch checks.
@@ -2285,7 +2325,7 @@ For a bounded Mac-local parallel pilot, run
 `ruby -Ilib:test test/parallel_launch_test.rb` in the ACT checkout. It creates
 two disposable task definitions, a local bare remote and separate task-owned
 worktrees at one pinned commit. A fake Codex worker stays active while the
-second launches with the explicit flag. The test checks the collision record,
+second launches without an override flag. The test checks the admission record,
 distinct branches/results, denied sibling and ordinary-checkout writes,
 independent process-group cancellation, checkpoint identity and stale status
 after a local main push. It also checks that a manual IG-18C reservation remains

@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+# Fixed Ruby entry lets Bundler load Rake in-process. The installed polyglot
+# shell shim would require an unapproved shell exec before Rake startup.
+require 'rake'
+Rake.application.run(ARGV)

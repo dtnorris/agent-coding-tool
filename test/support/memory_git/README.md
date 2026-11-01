@@ -282,8 +282,11 @@ not rerun or replaced by these component timings.
 The launcher fixture keeps its temporary files inside its case world, including
 command-local excludes and the private sandbox configuration home. Probe cwd and
 TMPDIR come from the current durable handoff; changed environments and unowned
-paths are refused. Cold launchers use the same leased broker as their parent.
-No broker starts for an in-process launch or prompt-only cold reader.
+paths are refused. Cold launchers use the same leased broker as their parent. Registered sibling
+host birth identities cross the reviewed child environment; a cold overlap query
+rechecks those identities against the kernel before returning parent/group facts.
+In-process launches need no broker. Cold readers that inspect repository state
+receive the same leased authority as their parent.
 The short `al-` case-directory prefix leaves room for `w.sock` under the
 reconstructed worker's longer TMPDIR; every path remains inside the case world.
 
@@ -298,14 +301,18 @@ checks. The retained fixture-permissions case checks these positive and negative
 paths, including a real two-generation permitted Ruby family. This qualifies the
 observer only; the full cold parallel-launch journey still requires host sockets.
 
-`state_reader`, `planning_consumer`, `external_activity`, `launcher_cli` and
+`state_reader`, `planning_consumer`, `external_race`, `launcher_cli` and
 `evidence_cli` are fixed, hash-pinned Ruby scripts at the existing permit seam.
 They retain actual processes, locks, streams and exit statuses. The interactive
 pipe helper releases its consumed permit before yielding, so another reviewed
 child can run while the first is alive. Each spawn still needs its own permit.
 The external-activity race uses fresh interpreters rather than inherited forks.
 
-These adapters do not authorize native Git or production's tunnel-owner fork.
-Tests requiring those native operations still need their original acceptance
-proof; a memory-world result cannot supply it. Socket denial blocks the existing
-broker tests and must remain visible, without a transport fallback or skip.
+These child adapters do not authorize native Git. `TunnelProcesses` separately
+binds the production owner fork, inventory and client launch to exact reviewed
+source bytes and call sites; the sharing journey uses that same boundary.
+The fixture-only inventory adapter isolates the declared synthetic endpoint from
+a real host tunnel, while real ownership and occupied-endpoint refusals remain
+covered separately. Socket denial blocks the broker and tunnel journeys and must
+remain visible, without a transport fallback or skip. Memory-world checks do not
+replace native Git or live Mac-to-Work acceptance.

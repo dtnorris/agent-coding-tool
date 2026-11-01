@@ -1,0 +1,17 @@
+{
+  "before": [],
+  "after": [
+    {
+      "path_hex": "776f726b65722d6368616e67652e747874",
+      "bytes_hex": "61667465722064726966740a00ff",
+      "mode": "100644"
+    }
+  ],
+  "patch_base64": "ZGlmZiAtLWdpdCBhL3dvcmtlci1jaGFuZ2UudHh0IGIvd29ya2VyLWNoYW5nZS50eHQKbmV3IGZpbGUgbW9kZSAxMDA2NDQKaW5kZXggMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMC4uYjEzMzY5OWJkNGZmZjM3NzY5NjY3M2JhYjhmN2E5MDFmZGE2MjM2YQpHSVQgYmluYXJ5IHBhdGNoCmxpdGVyYWwgMTQKVmNtWWRIREBpUjxOR1p4cEU4JH1KNCoofkcxeXVrNQoKbGl0ZXJhbCAwCkhjbVY/ZDAwMDAxCgo=",
+  "sha256": "173f91954bcdae26df3f18dc9e66ef7de33fe4f4f866755185f9e62c5d3c610e",
+  "paths_hex": [
+    "776f726b65722d6368616e67652e747874"
+  ],
+  "numstat_hex": "2d092d09776f726b65722d6368616e67652e74787400",
+  "stat": " worker-change.txt |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+}

@@ -72,6 +72,7 @@ module AgentCodingTool
       case command
       when "share" then return share_command(argv)
       when "apply" then return apply_command(argv)
+      when "manage" then return manage_command(argv)
       when "evidence" then return evidence_command(argv)
       when "status" then status_command(argv)
       when "next" then next_command(argv)
@@ -141,6 +142,38 @@ module AgentCodingTool
       0
     rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError
       @err.puts "ERROR: share refused; use act share help, act share setup for missing facts, or act share tunnel for a new ready tunnel; inspect act share status before retrying."
+      2
+    end
+
+    # Copies a source-bound reminder through macOS pbcopy, or writes only its
+    # text with --stdout. No task/repository state is changed. Parsing/source
+    # errors raise Error; failed/missing clipboard commands return nonzero with
+    # an explicit stdout recovery command, never a false copy-success message.
+    def manage_command(argv)
+      stdout = false
+      parser = OptionParser.new do |opts|
+        opts.on("--stdout", "print the reminder without changing the clipboard") { stdout = true }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool manage TASK [--stdout]" unless id && argv.empty?
+
+      require_relative "manager_reminder"
+      reminder = ManagerReminder.render(@data_root, id)
+      if stdout
+        @out.write(reminder)
+        return 0
+      end
+      result = @transport.call(["pbcopy"], input: reminder, timeout: 5)
+      unless result.success?
+        @err.puts "ERROR: manage: pbcopy failed (status #{result.shell_status}); use act manage #{id} --stdout"
+        return result.shell_status
+      end
+      @out.puts "Copied manager reminder for #{id}; paste it above your update."
+      0
+    rescue SystemCallError, IOError, Timeout::Error => error
+      @err.puts "ERROR: manage: clipboard unavailable (#{error.class}); use act manage #{id} --stdout"
       2
     end
 
@@ -489,7 +522,7 @@ module AgentCodingTool
       options = {}
       parser = OptionParser.new do |opts|
         opts.on("--codex", "launch one local ChatGPT Codex worker") { options[:codex] = true }
-        opts.on("--allow-write-collision", "authorize isolated development, including unverified manual reservations") { options[:allow_write_collision] = true }
+        opts.on("--allow-write-collision", "permit unverified manual overlap; verified managed overlap is automatic") { options[:allow_write_collision] = true }
         opts.on("--model MODEL", "explicit Codex model override; recommendation is advisory") { |value| options[:model] = value }
         opts.on("--reasoning LEVEL", "explicit minimal/low/medium/high/xhigh reasoning") { |value| options[:reasoning] = value }
       end
@@ -1375,6 +1408,10 @@ module AgentCodingTool
 
       kind = if override.dig("launch", "unverified_manual_conflicts")
                "operator-authorized development; new worker checked at launch; external isolation/liveness unverified; managed delivery disabled"
+             elsif override.dig("launch", "admission_basis") == "default_verified_managed"
+               "default managed admission; last verified ACT launch; current liveness unavailable"
+             elsif override.dig("launch", "admission_basis") == "explicit_permission"
+               "explicit permission; last verified ACT launch; current liveness unavailable"
              else
                override["launch"] ? "last verified ACT launch; current liveness unavailable" : "manual start assertion; isolation/liveness unverified"
              end
@@ -1780,6 +1817,9 @@ module AgentCodingTool
           share {status|stop}; share revoke TASK; share help
                               zero tasks on startup; whole configured Work workspace audience
                               setup required once; no execution/publication; delivered bytes cannot be recalled
+          manage TASK [--stdout]
+                              copy a local task-goal reminder with pbcopy; --stdout prints only
+                              source path/hash included; no progress claims or task-state writes
           evidence open --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY --env-file /CANONICAL/ACT/.env
                         --client /CANONICAL/tunnel-client --runtime-dir SHARED_PRIVATE_DIRECTORY
                               foreground finite owner-approved tunnel; explicit canonical paths
@@ -1822,6 +1862,7 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+                              verified managed overlap is automatic; manual overlap requires the flag
           checkpoint export TASK --workspace PATH --base SHA --artifact PATH [--remote NAME]
                               [--repository NAME [--focused PATH]]
                               canonical-format-check candidate; no host state writes or test attestation

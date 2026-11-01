@@ -54,8 +54,11 @@ path = ARGV[ARGV.index('--output-last-message') + 1]
 root = File.expand_path('../../../..', path)
 mode = JSON.parse(File.read(File.join(root, 'fake-settings.json'))).fetch('mode')
 trap('INT') { File.write(File.join(root, 'interrupted'), 'INT'); exit 130 }
+# Keep independent child observations when concurrent workers finish out of order.
+observed_process = JSON.generate(pid: Process.pid, parent: Process.ppid, group: Process.getpgrp, cwd: Dir.pwd)
+File.write(File.join(root, "worker-process-#{Process.pid}"), observed_process)
+File.write(File.join(root, 'worker-process'), observed_process)
 File.write(File.join(root, 'worker-pid'), Process.pid.to_s)
-File.write(File.join(root, 'worker-process'), JSON.generate(pid: Process.pid, parent: Process.ppid, group: Process.getpgrp, cwd: Dir.pwd))
 input = STDIN.read
 File.binwrite(File.join(root, 'stdin'), input)
 File.write(File.join(root, 'argv'), JSON.generate(ARGV))

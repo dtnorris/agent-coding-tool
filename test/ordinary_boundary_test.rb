@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "skill_observations"
 require_relative "support/child_processes"
+require "minitest/mock"
 require "rbconfig"
 require "shellwords"
 
@@ -23,6 +24,7 @@ class OrdinaryBoundaryTest < Minitest::Test
     Dir.mktmpdir("act-boundary-") do |root|
       marker = File.join(root, "executed")
       command = [RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'executed')", marker]
+      native_spawn = Process.method(:spawn)
       operations = [
         -> { Process.spawn(*command) }, -> { spawn(*command) },
         -> { system(*command) }, -> { exec(*command) },
@@ -30,24 +32,35 @@ class OrdinaryBoundaryTest < Minitest::Test
         -> { IO.read("|#{Shellwords.join(command)}") },
         -> { Kernel.open("|#{Shellwords.join(command)}") },
         -> { `#{Shellwords.join(command)}` },
-        -> { fork { File.write(marker, "forked") } }
+        -> { fork { File.write(marker, "forked") } },
+        -> { native_spawn.call(*command) }
       ]
       operations.each do |operation|
-        # Either installed guard may reject first; neither may release a child.
-        assert_raises(OrdinaryExecution::ProhibitedExecution, NoGitExecution::ProhibitedExecution, &operation)
+        assert_raises(OrdinaryExecution::ProhibitedExecution, &operation)
         refute File.exist?(marker)
       end
       assert_ordinary_rejects_permitted_child
       File.binwrite(marker, "\x00\xff".b)
       assert_equal "\x00\xff".b, IO.binread(marker)
+      # A Ruby-only observation stub is allowed, but its captured native fallback
+      # remains prohibited by the ordinary C-entry guard before creating a child.
+      File.unlink(marker)
+      Process.stub(:spawn, ->(*) { :observed }) do
+        assert_equal :observed, Process.spawn(*command)
+        assert_raises(OrdinaryExecution::ProhibitedExecution) { native_spawn.call(*command) }
+        refute File.exist?(marker)
+      end
     end
   end
 
   # Proves the stronger ordinary boundary still refuses an otherwise permitted
   # reviewed Ruby child. Returns after refusal; assertion/bootstrap errors fail.
   def assert_ordinary_rejects_permitted_child
-    ordinary = File.realpath(File.join(__dir__, "ordinary_execution.rb"))
-    preloads = { ordinary => Digest::SHA256.file(ordinary).hexdigest }
+    # Match the runner's fixed ordinary bootstrap; unknown RUBYOPT still refuses.
+    preloads = %w[ordinary_execution.rb ordinary_support.rb suite_reporter.rb].to_h do |name|
+      path = File.realpath(File.join(__dir__, name))
+      [path, Digest::SHA256.file(path).hexdigest]
+    end
     if defined?(Bundler)
       bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
       preloads[bundler] = Digest::SHA256.file(bundler).hexdigest
@@ -63,7 +76,7 @@ class OrdinaryBoundaryTest < Minitest::Test
         Process.waitpid(pid) # Reap the finite owned child if the negative control fails.
       end
     end
-    assert permit.used?, "zero-Git permit must be consumed before ordinary refusal"
+    refute permit.used?, "ordinary refusal must precede selective permit consumption"
   end
 
   # Material environment, cwd, order, duplication and omissions fail before a

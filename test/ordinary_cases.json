@@ -353,5 +353,16 @@
     "LifecycleForceTest#test_audit_and_state_publication_failures_remain_truthful": [],
     "LifecycleForceTest#test_stale_scope_and_unobserved_completion_are_explicit": ["coding"],
     "LifecycleForceTest#test_system_alias_preserves_canonical_audit_and_rejects_other_symlinks": ["coding", "coding"]
+  },
+  "test/manage_test.rb": {
+    "ManageTest#test_stdout_is_deterministic_source_bound_and_read_only": [],
+    "ManageTest#test_default_copies_exact_unicode_text_and_confirms_only_after_success": [],
+    "ManageTest#test_clipboard_failure_preserves_exit_or_signal_and_offers_stdout": [],
+    "ManageTest#test_clipboard_unavailable_returns_failure_without_success": [],
+    "ManageTest#test_invalid_arguments_and_unknown_ids_refuse_before_copy": [],
+    "ManageTest#test_malformed_or_incomplete_sources_refuse_before_copy": [],
+    "ManageTest#test_unsafe_source_types_refuse_without_copy": [],
+    "ManageTest#test_size_limits_refuse_before_copy_without_truncation": [],
+    "ManageTest#test_local_goal_edits_change_the_next_reminder": []
   }
 }

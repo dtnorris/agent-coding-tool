@@ -5,6 +5,9 @@ require_relative "support/memory_git/session"
 require_relative "support/fake_inspector"
 require "fileutils"
 require "minitest/autorun"
+# Assertion diagnostics must not launch Minitest's external diff executable.
+# Assertion evaluation/counts remain unchanged under the zero-process boundary.
+Minitest::Assertions.diff = nil
 require "tmpdir"
 require "agent_coding_tool"
 
@@ -33,7 +36,6 @@ module TestHelpers
     world.connect(checkout, upstream)
     [checkout, upstream]
   end
-
 
   def with_workspace
     Dir.mktmpdir do |dir|

@@ -253,21 +253,21 @@ class IceboxTest < Minitest::Test
   # views put natural-order Icebox rows after BLOCKED and never mark them NEXT.
   def test_output_count_order_filters_and_recommendations
     with_icebox_workspace do |root, coordinator, _store|
-      assert_equal "0 Icebox tasks\n", output(root, coordinator, %w[status]).lines.last
+      assert_equal "0 Icebox tasks\n", output(root, coordinator, %w[status --full]).lines.last
       %w[TST-10 TST-2 TST-02].each { |id| write_task(root, id: id); coordinator.icebox(id) }
-      assert_equal "3 Icebox tasks from families (TST)\n", output(root, coordinator, %w[status]).lines.last
+      assert_equal "3 Icebox tasks from families (TST)\n", output(root, coordinator, %w[status --full]).lines.last
       %w[ACT-1 CL-AFDP-1 FO-1 CL-2 FO-2].each { |id| write_task(root, id: id); coordinator.icebox(id) }
       8.times { |index| write_task(root, id: "READY-#{index}") }
       write_task(root, id: "TST-C", depends_on: ["TST-2"])
       expected = "8 Icebox tasks from families (ACT, CL, FO, TST)\n"
-      [%w[status], %w[status --active]].each do |command|
+      [%w[status --full], %w[status --active --full]].each do |command|
         dashboard = output(root, coordinator, command)
         assert_equal expected, dashboard.lines.last
         assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
         refute_includes dashboard, ": ICEBOX"
         assert_includes dashboard, "READY,"
       end
-      [%w[status --all], %w[status --fam TST], %w[status --fam TST --all]].each do |command|
+      [%w[status --all --full], %w[status --fam TST --full], %w[status --fam TST --all --full]].each do |command|
         listing = output(root, coordinator, command)
         headlines = listing.lines.grep(/^[^ ]+:/)
         assert headlines.last.include?("ICEBOX"), listing
@@ -275,24 +275,24 @@ class IceboxTest < Minitest::Test
         assert_equal %w[TST-02 TST-2 TST-10], headlines.filter_map { |line| line[/^(TST-[^:]+): ICEBOX/, 1] }
         refute_match(/^\d+ Icebox/, listing)
       end
-      [%w[status --icebox], %w[status --icebox --all], %w[status --icebox --active]].each do |command|
+      [%w[status --icebox --full], %w[status --icebox --all --full], %w[status --icebox --active --full]].each do |command|
         listing = output(root, coordinator, command)
         assert_equal 8, listing.scan(/: ICEBOX/).length
         refute_match(/^\S+: (READY|BLOCKED)/, listing)
       end
-      assert_equal 2, output(root, coordinator, %w[status --icebox --fam CL]).scan(/: ICEBOX/).length
+      assert_equal 2, output(root, coordinator, %w[status --icebox --fam CL --full]).scan(/: ICEBOX/).length
       document = JSON.parse(output(root, coordinator, %w[next --json]))
       deferred = document.dig("facts", "tasks").select { |row| row["status"] == "ICEBOX" }
       assert_equal 8, deferred.length
       recommendations = document.fetch("recommendations").values.flatten.map { |row| row.fetch("id") }
       assert_empty recommendations & deferred.map { |row| row.fetch("id") }
       assert_equal 0, document.dig("recommendations", "starts").first.dig("downstream", "immediate_unlock_count")
-      [%w[status TST-A --icebox], %w[status --icebox --all --active], %w[icebox TST-A --reason],
+      [%w[status TST-A --icebox --full], %w[status --icebox --all --active --full], %w[icebox TST-A --reason],
        %w[unicebox TST-A --reason text], %w[icebox missing]].each do |command|
         assert_equal 2, cli(root, coordinator, command).last
       end
       [20, 38].each do |width|
-        assert_equal expected, output(root, coordinator, %w[status], width: width).lines.last
+        assert_equal expected, output(root, coordinator, %w[status --full], width: width).lines.last
       end
     end
   end

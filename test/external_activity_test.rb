@@ -127,7 +127,7 @@ class ExternalActivityTest < Minitest::Test
         assert_equal "unknown", status.fetch("external_activity").fetch("liveness")
         assert_equal "unverified", status.fetch("external_activity").fetch("isolation")
         lifecycle.each { |path, value| assert_equal value, contents.fetch(path) if File.file?(path) }
-        assert_includes cli("status"), "EXTERNAL WORK REPORTED"
+        assert_includes cli("status", "--full"), "EXTERNAL WORK REPORTED"
         minimal = cli("status", "A", "--min")
         assert_equal 1, minimal.lines.length
         assert_match(/\AA: #{label} \[external reported\] \[external conflict\] — Task\n\z/, minimal)
@@ -139,7 +139,7 @@ class ExternalActivityTest < Minitest::Test
       @coordinator.reset("A")
       id = report(scope_complete: true).fetch("active").fetch("observation_id")
       @coordinator.record("A", outcome: "complete")
-      assert_includes cli("status", "--active"), "INCONSISTENCY: COMPLETE"
+      assert_includes cli("status", "--active", "--full"), "INCONSISTENCY: COMPLETE"
       minimal = cli("status", "--active", "--min")
       assert_equal 2, minimal.lines.length
       assert_includes minimal, "A: COMPLETE [external reported] [external conflict] — Task\n"
@@ -165,8 +165,8 @@ class ExternalActivityTest < Minitest::Test
         Process.stub(:kill, ->(*) { raise "inspection probed liveness" }) do
           2.times do
             cli("external", "show", "A")
-            cli("status", "A")
-            cli("status")
+            cli("status", "A", "--full")
+            cli("status", "--full")
             output = cli("next", "--json")
             %w[SECRET-IDENTIFIER SECRET-NOTE /private/SENTINEL].each { |sentinel| refute_includes output, sentinel }
             document = JSON.parse(output)
@@ -189,9 +189,9 @@ class ExternalActivityTest < Minitest::Test
     fixture do
       12.times { |index| write_task(@data, id: "F-#{index}") }
       report("F-11", scope_complete: true)
-      assert_includes cli("status"), "F-11: READY"
+      assert_includes cli("status", "--full"), "F-11: READY"
       [11, *(0...11)].each { |index| @coordinator.record("F-#{index}", outcome: "complete") }
-      assert_includes cli("status"), "F-11: COMPLETE"
+      assert_includes cli("status", "--full"), "F-11: COMPLETE"
       @coordinator.reset("F-11")
       @coordinator.prepare("F-11")
       @coordinator.record("F-11", outcome: "blocked", summary: "original reason")
@@ -200,7 +200,7 @@ class ExternalActivityTest < Minitest::Test
         @coordinator.prepare(id)
         @coordinator.record(id, outcome: "blocked", summary: "other")
       end
-      assert_includes cli("status"), "F-11: BLOCKED"
+      assert_includes cli("status", "--full"), "F-11: BLOCKED"
     end
   end
 
@@ -259,7 +259,7 @@ class ExternalActivityTest < Minitest::Test
       original = @states.load("A")
       report(scope_complete: true)
       assert_equal original, @states.load("A")
-      assert_includes cli("status", "A"), "managed execution also recorded"
+      assert_includes cli("status", "A", "--full"), "managed execution also recorded"
       assert_raises(AgentCodingTool::InvalidState) { @coordinator.start("A", allow_write_collision: true) }
       @coordinator.reset("A")
       assert @activity.show("A")["active"]

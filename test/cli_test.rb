@@ -136,7 +136,7 @@ class CLITest < Minitest::Test
 
       assert_equal 0, cli.run(%w[start T1])
       assert_includes out.string, "Started T1: IN_FLIGHT"
-      assert_equal 0, cli.run(%w[status T1])
+      assert_equal 0, cli.run(%w[status T1 --full])
       assert_includes out.string, "T1: IN_FLIGHT"
       assert_empty err.string
       assert_equal 2, cli.run(%w[start T1])
@@ -311,19 +311,19 @@ class CLITest < Minitest::Test
       coordinator = coordinator_for(dir, "alpha" => "a" * 40)
       (1..6).each { |index| coordinator.record("C#{index}", outcome: "complete") }
 
-      default_out = run_status(dir, coordinator, %w[status])
+      default_out = run_status(dir, coordinator, %w[status --full])
       refute_includes default_out, "C1: COMPLETE"
       assert_includes default_out, "C6: COMPLETE"
       assert_includes default_out, "READY: READY"
 
-      all_out = run_status(dir, coordinator, %w[status --all])
+      all_out = run_status(dir, coordinator, %w[status --all --full])
       assert_includes all_out, "C1: COMPLETE"
 
-      active_out = run_status(dir, coordinator, %w[status --active])
+      active_out = run_status(dir, coordinator, %w[status --active --full])
       refute_includes active_out, "COMPLETE"
       assert_includes active_out, "READY: READY"
 
-      explicit_out = run_status(dir, coordinator, %w[status C1])
+      explicit_out = run_status(dir, coordinator, %w[status C1 --full])
       assert_includes explicit_out, "C1: COMPLETE"
     end
   end
@@ -347,7 +347,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
 
     lines = out.string.lines.map(&:chomp)
     assert_equal [
@@ -386,7 +386,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status --active])
+    assert_equal 0, cli.run(%w[status --active --full])
 
     lines = out.string.lines.map(&:chomp)
     assert_equal [
@@ -420,7 +420,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 42)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     assert_equal [
       "F1: IN_FLIGHT — An in flight title with...",
       "    A long diagnostic that remains visibly",
@@ -453,8 +453,8 @@ class CLITest < Minitest::Test
     color_cli.instance_variable_set(:@coordinator, coordinator)
     previous_no_color = ENV.delete("NO_COLOR")
 
-    assert_equal 0, plain_cli.run(%w[status])
-    assert_equal 0, color_cli.run(%w[status])
+    assert_equal 0, plain_cli.run(%w[status --full])
+    assert_equal 0, color_cli.run(%w[status --full])
     assert_includes tty.string, "\e[92mREADY\e[0m"
     assert_equal plain.string, tty.string.gsub(/\e\[[0-9;]*m/, "")
   ensure
@@ -489,7 +489,7 @@ class CLITest < Minitest::Test
                                      terminal_width: 44)
       cli.instance_variable_set(:@coordinator, fake_status_coordinator([item]))
 
-      assert_equal 0, cli.run(%w[status --all]), status
+      assert_equal 0, cli.run(%w[status --all --full]), status
       headline, *details = out.string.lines.map(&:chomp)
       assert headline.end_with?("..."), status
       assert_operator visible_width(headline), :<=, 44, status
@@ -510,7 +510,7 @@ class CLITest < Minitest::Test
                                      terminal_width: width)
       cli.instance_variable_set(:@coordinator, fake_status_coordinator([long_status]))
 
-      assert_equal 0, cli.run(%w[status])
+      assert_equal 0, cli.run(%w[status --full])
       assert_equal 2, out.string.lines.length
       assert_equal "0 Icebox tasks\n", out.string.lines.last
       headline = out.string.lines.first.chomp
@@ -525,7 +525,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
                                    terminal_width: 80)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([fitting]))
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     assert_equal "S1: STALE — Short title\n0 Icebox tasks\n", out.string
     refute_includes out.string, "..."
   end
@@ -543,8 +543,8 @@ class CLITest < Minitest::Test
     color_cli.instance_variable_set(:@coordinator, coordinator)
     previous_no_color = ENV.delete("NO_COLOR")
 
-    assert_equal 0, plain_cli.run(%w[status])
-    assert_equal 0, color_cli.run(%w[status])
+    assert_equal 0, plain_cli.run(%w[status --full])
+    assert_equal 0, color_cli.run(%w[status --full])
     plain_headline = plain.string.lines.first.chomp
     color_headline = tty.string.lines.first.chomp
     assert plain_headline.end_with?("...")
@@ -567,7 +567,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 20)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
 
-    assert_equal 0, cli.run(%w[status S1])
+    assert_equal 0, cli.run(%w[status S1 --full])
     assert_equal "S1: STALE — #{title}\n    #{reason}\n", out.string
   end
 
@@ -587,7 +587,7 @@ class CLITest < Minitest::Test
                                      terminal_width: width)
       cli.instance_variable_set(:@coordinator, coordinator)
 
-      assert_equal 0, cli.run(%w[status --all])
+      assert_equal 0, cli.run(%w[status --all --full])
       detail_lines = out.string.lines.map(&:chomp).select do |line|
         line.match?(/\A    (?:reason|next|resume):/)
       end
@@ -615,7 +615,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 80)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     assert_includes out.string, "    reason: Short reason.\n"
     refute_includes out.string, "    next:"
     refute_includes out.string.lines.find { |line| line.include?("reason:") }, "..."
@@ -635,7 +635,7 @@ class CLITest < Minitest::Test
       cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new,
                                      terminal_width: width)
       cli.instance_variable_set(:@coordinator, coordinator)
-      assert_equal 0, cli.run(%w[status])
+      assert_equal 0, cli.run(%w[status --full])
 
       assert_operator visible_width(out.string.lines.first.chomp), :<=, width
       assert_equal "0 Icebox tasks\n", out.string.lines.last
@@ -648,7 +648,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: tty, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
     previous_no_color = ENV.delete("NO_COLOR")
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     reason = tty.string.lines.find { |line| line.include?("reason:") }
     assert reason.chomp.end_with?("...")
     assert_operator visible_width(reason.chomp), :<=, 30
@@ -673,11 +673,11 @@ class CLITest < Minitest::Test
       broad_cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: broad, err: StringIO.new,
                                            terminal_width: 54)
       broad_cli.instance_variable_set(:@coordinator, coordinator)
-      assert_equal 0, broad_cli.run(%w[status --all])
+      assert_equal 0, broad_cli.run(%w[status --all --full])
       assert broad.string.lines.find { |line| line.include?("reason:") }.chomp.end_with?("...")
       refute_includes broad.string, summary
 
-      explicit = run_status(dir, coordinator, %w[status IG-09C])
+      explicit = run_status(dir, coordinator, %w[status IG-09C --full])
       assert_includes explicit, "    reason: #{summary}\n"
       assert_includes explicit, "    next: Land IG-05C4, then retry IG-09C.\n"
       assert_includes explicit, "          Confirm the authoritative binding first.\n"
@@ -698,7 +698,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
 
-    assert_equal 0, cli.run(%w[status --all])
+    assert_equal 0, cli.run(%w[status --all --full])
     assert_includes out.string, "    waiting on: A\n"
     refute_includes out.string, "resume:"
   end
@@ -716,8 +716,8 @@ class CLITest < Minitest::Test
     color_cli.instance_variable_set(:@coordinator, coordinator)
     previous_no_color = ENV.delete("NO_COLOR")
 
-    assert_equal 0, plain_cli.run(%w[status])
-    assert_equal 0, color_cli.run(%w[status])
+    assert_equal 0, plain_cli.run(%w[status --full])
+    assert_equal 0, color_cli.run(%w[status --full])
     assert_equal 2, plain.string.lines.length
     assert_equal "0 Icebox tasks\n", plain.string.lines.last
     assert plain.string.lines.first.chomp.end_with?("...")
@@ -736,7 +736,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 12)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     assert_equal ["F1: IN_FL...", "0 Icebox tasks"], out.string.lines.map(&:chomp)
   end
 
@@ -752,7 +752,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     refute_includes out.string, "\e["
     assert_equal [
       "K1: CANDIDATE — A candidate tit...",
@@ -799,7 +799,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status --all])
+    assert_equal 0, cli.run(%w[status --all --full])
 
     visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
     assert_equal %w[R-DEEP R-DIAMOND R-LESS R-WIDE R-CYCLE R-STABLE-A R-STABLE-B], visible_ready
@@ -835,7 +835,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status --active])
+    assert_equal 0, cli.run(%w[status --active --full])
 
     candidate_ids = out.string.lines.filter_map { |line| line[/\A([^:]+): CANDIDATE/, 1] }
     assert_equal %w[K2 K1], candidate_ids
@@ -871,7 +871,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, cli.run(%w[status --active])
+    assert_equal 0, cli.run(%w[status --active --full])
 
     visible_ready = out.string.lines.filter_map { |line| line[/\A(R-[^:]+): READY/, 1] }
     assert_equal %w[R-WIDTH R-COUNT R-DEEP], visible_ready
@@ -904,9 +904,9 @@ class CLITest < Minitest::Test
       record_complete_at(dir, coordinator, "MALFORMED", "not-a-time")
       record_complete_at(dir, coordinator, "MISSING", nil)
 
-      default_ids = complete_ids(run_status(dir, coordinator, %w[status]))
-      all_ids = complete_ids(run_status(dir, coordinator, %w[status --all]))
-      active_out = run_status(dir, coordinator, %w[status --active])
+      default_ids = complete_ids(run_status(dir, coordinator, %w[status --full]))
+      all_ids = complete_ids(run_status(dir, coordinator, %w[status --all --full]))
+      active_out = run_status(dir, coordinator, %w[status --active --full])
 
       assert_equal %w[MALFORMED MISSING C4 C6 C5 C3 C1], default_ids
       refute_includes default_ids, "C2"
@@ -927,7 +927,7 @@ class CLITest < Minitest::Test
       coordinator = coordinator_for(dir, "alpha" => "a" * 40)
       timestamps.each { |id, timestamp| record_complete_at(dir, coordinator, id, timestamp) }
 
-      assert_equal %w[C2 C3 C1], complete_ids(run_status(dir, coordinator, %w[status]))
+      assert_equal %w[C2 C3 C1], complete_ids(run_status(dir, coordinator, %w[status --full]))
     end
   end
 
@@ -945,7 +945,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
     assert_equal [
       "F1: IN_FLIGHT — Running with refresh",
       "    read-only refresh/reconcile: af-data-pipeline, af-workloads",
@@ -965,7 +965,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status F1])
+    assert_equal 0, cli.run(%w[status F1 --full])
     assert_equal "F1: IN_FLIGHT — Running task\n    #{full_reason}\n", out.string
   end
 
@@ -993,7 +993,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status])
+    assert_equal 0, cli.run(%w[status --full])
 
     visible_blocked = out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
     assert_equal %w[B1A B1B B1C], visible_blocked
@@ -1007,7 +1007,7 @@ class CLITest < Minitest::Test
     active_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd,
                                           out: active_out, err: StringIO.new)
     active_cli.instance_variable_set(:@coordinator, fake_coordinator)
-    assert_equal 0, active_cli.run(%w[status --active])
+    assert_equal 0, active_cli.run(%w[status --active --full])
     active_blocked = active_out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
     assert_equal %w[B1A B1B B1C], active_blocked
 
@@ -1015,7 +1015,7 @@ class CLITest < Minitest::Test
     explicit_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd,
                                             out: explicit_out, err: StringIO.new)
     explicit_cli.instance_variable_set(:@coordinator, fake_coordinator)
-    assert_equal 0, explicit_cli.run(%w[status B5])
+    assert_equal 0, explicit_cli.run(%w[status B5 --full])
     assert_includes explicit_out.string, "B5: BLOCKED — Five blockers"
   end
 
@@ -1034,7 +1034,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status --all])
+    assert_equal 0, cli.run(%w[status --all --full])
 
     visible_blocked = out.string.lines.filter_map { |line| line[/\A([^:]+): BLOCKED/, 1] }
     assert_equal %w[B1 B2 B3 B4 B5 B6], visible_blocked
@@ -1053,7 +1053,7 @@ class CLITest < Minitest::Test
     cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
     cli.instance_variable_set(:@coordinator, fake_coordinator)
 
-    assert_equal 0, cli.run(%w[status B1])
+    assert_equal 0, cli.run(%w[status B1 --full])
     assert_equal "B1: BLOCKED — Blocked task\n    waiting on: R1\n", out.string
   end
 
@@ -1064,7 +1064,7 @@ class CLITest < Minitest::Test
       %w[IG-09C IG-07A IG-11C].each { |id| coordinator.prepare(id) }
       coordinator.start("IG-09C")
 
-      [%w[status], %w[status --active], %w[status --all]].each do |argv|
+      [%w[status --full], %w[status --active --full], %w[status --all --full]].each do |argv|
         output = run_status(dir, coordinator, argv)
         assert_includes output,
                         "IG-07A: PREPARED (NEXT) — Pipeline work\n" \
@@ -1094,7 +1094,7 @@ class CLITest < Minitest::Test
       cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
       cli.instance_variable_set(:@coordinator, coordinator)
 
-      assert_equal 0, cli.run(%w[status --all])
+      assert_equal 0, cli.run(%w[status --all --full])
       reason = out.string.lines.find { |line| strip_ansi(line).include?("reason:") }.chomp
       assert_operator visible_width(reason), :<=, width
       assert_equal 1, out.string.lines.count { |line| strip_ansi(line).include?("reason:") }
@@ -1121,7 +1121,7 @@ class CLITest < Minitest::Test
                                          terminal_width: 58)
     broad_cli.instance_variable_set(:@coordinator, coordinator)
 
-    assert_equal 0, broad_cli.run(%w[status --all])
+    assert_equal 0, broad_cli.run(%w[status --all --full])
     reason = broad.string.lines.find { |line| line.include?("reason:") }.chomp
     assert_includes reason, "manual overlap warning; 2 overlaps:"
     assert reason.end_with?("...")
@@ -1131,7 +1131,7 @@ class CLITest < Minitest::Test
     explicit_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out: explicit, err: StringIO.new,
                                             terminal_width: 20)
     explicit_cli.instance_variable_set(:@coordinator, coordinator)
-    assert_equal 0, explicit_cli.run(%w[status P1])
+    assert_equal 0, explicit_cli.run(%w[status P1 --full])
     assert_includes explicit.string, "    reason: manual overlap warning; A (IN_FLIGHT) writes alpha, beta; use separately isolated development\n"
     assert_includes explicit.string, "    reason: manual overlap warning; C (CANDIDATE) writes gamma; use separately isolated development\n"
   end
@@ -1149,7 +1149,7 @@ class CLITest < Minitest::Test
                                    terminal_width: 100)
     cli.instance_variable_set(:@coordinator, fake_status_coordinator([status]))
 
-    assert_equal 0, cli.run(%w[status --all])
+    assert_equal 0, cli.run(%w[status --all --full])
     assert_includes out.string, "read-only pushed branch changed"
     assert_includes out.string, "    reason: manual overlap warning; A (IN_FLIGHT) writes pipeline\n"
   end
@@ -1161,7 +1161,7 @@ class CLITest < Minitest::Test
       cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: StringIO.new, err: err)
       cli.instance_variable_set(:@coordinator, coordinator_for(dir, "alpha" => "a" * 40))
 
-      assert_equal 2, cli.run(%w[status --all --active])
+      assert_equal 2, cli.run(%w[status --all --active --full])
       assert_includes err.string, "mutually exclusive"
     end
   end
@@ -1170,6 +1170,9 @@ class CLITest < Minitest::Test
     out = StringIO.new
     assert_equal 0, AgentCodingTool::CLI.run(["help"], out: out)
     assert_includes out.string, "status [TASK] [--all | --active]"
+    assert_includes out.string, "[--min | --full]"
+    assert_includes out.string, "default: one bounded row per task"
+    assert_includes out.string, "status TASK --full"
   end
 
   def test_default_data_root_is_sibling_named_after_tool_checkout

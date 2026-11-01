@@ -15,13 +15,14 @@ module AgentCodingTool
 
     # Binds lifecycle stores and optional observation seam; construction writes
     # nothing. Filesystem-backed callers use the canonical private sibling root.
-    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:, external_activity: nil, transport: NativeCommandTransport.new)
+    def initialize(task_store:, state_store:, repo_inspector:, prompt_renderer:, prompt_root:, external_activity: nil, reset_inspector: nil, transport: NativeCommandTransport.new)
       @task_store = task_store
       @state_store = state_store
       @repo_inspector = repo_inspector
       @prompt_renderer = prompt_renderer
       @prompt_root = prompt_root
       @external_activity = external_activity
+      @reset_inspector = reset_inspector
       @transport = transport
     end
 
@@ -800,7 +801,7 @@ module AgentCodingTool
     # separately from its READY/BLOCKED basis. Conflicting evidence raises InvalidState.
     def status_context(task)
       id = task.fetch("id")
-      resetter = TaskReset.new(data_root: File.dirname(File.dirname(@state_store.state_path(id))), transport: @transport)
+      resetter = reset_inspector(id)
       reset_history = resetter.history(id)
       reset = reset_history.find { |receipt| receipt["phase"] != "complete" }
       if reset
@@ -1099,6 +1100,14 @@ module AgentCodingTool
       end
     end
 
+    # Returns the read-only reset history/readiness boundary for projection.
+    # Production defaults retain TaskReset validation and errors; writer
+    # admission always constructs TaskReset directly, independent of this seam.
+    def reset_inspector(id)
+      @reset_inspector || TaskReset.new(
+        data_root: File.dirname(File.dirname(@state_store.state_path(id))), transport: @transport)
+    end
+
     # Builds read-only presentation fields from a lifecycle label/task/state.
     # Recorded execution evidence is historical; missing liveness remains unknown.
     def status_hash(label, task, state, reason = nil)
@@ -1110,7 +1119,7 @@ module AgentCodingTool
         "state" => state
       }
       result = state["result"]
-      history = TaskReset.new(data_root: File.dirname(File.dirname(@state_store.state_path(task.fetch("id")))), transport: @transport).history(task.fetch("id"))
+      history = reset_inspector(task.fetch("id")).history(task.fetch("id"))
       status["reset_history"] = history unless history.empty?
       if state["administrative_override"]
         status["administrative_override"] = state.fetch("administrative_override")

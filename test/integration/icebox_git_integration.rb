@@ -58,7 +58,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
       minimal = cli!("status", "--min")
       assert_equal minimal, cli!("status")
-      assert_equal dashboard.lines.grep(/\ATST-[A-C]:/), minimal.lines
+      assert_equal ["TST-B: READY (NEXT)  Task\n", "TST-C: BLOCKED       Task\n"], minimal.lines
       all = cli!("status", "--all", "--full")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
@@ -76,7 +76,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       assert_includes cli!("status", "--full"), "TST-A: ICEBOX"
       minimal = cli!("status", "--icebox", "--min")
       assert_equal minimal, cli!("status", "--icebox")
-      assert_equal "TST-A: ICEBOX [external reported] [external conflict] — Task\n".b, minimal
+      assert_equal "TST-A: ICEBOX [external reported] [external conflict]  Task\n".b, minimal
       assert_includes cli!("next"), "TST-A (ICEBOX)"
       assert_includes cli!("next"), "act unicebox TST-A"
       reported = JSON.parse(cli!("next", "--json"))

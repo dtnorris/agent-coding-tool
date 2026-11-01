@@ -20,6 +20,15 @@ class FamilyStatusTest < Minitest::Test
     def load(id) = rows.fetch(id, {})
   end
 
+  # Supplies reset receipts for in-memory presentation fixtures without disk
+  # access. Real receipt validation remains covered by filesystem-backed tests.
+  ResetInspector = Struct.new(:rows) do
+    # Returns declared validated receipts, or no history for an untouched task.
+    def history(id) = rows.fetch(id, [])
+    # Declares configured readiness in this synthetic presentation fixture.
+    def readiness(_id) = []
+  end
+
   # Declares an empty external-evidence boundary for this in-memory display
   # fixture. Real persistence/projection is covered by external activity journeys.
   class NoExternalActivity
@@ -77,6 +86,8 @@ class FamilyStatusTest < Minitest::Test
   # Covers the exact compression threshold and unchanged-input determinism.
   def test_zero_one_six_and_seven_ready
     assert_minimal_mixed_status_parity
+    assert_reset_history_projection
+    assert_minimal_columns
 
     [0, 1, 6, 7].each do |count|
       tasks = family_tasks("CL" => count)
@@ -423,6 +434,30 @@ class FamilyStatusTest < Minitest::Test
 
   private
 
+  # Keeps completed receipts visible and unfinished resets blocking; boundary
+  # errors must propagate rather than silently becoming an empty history.
+  def assert_reset_history_projection
+    receipts = [{ "phase" => "complete", "archive" => "/fixture/reset" }]
+    reader = ResetInspector.new({ "RESET" => receipts })
+    coordinator, = build([task("RESET")], reset_inspector: reader)
+    status = coordinator.status("RESET")
+    assert_equal "READY", status.fetch("status")
+    assert_equal receipts, status.fetch("reset_history")
+    reader.define_singleton_method(:readiness) { |_id| ["configuration: fixture repository unavailable"] }
+    status = coordinator.status("RESET")
+    assert_equal "BLOCKED", status.fetch("status")
+    assert_equal "configuration: fixture repository unavailable", status.fetch("reason")
+    reader.singleton_class.send(:remove_method, :readiness)
+    receipts.first["phase"] = "retiring"
+    status = coordinator.status("RESET")
+    assert_equal "BLOCKED", status.fetch("status")
+    assert_equal receipts, status.fetch("reset_history")
+    assert_includes status.fetch("reason"), "unfinished hard reset (retiring)"
+    reader.define_singleton_method(:history) { |_id| raise AgentCodingTool::InvalidState, "invalid reset receipt" }
+    error = assert_raises(AgentCodingTool::InvalidState) { coordinator.status("RESET") }
+    assert_equal "invalid reset receipt", error.message
+  end
+
   # Characterizes the ordinary mixed-state dashboard before comparing minimal
   # rows through the public CLI. Both presentations must preserve selection,
   # status/NEXT, probe counts and immutable task/state inputs; failures assert.
@@ -472,7 +507,13 @@ class FamilyStatusTest < Minitest::Test
         probes_after = [inspector.batches, inspector.authority_calls]
         assert_equal minimal, output(coordinator, ["status", *selectors]), selectors.inspect
         expected = full.lines.grep(/\A\S+: /).map { |line| line.split(" — ").first }
-        assert_equal expected, minimal.lines.map { |line| line.split(" — ").first }, selectors.inspect
+        cells = expected.map { |prefix| prefix.split(": ", 2) }
+        id_width = cells.map { |identity, _label| identity.length + 1 }.max || 0
+        status_width = cells.map { |_identity, label| label.length }.max || 0
+        expected_rows = cells.map do |identity, label|
+          (identity + ":").ljust(id_width) + " " + label.ljust(status_width) + "  Title #{identity}\n"
+        end
+        assert_equal expected_rows, minimal.lines, selectors.inspect
         assert_equal expected.length, minimal.lines.length
         refute minimal.lines.any? { |line| line.strip.empty? }
         assert_equal probes_between.zip(probes_before).map { |after, prior| after - prior },
@@ -486,6 +527,70 @@ class FamilyStatusTest < Minitest::Test
       assert_equal next_before, output(coordinator, %w[next --json])
       assert_equal before, Marshal.dump([tasks, states])
       assert_equal state_bytes, state_bytes.keys.to_h { |path| [path, File.binread(path)] }
+    end
+  end
+
+  # Checks exact shared columns through public status with real selection,
+  # status projection and NEXT. Hidden long identities and annotations must not
+  # affect selected widths; immutable records also retain literal punctuation.
+  def assert_minimal_columns
+    tasks = [task("ACT-29"), task("OS-MD-02"), task("CL-AFDP-02"),
+             task("REF-AFW-01", repository: "CL-AFDP-02"),
+             task("WAIT", dependencies: ["ACT-29"]),
+             task("HIDDEN-" + "long" * 20)]
+    tasks.each { |record| record["title"] = "界e\u0301 — Title #{record.fetch('id')}\n\e[35m literal\e[0m\t" }
+    states = {
+      "OS-MD-02" => { "result" => { "outcome" => "complete" } },
+      "CL-AFDP-02" => prepared_state("CL-AFDP-02").merge("started_at" => "now"),
+      "REF-AFW-01" => prepared_state("CL-AFDP-02"),
+      tasks.last.fetch("id") => { "icebox" => { "at" => "2026-10-15T00:00:00Z" } }
+    }
+    Dir.mktmpdir do |directory|
+      store = AgentCodingTool::StateStore.new(File.join(directory, "state"))
+      states.each { |identity, state| store.write(identity, state) }
+      coordinator, = build(tasks, state_store: store, prompt_root: File.join(directory, "state", "prompts"))
+      before = Marshal.dump([tasks, states])
+      labels = [
+        ["OS-MD-02:", "COMPLETE"],
+        ["CL-AFDP-02:", "IN_FLIGHT"],
+        ["ACT-29:", "READY (NEXT)"],
+        ["REF-AFW-01:", "PREPARED [write collision]"],
+        ["WAIT:", "BLOCKED"]
+      ]
+      expected = labels.map do |identity, label|
+        identity.ljust(11) + " " + label.ljust(26) + "  界e\u0301 — Title #{identity.delete_suffix(':')} literal\n"
+      end.join
+      previous_color, previous_columns = ENV.delete("NO_COLOR"), ENV.delete("COLUMNS")
+      begin
+        plain = output(coordinator, %w[status])
+        assert_equal expected, plain
+        assert_equal plain, output(coordinator, %w[status --min])
+        colored = output(coordinator, %w[status], out: Terminal.new(100))
+        assert_match(/\e\[/, colored)
+        assert_equal plain, colored.gsub(AgentCodingTool::CLI::ANSI_SEQUENCE, "")
+        ENV["NO_COLOR"] = "1"
+        assert_equal plain, output(coordinator, %w[status], out: Terminal.new(100))
+        assert_equal "ACT-29: READY  界e\u0301 — Title ACT-29 literal\n", output(coordinator, %w[status ACT-29])
+        assert_equal "ACT-29: READY (NEXT)  界e\u0301 — Title ACT-29 literal\n", output(coordinator, %w[status --fam ACT])
+        [1, 2, 3, 38, 39, 40, 41, 80, 100].each do |width|
+          ENV["COLUMNS"] = width.to_s
+          text = output(coordinator, %w[status])
+          assert_equal text, output(coordinator, %w[status --min])
+          text.lines.each do |line|
+            assert_operator AgentCodingTool::CLI.allocate.send(:display_width, line.chomp), :<=, width
+            refute_match(/ +$/, line.chomp)
+          end
+          if width == 41
+            assert_equal labels.map { |identity, label| identity.ljust(11) + " " + label.ljust(26) + "  .\n" }.join, text
+          elsif width == 40
+            assert_match(/^ACT-29: READY \(NEXT\)  /, text)
+          end
+        end
+      ensure
+        previous_color ? ENV["NO_COLOR"] = previous_color : ENV.delete("NO_COLOR")
+        previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
+      end
+      assert_equal before, Marshal.dump([tasks, states])
     end
   end
 
@@ -547,10 +652,11 @@ class FamilyStatusTest < Minitest::Test
 
   # Returns a planner plus inspector using immutable in-memory stores by default;
   # callers may supply a disposable state store/prompt root for Icebox evidence.
-  def build(tasks, states: {}, state_store: States.new(states), prompt_root: nil)
+  def build(tasks, states: {}, state_store: States.new(states), prompt_root: nil, reset_inspector: ResetInspector.new({}))
     inspector = Inspector.new
     coordinator = AgentCodingTool::Coordinator.new(task_store: TaskRegistry.new(tasks), state_store: state_store,
-      repo_inspector: inspector, prompt_renderer: nil, prompt_root: prompt_root, external_activity: NoExternalActivity.new)
+      repo_inspector: inspector, prompt_renderer: nil, prompt_root: prompt_root, external_activity: NoExternalActivity.new,
+      reset_inspector: reset_inspector)
     [coordinator, inspector]
   end
 

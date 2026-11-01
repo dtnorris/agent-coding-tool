@@ -559,14 +559,20 @@ module AgentCodingTool
         statuses = statuses.reject { |item| item.fetch("status") == "ICEBOX" && !item["external_activity"] } if compact_icebox
         statuses = limit_blocked_statuses(statuses) unless options[:all]
       end
+      if options[:minimal]
+        rows = statuses.map do |item|
+          [normalize_minimal_text(item.fetch("id")) + ":", minimal_status(item, next_id:),
+           normalize_minimal_text(item.fetch("title"))]
+        end
+        id_width = rows.map { |identity, _status, _title| display_width(identity) }.max || 0
+        status_width = rows.map { |_identity, status, _title| display_width(status) }.max || 0
+        aligned = id_width + 1 + status_width + 2 < dashboard_width
+        rows.each { |row| display_minimal_item(row, id_width:, status_width:, aligned:) }
+        return
+      end
       previous_bucket = nil
 
       statuses.each do |item|
-        if options[:minimal]
-          display_minimal_item(item, next_id:)
-          next
-        end
-
         bucket = stale_in_flight?(item) ? :stale_in_flight : status_bucket(item.fetch("status"))
         @out.puts if broad_dashboard && previous_bucket && bucket != previous_bucket
 
@@ -1130,12 +1136,10 @@ module AgentCodingTool
       @out.puts compact_detail_line("next", "reconcile before delivery; liveness unknown; #{isolation}")
     end
 
-    # Prints one bounded row from existing projection evidence, without details,
-    # probes or writes. Status/NEXT and warning indicators precede the title;
-    # long IDs shrink first when the remaining prefix fits. At extreme widths
-    # even identity/status/warnings must truncate. Missing fields/output errors
-    # propagate; indicators grant no freshness, isolation, liveness or authority.
-    def display_minimal_item(item, next_id:)
+    # Returns the colored effective status, NEXT and ordered safety annotations
+    # for one projected item. Missing fields raise KeyError; no probes or writes
+    # occur, and indicators grant no freshness, isolation, liveness or authority.
+    def minimal_status(item, next_id:)
       indicators = []
       if item["external_activity"]
         indicators << "[external reported]"
@@ -1150,14 +1154,28 @@ module AgentCodingTool
       status = human_status(item)
       status += " (NEXT)" if item.fetch("id") == next_id
       status += " #{indicators.uniq.join(' ')}" unless indicators.empty?
-      display_id = normalize_minimal_text(item.fetch("id"))
-      identity_width = dashboard_width - display_width(": #{status}")
-      display_id = truncate_display_line(display_id, identity_width) if identity_width.positive?
-      title = normalize_minimal_text(item.fetch("title"))
-      row = "#{display_id}: #{status}"
-      title_width = dashboard_width - display_width(row) - display_width(" — ")
-      row += " — #{truncate_display_line(title, title_width)}" if title_width.positive?
-      @out.puts truncate_display_line(row, dashboard_width)
+      status
+    end
+
+    # Prints normalized [ID-with-colon, colored status, title] cells using widths
+    # measured from the final displayed rows. If no title cell fits, every row
+    # uses the unpadded fallback: shrink long IDs before status/NEXT/warnings,
+    # then hard-truncate at extreme widths. Output errors propagate.
+    def display_minimal_item(cells, id_width:, status_width:, aligned:)
+      identity, status, title = cells
+      if aligned
+        row = identity + " " * (id_width - display_width(identity) + 1) + status
+        separator = " " * (status_width - display_width(status) + 2)
+      else
+        identity_width = dashboard_width - display_width(": #{status}")
+        display_id = identity.delete_suffix(":")
+        display_id = truncate_display_line(display_id, identity_width) if identity_width.positive?
+        row = "#{display_id}: #{status}"
+        separator = "  "
+      end
+      title_width = dashboard_width - display_width(row) - display_width(separator)
+      row += separator + truncate_display_line(title, title_width) if title_width.positive? && !title.empty?
+      @out.puts truncate_display_line(row, dashboard_width).rstrip
     end
 
     # Returns normalized single-row input text with terminal escapes and control

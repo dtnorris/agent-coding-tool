@@ -130,7 +130,7 @@ class ExternalActivityTest < Minitest::Test
         assert_includes cli("status", "--full"), "EXTERNAL WORK REPORTED"
         minimal = cli("status", "A", "--min")
         assert_equal 1, minimal.lines.length
-        assert_match(/\AA: #{label} \[external reported\] \[external conflict\] — Task\n\z/, minimal)
+        assert_match(/\AA: #{label} \[external reported\] \[external conflict\]  Task\n\z/, minimal)
       end
     end
     fixture do
@@ -142,7 +142,7 @@ class ExternalActivityTest < Minitest::Test
       assert_includes cli("status", "--active", "--full"), "INCONSISTENCY: COMPLETE"
       minimal = cli("status", "--active", "--min")
       assert_equal 2, minimal.lines.length
-      assert_includes minimal, "A: COMPLETE [external reported] [external conflict] — Task\n"
+      assert_includes minimal, "A: COMPLETE [external reported] [external conflict]  Task\n"
       assert_equal id, @coordinator.status("A").fetch("external_activity").fetch("observation_id")
       @activity.assert_clear!("B") # disjoint bounded scope remains independent
       @activity.end_activity("A", id, disposition: "ended")

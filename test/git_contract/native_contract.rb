@@ -7,55 +7,62 @@ require "fileutils"
 require "rbconfig"
 require "agent_coding_tool"
 require_relative "observations"
+require_relative "../support/contract_recorder"
+require_relative "../support/child_processes"
+Minitest::Assertions.diff = nil
 
-# Native oracle and strict replay through unmodified production interpretation.
+# Finite Git-world and native transport observations through unchanged production
+# interpretation. Native-derived rename bytes retain the independent parser oracle.
 # Deliberately outside *_test.rb discovery until the coordinated runner selects it.
 class NativeGitContract < Minitest::Test
   Config = Struct.new(:repo_root, :default_remote, :default_branch)
 
-  # Builds a disposable local-only Git history under an explicit temporary
-  # parent. Yields native recorder, parent checkout, bare remote and base SHA;
-  # setup/process failures raise and every filesystem write is removed afterward.
+  # Builds independent finite checkout/remote authority in a private directory.
+  # Yields its recorder, checkout, local remote identity and baseline commit;
+  # unsupported requests raise and every fixture write is removed afterward.
   def fixture
     Dir.mktmpdir("act-contract-", ENV.fetch("ACT_GIT_CONTRACT_TMPDIR", Dir.tmpdir)) do |directory|
       root = File.realpath(directory)
-      environment = ENV.keys.grep(/\AGIT_/).to_h { |key| [key, nil] }.merge(
-        "HOME" => root, "XDG_CONFIG_HOME" => root, "TMPDIR" => root,
-        "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL,
-        "GIT_CEILING_DIRECTORIES" => root,
-        "GIT_TERMINAL_PROMPT" => "0", "GIT_ALLOW_PROTOCOL" => "file",
-        "GIT_AUTHOR_DATE" => "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE" => "2026-01-01T00:00:00Z",
-        "LC_ALL" => "C", "TZ" => "UTC"
-      )
-      native = GitContract::Native.new(environment: environment)
-      parent = File.join(root, "ordinary")
-      remote = File.join(root, "remote.git")
-      git(native, nil, "init", "--initial-branch=main", "--object-format=sha1", parent)
-      git(native, parent, "config", "user.name", "Contract Fixture")
-      git(native, parent, "config", "user.email", "fixture@example.test")
-      git(native, parent, "config", "core.autocrlf", "false")
-      %w[staged unstaged renamed].each { |name| File.binwrite(File.join(parent, name), "base\n") }
-      git(native, parent, "add", ".")
-      git(native, parent, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-m", "baseline")
-      git(native, nil, "clone", "--bare", "--", parent, remote)
-      git(native, parent, "remote", "add", "origin", remote)
+      world = MemoryGit::PatchWorld.new(root: root)
+      world.extend(ContractRenameStatus)
+      seed = MemoryGit::Template.files(%w[staged unstaged renamed].to_h { |path| [path, "base\n"] }, message: 'baseline')
+      parent, remote = File.join(root, 'ordinary'), File.join(root, 'remote.git')
+      checkout = world.repository(path: parent, template: seed)
+      upstream = world.remote(url: remote, from: checkout)
+      FileUtils.mkdir_p(remote)
+      world.connect(checkout, upstream)
+      native = ContractRecorder.new(world, checkout, upstream)
       assert_equal remote, git(native, parent, "remote", "get-url", "origin").strip
-      yield native, parent, remote, git(native, parent, "rev-parse", "HEAD").strip
+      yield native, parent, remote, checkout.head
     end
   end
 
   # Runs a fixture command, returning raw stdout; command failures raise with
   # actual stderr/status instead of creating a usable but invalid history.
   def git(native, cwd, *arguments)
+    if arguments.first == 'add'
+      arguments = ['add', '-A', '--', '.'] if arguments == ['add', '.'] || arguments == ['add', '-A']
+      arguments = ['add', '--', *arguments.drop(1)] unless arguments[1].start_with?('-')
+    elsif arguments == ['checkout', '--', 'unstaged']
+      File.binwrite(File.join(cwd, 'unstaged'), native.checkout.tree.entries.fetch('unstaged').blob.bytes)
+      return ''
+    elsif arguments == ['mv', 'renamed', "moved\nname"]
+      File.rename(File.join(cwd, 'renamed'), File.join(cwd, "moved\nname"))
+      arguments = ['add', '-A', '--', 'renamed', "moved\nname"]
+    elsif cwd == native.upstream.url && arguments.first(2) == ['update-ref', 'refs/heads/release']
+      native.upstream.refs['refs/heads/release'] = arguments.fetch(2)
+      return ''
+    end
     stdout, stderr, status = native.capture3("git", *arguments, chdir: cwd)
     raise "fixture Git failed (#{status.exitstatus}): #{stderr}" unless status.success?
 
     stdout
   end
 
-  # Runs a production boundary against native observations and strict replay.
-  # Returns [interpreted result, observations]; tests independently assert the
-  # expected semantics. Native stdout/stderr/status/exception remain the oracle.
+  # Runs the unchanged production boundary against recorded finite observations
+  # and strict replay, returning [result, observations]. Independent expected
+  # semantics and corruption assertions remain authoritative; native transport
+  # controls separately preserve real streams/status/exceptions.
   def equivalent(native, ordered: true)
     start = native.observations.length
     actual = Open3.stub(:capture3, native.method(:capture3)) { yield }
@@ -284,16 +291,25 @@ class NativeGitContract < Minitest::Test
       error, observations = equivalent(native) { refusal { inspector.snapshot("repo", "path" => File.join(parent, "absent")) } }
       assert_match(/repository path does not exist/, error.last)
       assert_instance_of Errno::ENOENT, observations.first.exception
-      exception, observations = equivalent(native) do
-        begin
-          AgentCodingTool::CommandRunner.new.capture(File.join(parent, "missing-executable"))
-          flunk "expected missing executable"
-        rescue Errno::ENOENT => error
-          [error.class, error.message]
+      Dir.mktmpdir('contract-absent-', File.dirname(parent)) do |private_root|
+        preloads = { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }
+        bundler = $LOADED_FEATURES.find { |path| path.end_with?('/bundler/setup.rb') }
+        preloads[bundler] = Digest::SHA256.file(bundler).hexdigest if bundler
+        permit = NoGitExecution::MissingExecutablePermit.new(directory: File.realpath(private_root), preloads: preloads, options: { pgroup: true })
+        observer = GitContract::Native.new
+        exception, observations = NoGitExecution.with_permit(permit) do
+          equivalent(observer) do
+            begin
+              AgentCodingTool::CommandRunner.new.capture(permit.environment, *permit.argv)
+              flunk 'expected missing executable'
+            rescue Errno::ENOENT => error
+              [error.class, error.message]
+            end
+          end
         end
-      end
       assert_equal Errno::ENOENT, exception.first
       assert_instance_of Errno::ENOENT, observations.first.exception
+      end
     end
   end
 
@@ -356,20 +372,25 @@ class NativeGitContract < Minitest::Test
   # on owned fixture children; exceptions are never fabricated as exit statuses.
   def test_native_process_observer
     native = GitContract::Native.new
-    output, observations = equivalent(native) do
-      AgentCodingTool::CommandRunner.new.capture(RbConfig.ruby, "-e", 'STDOUT.binmode.write("\x00\xFF"); STDERR.binmode.write("\xFE"); exit 7')
+    permit = ChildProcesses.permit('native_observer', arguments: ['bytes'], options: { pgroup: true })
+    output, observations = NoGitExecution.with_permit(permit) do
+      equivalent(native) { AgentCodingTool::CommandRunner.new.capture(permit.environment, *permit.argv) }
     end
     assert_equal ["\x00\xFF".b, "\xFE".b, false], output
     assert_equal 7, observations.first.status.exitstatus
-      signaled, observations = equivalent(native) do
-        AgentCodingTool::CommandRunner.new.capture(RbConfig.ruby, "-e", 'Process.kill("TERM", Process.pid)')
-      end
-      assert_equal ["", "", nil], signaled
-      status = observations.first.status
-    assert_equal Signal.list.fetch("TERM"), status.termsig
+    permit = ChildProcesses.permit('native_observer', arguments: ['signal'], options: { pgroup: true })
+    signaled, observations = NoGitExecution.with_permit(permit) do
+      equivalent(native) { AgentCodingTool::CommandRunner.new.capture(permit.environment, *permit.argv) }
+    end
+    assert_equal ['', '', nil], signaled
+    status = observations.first.status
+    assert_equal Signal.list.fetch('TERM'), status.termsig
     assert_nil status.success?
     bounded = GitContract::Native.new(seconds: 0.1)
-    error = assert_raises(IOError) { bounded.capture3(RbConfig.ruby, "-e", "sleep 10") }
+    permit = ChildProcesses.permit('native_observer', arguments: ['sleep'], options: { pgroup: true })
+    error = assert_raises(IOError) do
+      NoGitExecution.with_permit(permit) { bounded.capture3(permit.environment, *permit.argv) }
+    end
     assert_match(/exceeded/, error.message)
     assert_empty bounded.observations
   end

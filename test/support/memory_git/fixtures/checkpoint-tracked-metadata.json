@@ -1,0 +1,23 @@
+{
+  "sha256": "7a5173e19087313727e2579ec818cb6041a7cf9d2bd20f227ca49863c2a9380b",
+  "before": [
+    {
+      "path_hex": "2e44535f53746f7265",
+      "bytes_hex": "64656c696265726174656c7920747261636b65640a",
+      "mode": "100644"
+    }
+  ],
+  "after": [
+    {
+      "path_hex": "2e44535f53746f7265",
+      "bytes_hex": "747261636b6564206564697400ff",
+      "mode": "100644"
+    }
+  ],
+  "paths_hex": [
+    "2e44535f53746f7265"
+  ],
+  "numstat_hex": "2d092d092e44535f53746f726500",
+  "stat": " .DS_Store | Bin 21 -> 14 bytes\n",
+  "patch_base64": "ZGlmZiAtLWdpdCBhLy5EU19TdG9yZSBiLy5EU19TdG9yZQppbmRleCA3MzczZmY4N2E4NmNkNGMyZTA0ZGFhNmYxMmU0ODllZGFjMWY5NjFmLi44ZTEyMThiMmNlMjY4YTllMzFhZjU2OGU0M2IxNGZmMDljY2M0ODk4IDEwMDY0NApHSVQgYmluYXJ5IHBhdGNoCmxpdGVyYWwgMTQKVmNtWFJaTj0oajlPO0pjcSR0Kz5gNCopMyUxKjhBfgoKbGl0ZXJhbCAyMQpjY21ZZEUmQjt0a0VsTW0mJjhidTxETjBQdlBFRndnMDkrcGp7e1IzMAoK"
+}

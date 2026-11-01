@@ -2,8 +2,12 @@
 
 require_relative "support/no_git_execution"
 require_relative "support/memory_git/session"
+require_relative "support/fake_inspector"
 require "fileutils"
 require "minitest/autorun"
+# Assertion diagnostics must not launch Minitest's external diff executable.
+# Assertion evaluation/counts remain unchanged under the zero-process boundary.
+Minitest::Assertions.diff = nil
 require "tmpdir"
 require "agent_coding_tool"
 
@@ -31,36 +35,6 @@ module TestHelpers
     FileUtils.mkdir_p(remote) if remote.start_with?(world.root + "/")
     world.connect(checkout, upstream)
     [checkout, upstream]
-  end
-
-  FakeInspector = Struct.new(:heads, :local_dirty, :remote_urls, keyword_init: true) do
-    def snapshot(name, _spec)
-      sha = heads.fetch(name)
-      {
-        "path" => "/repos/#{name}",
-        "remote" => "origin",
-        "remote_url" => remote_urls&.fetch(name, nil) || "git@github.com:example/#{name}.git",
-        "branch" => "main",
-        "pushed_sha" => sha,
-        "local_head" => sha,
-        "local_dirty" => !!local_dirty
-      }
-    end
-
-    def pushed_heads(references)
-      references.each_with_object({}) do |reference, resolved|
-        repository = reference.fetch("name").split("/", 2).last
-        key = [reference.fetch("remote_url"), reference.fetch("branch")]
-        resolved[key] = heads.fetch(repository)
-      end
-    end
-
-    def repository_authority(name, spec)
-      [
-        remote_urls&.fetch(name, nil) || "git@github.com:example/#{name}.git",
-        spec.fetch("branch", "main")
-      ]
-    end
   end
 
   def with_workspace

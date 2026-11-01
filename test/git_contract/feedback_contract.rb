@@ -9,31 +9,39 @@ require "json"
 require_relative "../feedback"
 require_relative "../suite_runner"
 require "agent_coding_tool"
+require_relative "../support/child_processes"
+require_relative "../support/validation_processes"
+Minitest::Assertions.diff = nil
 
 # Small native controls for the verifier, without running the product suite.
 # Children and sentinels are finite, fixture-owned Ruby processes only.
 class FeedbackContract < Minitest::Test
+  include ValidationProcesses
   # Captures a finite Ruby script using the actual watchdog and output paths.
-  # Returns outcome and byte streams; spawn exceptions propagate unchanged.
-  def capture(script, seconds: 2, arguments: [])
+  # Returns outcome and byte streams; spawn/readiness failures propagate.
+  # Optional readiness uses a separate finite startup budget.
+  def capture(script, seconds: 2, arguments: [], ready_path: nil, startup_seconds: nil)
     Dir.mktmpdir("act-feedback-control-") do |root|
       output, error = %w[out err].map { |name| File.join(root, name) }
-      result = FeedbackRuntime.capture([RbConfig.ruby, "-e", script, *arguments],
-        environment: { "ACT_COVERAGE_CONTEXT" => nil, "RUBYOPT" => nil }, root: root,
-        seconds: seconds, stdout_path: output, stderr_path: error)
+      permit = ChildProcesses.permit('feedback_worker', arguments: [script, *arguments], options: { chdir: root, pgroup: true })
+      result = NoGitExecution.with_permit(permit) do
+        FeedbackRuntime.capture(permit.argv, environment: permit.environment, root: root,
+          seconds: seconds, stdout_path: output, stderr_path: error,
+          ready_path: ready_path, startup_seconds: startup_seconds)
+      end
       [result, File.binread(output), File.binread(error)]
     end
   end
 
   # Text/binary output, nonzero status, and signal facts must remain exact.
   def test_bytes_exit_and_signal
-    outcome, output, error = capture('STDOUT.binmode; STDERR.binmode; STDOUT.write("text\n".b + [0,255,128].pack("C*")); STDERR.write([254,0].pack("C*")); exit 7')
+    outcome, output, error = capture('bytes')
     assert_equal "text\n\x00\xff\x80".b, output
     assert_equal "\xfe\x00".b, error
     assert_equal 7, outcome.fetch(:status).exitstatus
     assert_nil outcome.fetch(:status).termsig
     refute outcome.fetch(:timeout)
-    outcome, = capture('Process.kill("TERM", Process.pid)')
+    outcome, = capture('signal')
     assert_equal Signal.list.fetch("TERM"), outcome.fetch(:status).termsig
     refute outcome.fetch(:timeout)
   end
@@ -41,14 +49,37 @@ class FeedbackContract < Minitest::Test
   # An actual failed spawn raises ENOENT and never becomes an exit/status pass.
   def test_spawn_exception_and_invalid_deadline
     Dir.mktmpdir("act-feedback-spawn-") do |root|
+      # Match the canonical directory required by the missing-executable permit.
+      root = File.realpath(root)
       options = { environment: {}, root: root, seconds: 1,
                   stdout_path: File.join(root, "out"), stderr_path: File.join(root, "err") }
-      assert_raises(Errno::ENOENT) { FeedbackRuntime.capture([File.join(root, "missing")], **options) }
+      # Plain rake has no Bundler preload; bundle exec retains its exact binding.
+      preloads = { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }
+      bundler = $LOADED_FEATURES.find { |path| path.end_with?('/bundler/setup.rb') }
+      preloads[File.realpath(bundler)] = Digest::SHA256.file(bundler).hexdigest if bundler
+      permit = NoGitExecution::MissingExecutablePermit.new(directory: File.realpath(root),
+        preloads: preloads, options: { chdir: root, pgroup: true })
+      assert_raises(Errno::ENOENT) do
+        NoGitExecution.with_permit(permit) { FeedbackRuntime.capture(permit.argv, **options.merge(environment: permit.environment)) }
+      end
       assert_raises(ArgumentError) { FeedbackRuntime.capture([RbConfig.ruby], **options.merge(seconds: Float::INFINITY)) }
+      ready_path = File.join(root, "never-ready")
+      assert_raises(ArgumentError) do
+        FeedbackRuntime.capture([RbConfig.ruby], **options, ready_path: ready_path, startup_seconds: Float::INFINITY)
+      end
+      File.write(ready_path, "stale")
+      assert_raises(ArgumentError) do
+        FeedbackRuntime.capture([RbConfig.ruby], **options, ready_path: ready_path, startup_seconds: 0.2)
+      end
+      File.unlink(ready_path)
+      started = FeedbackRuntime.clock
+      error = assert_raises(RuntimeError) do
+        capture("sleep", seconds: 0.2, ready_path: ready_path, startup_seconds: 0.2)
+      end
+      assert_equal "feedback: child readiness deadline exceeded", error.message
+      assert_operator FeedbackRuntime.clock - started, :<, 2
     end
-    observer = File.expand_path("../feedback_runtime.rb", __dir__)
-    script = "require #{observer.inspect}; require 'tmpdir'; exception = Interrupt.new('control'); Thread.new { sleep 0.05; Thread.main.raise(exception) }; Dir.mktmpdir { |root| begin; FeedbackRuntime.capture([RbConfig.ruby, '-e', 'sleep 5'], environment: {}, root: root, seconds: 2, stdout_path: File.join(root,'out'), stderr_path: File.join(root,'err')); rescue Interrupt => observed; puts observed.equal?(exception); exit 130; end }"
-    outcome, output, = capture(script)
+    outcome, output, = capture('interrupt')
     assert_equal "true\n", output
     assert_equal 130, outcome.fetch(:status).exitstatus
   end
@@ -56,15 +87,19 @@ class FeedbackContract < Minitest::Test
   # A hung descendant in a distinct owned group cannot keep the verifier alive;
   # an unrelated sibling sentinel remains alive and is separately reaped here.
   def test_hung_owned_descendant_and_unrelated_sentinel
-    sentinel = Process.spawn(RbConfig.ruby, "-e", "sleep 5", pgroup: true, out: File::NULL, err: File::NULL)
+    permit = ChildProcesses.permit('feedback_worker', arguments: ['sleep'], options: { pgroup: true })
+    sentinel = File.open(File::NULL, 'w') do |null|
+      NoGitExecution.with_permit(permit) { Process.spawn(permit.environment, *permit.argv, **permit.options, out: null, err: null) }
+    end
     Dir.mktmpdir("act-feedback-hang-") do |root|
       marker = File.join(root, "descendant")
-      script = 'require "rbconfig"; child = Process.spawn(RbConfig.ruby, "-e", "sleep 5", pgroup: true); File.write(ARGV.fetch(0), child); STDOUT.binmode; STDOUT.write([0,255].pack("C*")); STDOUT.flush; sleep 5'
       started = FeedbackRuntime.clock
-      outcome, output, = capture(script, seconds: 0.2, arguments: [marker])
+      # The fixture deliberately starts more slowly than the hang deadline.
+      outcome, output, = capture('hang', seconds: 0.2, arguments: [marker],
+        ready_path: marker, startup_seconds: 2)
       assert outcome.fetch(:timeout)
       assert_equal Signal.list.fetch("KILL"), outcome.fetch(:status).termsig
-      assert_operator FeedbackRuntime.clock - started, :<, 2
+      assert_operator FeedbackRuntime.clock - started, :<, 4
       assert_equal "\x00\xff".b, output
       assert_equal 1, Process.kill(0, sentinel)
       descendant = Integer(File.read(marker))
@@ -85,7 +120,7 @@ class FeedbackContract < Minitest::Test
   def test_outer_timer_includes_startup
     started = FeedbackRuntime.clock
     library = File.expand_path("../feedback_runtime.rb", __dir__)
-    outcome, output, = capture("sleep 0.03; require #{library.inspect}; puts FeedbackRuntime.elapsed(FeedbackRuntime.outer_timer)")
+    outcome, output, = capture('timer')
     assert outcome.fetch(:status).success?
     observed = Float(output)
     assert_operator observed, :>=, 0.03
@@ -96,6 +131,8 @@ class FeedbackContract < Minitest::Test
   # Yields the context and map; fixture/hook failures are assertion failures.
   def with_coverage(cold: nil)
     Dir.mktmpdir("act-feedback-coverage-") do |root|
+      # Keep probe roots consistent with real paths emitted by Ruby coverage.
+      root = File.realpath(root)
       FileUtils.mkdir_p([File.join(root, "lib"), File.join(root, "bin"), File.join(root, "results")])
       File.write(File.join(root, "lib/loaded.rb"), "module CoveredExample\n def self.choose(value)\n if value\n 1\n else\n 2\n end\n end\nend\n")
       File.write(File.join(root, "lib/unloaded.rb"), "module UnloadedExample\n def self.value\n 3\n end\nend\n")
@@ -105,15 +142,12 @@ class FeedbackContract < Minitest::Test
       context_path = File.join(root, "context.json")
       File.write(context_path, JSON.generate(context))
       output, error = %w[out err].map { |name| File.join(root, name) }
-      hook = File.expand_path("../feedback_coverage.rb", __dir__)
-      script = 'require_relative "lib/loaded"; CoveredExample.choose(true)'
-      if cold
-        environment = cold == :missing ? { "ACT_COVERAGE_CONTEXT" => nil, "RUBYOPT" => nil } : {}
-        script += "; require 'rbconfig'; child = Process.spawn(#{environment.inspect}, RbConfig.ruby, '-e', 'require_relative \"lib/loaded\"; CoveredExample.choose(false)'); Process.waitpid(child)"
+      variant = cold == :instrumented ? 'cold' : cold == :missing ? 'missing' : 'plain'
+      permit = ChildProcesses.permit('feedback_worker', arguments: ['probe', context_path, variant], options: { chdir: root, pgroup: true })
+      outcome = NoGitExecution.with_permit(permit) do
+        FeedbackRuntime.capture(permit.argv, environment: permit.environment, root: root,
+          seconds: 2, stdout_path: output, stderr_path: error)
       end
-      outcome = FeedbackRuntime.capture([RbConfig.ruby, "-e", script],
-        environment: { "ACT_COVERAGE_CONTEXT" => context_path, "RUBYOPT" => "-r#{hook}" }, root: root,
-        seconds: 2, stdout_path: output, stderr_path: error)
       assert outcome.fetch(:status).success?, File.binread(error)
       yield context, FeedbackCoverage.collect(context)
     end
@@ -142,11 +176,13 @@ class FeedbackContract < Minitest::Test
     Dir.mkdir(child.fetch("directory"))
     context_path = File.join(directory, "context.json")
     File.write(context_path, JSON.generate(child))
-    hook = File.expand_path("../feedback_coverage.rb", __dir__)
-    outcome = FeedbackRuntime.capture([RbConfig.ruby, "-e", script],
-      environment: { "ACT_COVERAGE_CONTEXT" => context_path, "RUBYOPT" => "-r#{hook}" },
-      root: context.fetch("root"), seconds: 2,
-      stdout_path: File.join(directory, "out"), stderr_path: File.join(directory, "err"))
+    permit = ChildProcesses.permit('feedback_worker', arguments: ['probe', context_path, script],
+      options: { chdir: context.fetch("root"), pgroup: true })
+    outcome = NoGitExecution.with_permit(permit) do
+      FeedbackRuntime.capture(permit.argv, environment: permit.environment,
+        root: context.fetch("root"), seconds: 2,
+        stdout_path: File.join(directory, "out"), stderr_path: File.join(directory, "err"))
+    end
     [outcome, File.binread(File.join(directory, "err")), child]
   end
 
@@ -155,41 +191,22 @@ class FeedbackContract < Minitest::Test
   # must still fail, including mutations after the first production line.
   def test_nested_layout_isolation_and_changed_source_refusal
     with_coverage do |context, expected|
-      prefix = 'require_relative "lib/loaded"; CoveredExample.choose(true); '
-      nested = <<~RUBY
-        require 'tmpdir'; require 'fileutils'
-        Dir.mktmpdir('nested-', Dir.pwd) do |root|
-          FileUtils.mkdir_p([File.join(root, 'lib'), File.join(root, 'bin')])
-          File.write(File.join(root, 'lib/synthetic.rb'), "puts :fixture\n")
-          File.write(File.join(root, 'bin/agent-coding-tool'), "puts :unused\n")
-          FeedbackCoverage.layout(root)
-          %s
-        end
-      RUBY
-      outcome, error, child = coverage_probe(context, prefix + (nested % ""))
+      outcome, error, child = coverage_probe(context, 'nested')
       assert outcome.fetch(:status).success?, error
       assert_equal expected, FeedbackCoverage.collect(child)
 
-      outcome, error, child = coverage_probe(context, prefix + (nested % "load File.join(root, 'bin/agent-coding-tool')"))
+      outcome, error, child = coverage_probe(context, 'nested_execute')
       refute outcome.fetch(:status).success?
       assert_includes error, "coverage: changed source"
       assert_raises(RuntimeError) { FeedbackCoverage.collect(child) }
 
       # The copied CLI has identical bytes and identity until deliberately
       # changed. It is not registered as an independently compiled fixture.
-      copy = <<~RUBY
-        require 'fileutils'
-        FileUtils.mkdir_p('copy/bin')
-        FileUtils.cp('bin/agent-coding-tool', 'copy/bin/agent-coding-tool')
-        load 'copy/bin/agent-coding-tool'
-        %s
-      RUBY
-      outcome, error, child = coverage_probe(context, prefix + (copy % ""))
+      outcome, error, child = coverage_probe(context, 'copy')
       assert outcome.fetch(:status).success?, error
       assert_operator FeedbackCoverage.collect(child).fetch("bin/agent-coding-tool").fetch("line:1"), :>, 0
-      ["File.write('copy/bin/agent-coding-tool', 'puts :changed')",
-       "File.unlink('copy/bin/agent-coding-tool')"].each do |mutation|
-        outcome, error, child = coverage_probe(context, prefix + (copy % mutation))
+      %w[copy_change copy_delete].each do |mutation|
+        outcome, error, child = coverage_probe(context, mutation)
         refute outcome.fetch(:status).success?
         assert_includes error, "coverage: changed source"
         assert_raises(RuntimeError) { FeedbackCoverage.collect(child) }
@@ -197,10 +214,7 @@ class FeedbackContract < Minitest::Test
 
       # A changed copy compiled outside layout remains subject to byte checks,
       # even if every node has zero hits.
-      outcome, error, child = coverage_probe(context, prefix + <<~RUBY)
-        File.write('copy/bin/agent-coding-tool', 'puts :changed')
-        RubyVM::InstructionSequence.compile_file('copy/bin/agent-coding-tool', coverage_enabled: true)
-      RUBY
+      outcome, error, child = coverage_probe(context, 'compile_change')
       refute outcome.fetch(:status).success?
       assert_includes error, "coverage: changed source"
       assert_raises(RuntimeError) { FeedbackCoverage.collect(child) }
@@ -208,7 +222,7 @@ class FeedbackContract < Minitest::Test
       path = File.join(context.fetch("root"), "lib/loaded.rb")
       bytes = File.binread(path)
       begin
-        outcome, error, child = coverage_probe(context, prefix + "File.write('lib/loaded.rb', '# changed production')")
+        outcome, error, child = coverage_probe(context, 'source_change')
         refute outcome.fetch(:status).success?
         assert_includes error, "coverage: source changed during execution"
         assert_raises(RuntimeError) { FeedbackCoverage.collect(child) }
@@ -259,13 +273,9 @@ class FeedbackContract < Minitest::Test
       assert_raises(RuntimeError) { TestFeedback.coverage_gate(FeedbackCoverage.summary(map), { "line" => 0, "branch" => 100 }) }
     end
     with_coverage do |context, _map|
-      root = context.fetch("root")
-      hook = File.expand_path("../feedback_coverage.rb", __dir__)
-      outcome = FeedbackRuntime.capture([RbConfig.ruby, "-r", File.join(root, "lib/loaded.rb"), "-e", "CoveredExample.choose(true)"],
-        environment: { "ACT_COVERAGE_CONTEXT" => File.join(root, "context.json"), "RUBYOPT" => "-r#{hook}" },
-        root: root, seconds: 2, stdout_path: File.join(root, "late-out"), stderr_path: File.join(root, "late-err"))
+      outcome, error, = coverage_probe(context, 'late')
       refute outcome.fetch(:status).success?
-      assert_includes File.binread(File.join(root, "late-err")), "instrumentation started after production load"
+      assert_includes error, "instrumentation started after production load"
     end
   end
 
@@ -285,7 +295,7 @@ class FeedbackContract < Minitest::Test
     refute TestFeedback.runtime_report(10, conditions, nil).fetch("comparable")
     refute TestFeedback.runtime_report(10, conditions, reference.merge("source_sha256" => "missing")).fetch("comparable")
     assert_in_delta 10, reference.fetch("outer_seconds")
-    outcome, = capture("sleep 0.02")
+    outcome, = capture('short_sleep')
     assert outcome.fetch(:status).success?
     refute outcome.fetch(:timeout)
     assert_raises(RuntimeError) { TestFeedback.budget_gate(outcome.fetch(:seconds), 0.001, comparison) }
@@ -386,11 +396,12 @@ class FeedbackContract < Minitest::Test
       manager = AgentCodingTool::DeliveryManager.allocate
       policy = { "max_seconds" => 2, "min_tests" => 1, "min_assertions" => 1 }
       ordinary = "ACT feedback evidence: fixture\n1 tests, 1 assertions, 0 failures, 0 errors, 0 skips\n"
-      command = [RbConfig.ruby, "-e", "print #{ordinary.inspect}"]
-      error = assert_raises(AgentCodingTool::InvalidState) { manager.send(:run_command!, root, root, command, 0, policy) }
+      File.write(File.join(root, 'fixture-validation.rb'), File.binread(File.join(ChildProcesses::FIXTURES, 'validation_worker.rb')))
+      command = validation_command(ordinary)
+      error = assert_raises(AgentCodingTool::InvalidState) { with_validation_processes { manager.send(:run_command!, root, root, command, 0, policy) } }
       assert_match(/partial ACT feedback/, error.message)
       full = ordinary + "ACT complete offline acceptance: PASS\n"
-      result = manager.send(:run_command!, root, root, [RbConfig.ruby, "-e", "print #{full.inspect}"], 1, policy)
+      result = with_validation_processes { manager.send(:run_command!, root, root, validation_command(full), 1, policy) }
       assert_equal 0, result.fetch("exit_status")
       assert_equal [1, 1, 0, 0, 0], result.fetch("counts")
     end

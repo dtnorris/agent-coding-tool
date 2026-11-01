@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-require_relative "../apply_handoff_support"
+require_relative "../native_apply_handoff_support"
 require_relative "../apply_handoff_observations"
 
 # Records one genuine composed run, then exercises full Ruby decision workflows
 # against finite phase transcripts and real fixture bytes/modes. Native public
 # CLI tests independently retain Git mutation, PTY, hook and process contracts.
 class ApplyHandoffContract < Minitest::Test
-  include ApplyHandoffFixtures
+  include NativeApplyHandoffFixtures
 
   # Runs real parsing, snapshots, decisions and reporting using terminal answers
   # and a declared transport. Returns code/streams; missing observations raise.

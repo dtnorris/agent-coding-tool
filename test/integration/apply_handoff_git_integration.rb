@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../apply_handoff_support"
+require_relative "../native_apply_handoff_support"
 require "pty"
 require "shellwords"
 require "timeout"
@@ -8,9 +8,8 @@ require "timeout"
 # Public CLI integration with real local Git, terminal consent and sibling
 # validation. Every mutation is confined to disposable, locally remoted repos.
 class ApplyHandoffGitIntegrationTest < Minitest::Test
-  include TestHelpers
   CLI = File.expand_path("../../bin/agent-coding-tool", __dir__)
-  include ApplyHandoffFixtures
+  include NativeApplyHandoffFixtures
 
   # Runs the actual CLI from unrelated cwd, using a PTY for stdin only. Each
   # response/callback occurs after its displayed prompt; stdout/stderr remain raw.

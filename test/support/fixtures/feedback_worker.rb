@@ -24,9 +24,11 @@ when 'timer'
   sleep 0.03
   puts FeedbackRuntime.elapsed(FeedbackRuntime.outer_timer)
 when 'hang'
+  # Exercise startup slower than the hang deadline; publish readiness last.
+  sleep 0.3
   pid = child('sleep', pgroup: true)
-  File.write(arguments.fetch(0), pid)
   STDOUT.binmode; STDOUT.write([0,255].pack('C*')); STDOUT.flush
+  File.write(arguments.fetch(0), pid)
   sleep 5
 when 'interrupt'
   require_relative '../../feedback_runtime'

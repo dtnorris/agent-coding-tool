@@ -6,7 +6,7 @@ require_relative 'no_git_execution'
 # killed non-ACT children cannot borrow or lose production coverage evidence.
 module FeedbackProcesses
   WORKER = File.realpath(File.join(__dir__, 'fixtures/feedback_worker.rb')).freeze
-  HASH = '819bd831ee7663efa4cdad8ff8b731d5a49bb3f81b916827506d1ef97c93a9f1'
+  HASH = '64b4781273cdf1bf8cb4ff539a62d23f0875f41db5acb9002603609df8d043a8'
 
   # Binds one fixed mode invocation, retaining real coverage and reviewed bootstraps.
   def self.permit(arguments, options = {})

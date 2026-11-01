@@ -18,14 +18,16 @@ Minitest::Assertions.diff = nil
 class FeedbackContract < Minitest::Test
   include ValidationProcesses
   # Captures a finite Ruby script using the actual watchdog and output paths.
-  # Returns outcome and byte streams; spawn exceptions propagate unchanged.
-  def capture(script, seconds: 2, arguments: [])
+  # Returns outcome and byte streams; spawn/readiness failures propagate.
+  # Optional readiness uses a separate finite startup budget.
+  def capture(script, seconds: 2, arguments: [], ready_path: nil, startup_seconds: nil)
     Dir.mktmpdir("act-feedback-control-") do |root|
       output, error = %w[out err].map { |name| File.join(root, name) }
       permit = ChildProcesses.permit('feedback_worker', arguments: [script, *arguments], options: { chdir: root, pgroup: true })
       result = NoGitExecution.with_permit(permit) do
         FeedbackRuntime.capture(permit.argv, environment: permit.environment, root: root,
-          seconds: seconds, stdout_path: output, stderr_path: error)
+          seconds: seconds, stdout_path: output, stderr_path: error,
+          ready_path: ready_path, startup_seconds: startup_seconds)
       end
       [result, File.binread(output), File.binread(error)]
     end
@@ -59,6 +61,21 @@ class FeedbackContract < Minitest::Test
         NoGitExecution.with_permit(permit) { FeedbackRuntime.capture(permit.argv, **options.merge(environment: permit.environment)) }
       end
       assert_raises(ArgumentError) { FeedbackRuntime.capture([RbConfig.ruby], **options.merge(seconds: Float::INFINITY)) }
+      ready_path = File.join(root, "never-ready")
+      assert_raises(ArgumentError) do
+        FeedbackRuntime.capture([RbConfig.ruby], **options, ready_path: ready_path, startup_seconds: Float::INFINITY)
+      end
+      File.write(ready_path, "stale")
+      assert_raises(ArgumentError) do
+        FeedbackRuntime.capture([RbConfig.ruby], **options, ready_path: ready_path, startup_seconds: 0.2)
+      end
+      File.unlink(ready_path)
+      started = FeedbackRuntime.clock
+      error = assert_raises(RuntimeError) do
+        capture("sleep", seconds: 0.2, ready_path: ready_path, startup_seconds: 0.2)
+      end
+      assert_equal "feedback: child readiness deadline exceeded", error.message
+      assert_operator FeedbackRuntime.clock - started, :<, 2
     end
     outcome, output, = capture('interrupt')
     assert_equal "true\n", output
@@ -75,10 +92,12 @@ class FeedbackContract < Minitest::Test
     Dir.mktmpdir("act-feedback-hang-") do |root|
       marker = File.join(root, "descendant")
       started = FeedbackRuntime.clock
-      outcome, output, = capture('hang', seconds: 0.2, arguments: [marker])
+      # The fixture deliberately starts more slowly than the hang deadline.
+      outcome, output, = capture('hang', seconds: 0.2, arguments: [marker],
+        ready_path: marker, startup_seconds: 2)
       assert outcome.fetch(:timeout)
       assert_equal Signal.list.fetch("KILL"), outcome.fetch(:status).termsig
-      assert_operator FeedbackRuntime.clock - started, :<, 2
+      assert_operator FeedbackRuntime.clock - started, :<, 4
       assert_equal "\x00\xff".b, output
       assert_equal 1, Process.kill(0, sentinel)
       descendant = Integer(File.read(marker))

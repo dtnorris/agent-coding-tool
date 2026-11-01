@@ -328,12 +328,12 @@ class StatusNextSummaryTest < Minitest::Test
       assert_equal full_probes, inspector.head_batches
       assert_equal minimal, output_for(dir, coordinator, command.dup)
       assert_empty inspector.snapshot_calls
-      assert_equal full.lines.grep(/\A[A-B]:/).map { |line| line.split(" — ").first },
-                   minimal.lines.map { |line| line.split(" [").first.strip }
+      assert_equal full.lines.grep(/\A[A-B]:/).map { |line| line.split(":").first },
+                   minimal.lines.map { |line| line.split(":").first }
       assert_equal full.lines.grep(/\A[A-B]:/).length, minimal.lines.length
       assert_includes minimal, "A: IN_FLIGHT (STALE)"
-      assert_includes minimal, "[external reported] [external conflict] [recorded overlap]"
-      assert_includes minimal, "B: READY [external conflict]" unless command.include?("A") || command.include?("--fam")
+      assert_includes minimal, command == %w[status A] ? "IN_FLIGHT (STALE) [ext.." : "IN_FLIGHT (STALE) (NEX.."
+      assert_includes minimal, "B: READY [external confli.." unless command.include?("A") || command.include?("--fam")
       refute_match(/source:|next:|reason:|checkpoint:|downstream:|restore:|liveness|isolation|authorized/, minimal)
     end
     previous = ENV.delete("NO_COLOR")
@@ -345,7 +345,7 @@ class StatusNextSummaryTest < Minitest::Test
           assert_equal 1, minimal.lines.length
           assert_operator AgentCodingTool::CLI.allocate.send(:display_width, minimal.chomp), :<=, width
           assert_includes minimal, "IN_FLIGHT (STALE)" if width >= 38
-          assert_includes minimal, "[recorded overlap]" if width >= 80
+          assert_includes minimal.gsub(AgentCodingTool::CLI::ANSI_SEQUENCE, ""), "IN_FLIGHT (STALE) [ext.." if width >= 80
           refute_match(/\e\[/, minimal) if no_color
         end
       end

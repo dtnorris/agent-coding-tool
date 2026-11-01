@@ -764,7 +764,9 @@ family/hidden-count summaries or an Icebox footer. `act stat --all` shows
 the existing full inventory in minimal rows. Explicit `--min` remains supported.
 Task IDs (with their colon) and annotated statuses form left-aligned columns
 sized only from the displayed rows, with one space after the ID column and two
-after the status column. Titles retain their literal punctuation; compact rows
+after the status column. Compact statuses are capped at 24 visible cells, using
+`..` for truncation (for example, `IN_FLIGHT (STALE) [rec..`), so long annotations
+do not push every description rightward. Use `--full` for complete annotations. Titles retain their literal punctuation; compact rows
 have no generated dash separator or trailing padding. Padding consumes the
 existing terminal-width budget (explicit width, TTY width, `COLUMNS`, then 100).
 Titles truncate with ASCII `...` without splitting graphemes or ANSI sequences.

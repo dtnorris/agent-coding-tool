@@ -76,7 +76,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       assert_includes cli!("status", "--full"), "TST-A: ICEBOX"
       minimal = cli!("status", "--icebox", "--min")
       assert_equal minimal, cli!("status", "--icebox")
-      assert_equal "TST-A: ICEBOX [external reported] [external conflict]  Task\n".b, minimal
+      assert_equal "TST-A: ICEBOX [external repor..  Task\n".b, minimal
       assert_includes cli!("next"), "TST-A (ICEBOX)"
       assert_includes cli!("next"), "act unicebox TST-A"
       reported = JSON.parse(cli!("next", "--json"))

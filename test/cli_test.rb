@@ -1138,6 +1138,7 @@ class CLITest < Minitest::Test
 
   def test_read_only_refresh_and_collision_are_distinct_dashboard_diagnostics
     assert_minimal_long_annotations
+    assert_compact_status_cap
     status = {
       "id" => "P1", "status" => "PREPARED", "title" => "Prepared work",
       "reason" => "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: docs",
@@ -1218,7 +1219,8 @@ class CLITest < Minitest::Test
     before = Marshal.dump(row)
     coordinator = fake_status_coordinator([row])
     coordinator.define_singleton_method(:next_start_set) { |*| { "starts" => [row] } }
-    boundary = identity.length + 1 + 1 + label.length + 2 + 1
+    compact_label = "IN_FLIGHT (STALE) (NEX.."
+    boundary = identity.length + 1 + 1 + compact_label.length + 2 + 1
     previous_color, previous_columns = ENV.delete("NO_COLOR"), ENV.delete("COLUMNS")
     begin
       [1, 2, 3, 20, 80, boundary - 1, boundary, 240].each do |width|
@@ -1235,8 +1237,8 @@ class CLITest < Minitest::Test
           out.string
         end
         assert_equal outputs.first, strip_ansi(outputs.last)
-        assert_includes outputs.first, label if width >= boundary - 1
-        assert_equal identity + ": " + label + "  .\n", outputs.first if width == boundary
+        assert_includes outputs.first, compact_label if width >= boundary - 1
+        assert_equal identity + ": " + compact_label + "  .\n", outputs.first if width == boundary
         if outputs.last.include?("\e[")
           assert_includes outputs.last, AgentCodingTool::CLI::ANSI_RESET
         end
@@ -1254,6 +1256,42 @@ class CLITest < Minitest::Test
       previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
     end
     assert_equal before, Marshal.dump(row)
+  end
+
+  # Verifies the operator's 24-cell example and shared description start through
+  # the public CLI, including ANSI parity and complete full-view overlap detail.
+  def assert_compact_status_cap
+    rows = [
+      { "id" => "ACT-UX-04", "status" => "STALE", "lifecycle_status" => "IN_FLIGHT",
+        "title" => "Align compact columns", "state" => { "started_at" => "now",
+        "write_overlap" => { "conflicts" => [{ "task_id" => "OTHER", "status" => "IN_FLIGHT" }],
+                             "basis" => "manual override", "observed_at" => "2026-11-01" } } },
+      { "id" => "TST-36", "status" => "COMPLETE", "title" => "Model patches", "state" => {} }
+    ]
+    coordinator = fake_status_coordinator(rows)
+    expected = "TST-36:    COMPLETE                  Model patches\n" \
+               "ACT-UX-04: IN_FLIGHT (STALE) [rec..  Align compact columns\n"
+    previous = ENV.delete("NO_COLOR")
+    begin
+      [StringIO.new, TTYOutput.new(100)].each do |out|
+        cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new, terminal_width: 100)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 0, cli.run(%w[status])
+        assert_equal expected, strip_ansi(out.string)
+        if out.string.include?("\e[")
+          assert_includes out.string, AgentCodingTool::CLI::ANSI_RESET
+        end
+      end
+      out = StringIO.new
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new, terminal_width: 100)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 0, cli.run(%w[status ACT-UX-04 --full])
+      assert_includes out.string, "IN_FLIGHT (STALE)"
+      assert_includes out.string, "manual override with OTHER (IN_FLIGHT)"
+      refute_includes out.string, "[rec.."
+    ensure
+      previous ? ENV["NO_COLOR"] = previous : ENV.delete("NO_COLOR")
+    end
   end
 
   def fake_status_coordinator(statuses, tasks: [], unlock_metrics: {})

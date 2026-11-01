@@ -329,7 +329,7 @@ class StatusNextSummaryTest < Minitest::Test
       assert_equal minimal, output_for(dir, coordinator, command.dup)
       assert_empty inspector.snapshot_calls
       assert_equal full.lines.grep(/\A[A-B]:/).map { |line| line.split(" — ").first },
-                   minimal.lines.map { |line| line.split(" [").first }
+                   minimal.lines.map { |line| line.split(" [").first.strip }
       assert_equal full.lines.grep(/\A[A-B]:/).length, minimal.lines.length
       assert_includes minimal, "A: IN_FLIGHT (STALE)"
       assert_includes minimal, "[external reported] [external conflict] [recorded overlap]"

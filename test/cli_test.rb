@@ -1137,6 +1137,7 @@ class CLITest < Minitest::Test
   end
 
   def test_read_only_refresh_and_collision_are_distinct_dashboard_diagnostics
+    assert_minimal_long_annotations
     status = {
       "id" => "P1", "status" => "PREPARED", "title" => "Prepared work",
       "reason" => "read-only pushed branch changed; refresh and reconcile materially affected findings before finalizing: docs",
@@ -1201,6 +1202,59 @@ class CLITest < Minitest::Test
   end
 
   private
+
+  # Exercises all annotation ordering and width sources through the public CLI.
+  # Synthetic projection evidence is immutable; no probes/writes are supported.
+  # Exact expectations catch missing markers, broken ANSI and width regressions.
+  def assert_minimal_long_annotations
+    identity = "LONG-" + "1234567890" * 8
+    label = "IN_FLIGHT (STALE) (NEXT) [external reported] [external conflict] " \
+            "[write collision] [recorded overlap] [read-only refresh]"
+    row = { "id" => identity, "status" => "STALE", "lifecycle_status" => "IN_FLIGHT",
+            "title" => "界e\u0301 title " * 40, "external_activity" => {}, "external_conflicts" => ["other"],
+            "state" => { "started_at" => "now", "write_overlap" => {} },
+            "write_collisions" => [{ "task_id" => "BUSY" }],
+            "reason" => AgentCodingTool::CLI::READ_ONLY_FRESHNESS_REASON_PREFIX + "inspect" }
+    before = Marshal.dump(row)
+    coordinator = fake_status_coordinator([row])
+    coordinator.define_singleton_method(:next_start_set) { |*| { "starts" => [row] } }
+    boundary = identity.length + 1 + 1 + label.length + 2 + 1
+    previous_color, previous_columns = ENV.delete("NO_COLOR"), ENV.delete("COLUMNS")
+    begin
+      [1, 2, 3, 20, 80, boundary - 1, boundary, 240].each do |width|
+        ENV["COLUMNS"] = width.to_s
+        outputs = [StringIO.new, TTYOutput.new(width)].map do |out|
+          cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new)
+          cli.instance_variable_set(:@coordinator, coordinator)
+          assert_equal 0, cli.run(%w[status])
+          assert_equal 1, out.string.lines.length
+          assert_operator visible_width(out.string.chomp), :<=, width
+          refute_match(/ +$/, strip_ansi(out.string).chomp)
+          refute_match(/\e/, strip_ansi(out.string))
+          assert_equal "." * width + "\n", out.string if width <= 3
+          out.string
+        end
+        assert_equal outputs.first, strip_ansi(outputs.last)
+        assert_includes outputs.first, label if width >= boundary - 1
+        assert_equal identity + ": " + label + "  .\n", outputs.first if width == boundary
+        if outputs.last.include?("\e[")
+          assert_includes outputs.last, AgentCodingTool::CLI::ANSI_RESET
+        end
+      end
+      ENV["COLUMNS"] = "34"
+      [[TTYOutput.new(50), nil, 50], [TTYOutput.new(50), 25, 25],
+       [TTYOutput.new(0), nil, 34], [StringIO.new, nil, 34]].each do |out, explicit, width|
+        cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: Dir.pwd, out:, err: StringIO.new, terminal_width: explicit)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 0, cli.run(%w[status])
+        assert_equal width, visible_width(out.string.chomp)
+      end
+    ensure
+      previous_color ? ENV["NO_COLOR"] = previous_color : ENV.delete("NO_COLOR")
+      previous_columns ? ENV["COLUMNS"] = previous_columns : ENV.delete("COLUMNS")
+    end
+    assert_equal before, Marshal.dump(row)
+  end
 
   def fake_status_coordinator(statuses, tasks: [], unlock_metrics: {})
     coordinator = Object.new

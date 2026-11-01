@@ -129,9 +129,9 @@ class PlanningGuidanceTest < Minitest::Test
             policy ? definition["checkpoint"] = policy : definition.delete("checkpoint")
             File.write(path, YAML.dump(definition))
             coordinator = coordinator_with_renderer(dir, renderer)
-            prepared = Open3.stub(:capture3, lambda { |*args|
-              calls << args
-              capture.call(*args)
+            prepared = Open3.stub(:capture3, lambda { |*args, **options|
+              calls << [args, options]
+              capture.call(*args, **options)
             }) { coordinator.prepare("PLANNING-REGISTER") }
             prompt = prepared.fetch("prompt")
             refute_includes prompt, "## Canonical planning guidance"
@@ -145,7 +145,10 @@ class PlanningGuidanceTest < Minitest::Test
           end
         end
         assert_equal 4, calls.length
-        assert calls.all? { |args| args.last.end_with?(AgentCodingTool::PromptRenderer::SKILL_PATH) }
+        calls.each do |args, options|
+          assert_equal({ stdin_data: '' }, options)
+          assert args.last.end_with?(AgentCodingTool::PromptRenderer::SKILL_PATH)
+        end
         corrupt = "corrupt\xff".b
         File.binwrite(File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH), corrupt)
         commit_source(root)
@@ -303,12 +306,13 @@ class PlanningGuidanceTest < Minitest::Test
         designate(dir, "T")
         renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin)
         capture, calls = Open3.method(:capture3), []
-        prepared = Open3.stub(:capture3, lambda { |*args|
-          calls << args
-          capture.call(*args)
+        prepared = Open3.stub(:capture3, lambda { |*args, **options|
+          calls << [args, options]
+          capture.call(*args, **options)
         }) { coordinator_with_renderer(dir, renderer).prepare("T") }
         assert_equal 2, calls.length
-        calls.each do |args|
+        calls.each do |args, options|
+          assert_equal({ stdin_data: '' }, options)
           assert_equal({ "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }, args.first)
           assert_equal ["git", "--no-replace-objects", "-C", root, "cat-file", "blob"], args[1, 6]
         end

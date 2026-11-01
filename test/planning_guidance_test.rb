@@ -114,14 +114,14 @@ class PlanningGuidanceTest < Minitest::Test
         renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin)
         capture = Open3.method(:capture3)
         calls = []
-        # Complete prompt digests at ACT 7afe873 plus ACT-21's required-checkpoint
-        # milestone, export and operator-transfer guidance (exempt prompts unchanged).
+        # Complete prompt digests include ACT-21's checkpoint guidance and AGT-02's
+        # operator handoffs for every access/checkpoint combination.
         # Only coding text/revision/fingerprint use fixture-independent tokens.
         expected = {
-          ["write", false] => "336a1197a584e22f31e01efc2d50311380895fdbfeeb47060c6ccd136d738717",
-          ["write", true] => "2c094dbcdeb8ee5e403ca92271a1212214a4083d3b317ca069770f239debb8b4",
-          ["read_only", false] => "84ced6c83728163e6f2be9527eff3dc39c18598b77848836ff52abff62f082bd",
-          ["read_only", true] => "66bb12e38524532d83008a4eb361fc14e13bfec4867d923f228a6c83921ac255"
+          ["write", false] => "545b74e38e2d8fc0a2571b73b1e9cde224583dcbfd937fbb7b031c6679857014",
+          ["write", true] => "ed8b7b4d912e162da5289a94fbe4be092a1fbfae8e7178bcb6442080f710a5c1",
+          ["read_only", false] => "ac6c59e55ac87a2b34779f09632d6fed335824e1ca6b0f57d99ebe2a2f959eb5",
+          ["read_only", true] => "d8bb4bec95f063087cda440aaf9bb3f2a31edb6f22cd8b1655aab045c8d36f6d"
         }
         ["write", "read_only"].each do |access|
           [nil, { "mode" => "exempt", "category" => "planning", "reason" => "Only a plan." }].each do |policy|

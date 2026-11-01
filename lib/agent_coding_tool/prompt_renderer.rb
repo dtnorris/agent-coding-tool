@@ -81,6 +81,10 @@ module AgentCodingTool
       lines << "Do not commit, push, create a PR, or otherwise mutate GitHub."
       lines << "Do not broaden write scope or override explicit task-specific read restrictions. If the task cannot be completed correctly within the stated boundary, report the dependency or compatibility defect instead."
       lines << ""
+      lines << "## Operator handoffs"
+      lines << ""
+      lines << "For a routine patch handoff, give David links to the complete root-relative patch and matching act apply JSON, plus one paste-ready native `act apply PATH_TO_JSON` invocation for his actual shell. Explain the outcome, validation results and remaining owner steps outside the paste box. Let native tools perform their own checks and preserve separate consent for application, validation and commit. Add a wrapper only for a named prerequisite the native command does not cover. If a command refuses or fails, report the reason and stop dependent actions; do not silently switch to manual Git. Keep host-owned checkpoint record, verify and gate steps separate; worker exports and apply manifests do not establish host verification, acceptance or publication authority."
+      lines << ""
       lines << "## Implementation checkpoint"
       lines << ""
       if CheckpointPolicy.required?(task)

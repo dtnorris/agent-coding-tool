@@ -39,6 +39,7 @@ module AgentCodingTool
       verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__), transport: @transport)
       verifier.send(:safe_root!)
       ReservationLock.synchronize(@data_root, held: reservation_lock) do |lock|
+        TaskReset.new(data_root: @data_root, transport: @transport).assert_admission!(id)
         @reservation_lock = lock
         begin
           verify_overlap!(id)

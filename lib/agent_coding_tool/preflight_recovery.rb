@@ -22,6 +22,7 @@ module AgentCodingTool
     def preflight(id)
       raise InvalidTask, "abandon-preflight: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       run_root = "#{@data_root}-runs"
+      floor = TaskReset.new(data_root: @data_root, transport: @transport).attempt_floor(id)
       task_root = File.join(run_root, id)
       [run_root, task_root].each { |path| directory!(path) }
       raise InvalidState, "abandon-preflight: evidence root is not private" unless
@@ -34,7 +35,7 @@ module AgentCodingTool
         [name, JSON.parse(File.binread(report_file)).fetch("attempt")]
       end.sort_by { |_name, number| number }
       raise InvalidState, "abandon-preflight: missing or conflicting attempts" unless
-        attempts.map(&:last) == (1..attempts.length).to_a
+        attempts.map(&:last) == ((floor + 1)..(floor + attempts.length)).to_a
       attempts[0...-1].each do |name, _number|
         older = File.join(task_root, name)
         directory!(older)
@@ -65,7 +66,7 @@ module AgentCodingTool
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       state = StateStore.new(File.join(@data_root, "state")).load(id)
       unless report["schema_version"] == Launcher::SCHEMA && report["task_id"] == id &&
-             report["attempt"].is_a?(Integer) && report["attempt"] == attempts.length &&
+             report["attempt"].is_a?(Integer) && report["attempt"] == floor + attempts.length &&
              report["worktrees_path"] == record_path &&
              report["preparation"] == state["snapshot"] && report["prepared_at"] == state["prepared_at"] &&
              report["preparation"].is_a?(Hash) &&
@@ -104,7 +105,7 @@ module AgentCodingTool
       end
       raise InvalidState, "abandon-preflight: foreign task path" unless
         WorktreeManager.foreign_task_paths(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                          task_id: id, paths: paths).empty?
+          task_id: id, paths: paths + TaskReset.new(data_root: @data_root, transport: @transport).retired_paths(id)).empty?
       checks = manager.cleanup_preflight
       raise InvalidState, "abandon-preflight: dirty worktree" if checks.any? { |row| row["dirty"] || !row.fetch("blockers").empty? }
       raise InvalidState, "abandon-preflight: active or uncertain process" unless @liveness.call(report, inventory)
@@ -124,6 +125,7 @@ module AgentCodingTool
       raise InvalidState, "abandon-preflight: foreign lock" if File.symlink?(lock_path)
       File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
         raise InvalidState, "abandon-preflight: launcher active" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        TaskReset.new(data_root: @data_root, transport: @transport).assert_admission!(id)
         result = preflight(id)
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
                                       record_path: result.fetch("record_path"), transport: @transport)

@@ -4,6 +4,8 @@ require_relative "../test_helper"
 require_relative "../retry_decision_support"
 require "minitest/mock"
 require "stringio"
+require "pty"
+require "timeout"
 
 # Public retry journeys use native fixture Git and real finite fake-worker
 # processes. Sandbox, boot identity and lsof are declared external test doubles;
@@ -862,6 +864,690 @@ class AttemptRecoveryTest < Minitest::Test
         assert_equal sibling_state, @states.load("B")
         assert_equal sibling_head, git("rev-parse", "refs/heads/act/B/attempt-1", directory: File.join(@fixture, "writer"))
       end
+    end
+  end
+
+  # Extends only declared external host/fault boundaries in disposable fixtures.
+  # Reset ownership, archive, state and native Git remain production code.
+  def hard_reset_fixture(readers: 0)
+    fixture(readers: readers) do
+      File.open(@preload, "a") do |file|
+        file.write <<~'RUBY'
+          module ResetFaultBoundary
+            def initialize(**options)
+              super(**options.merge(fault: ->(phase, _receipt) {
+                raise IOError, "injected #{phase}" if phase == ENV["ACT28_RESET_FAULT"]
+              }))
+            end
+            def retire_evidence!(*arguments)
+              return if ENV["ACT28_BREAK_RETIREMENT"] == "1"
+              super
+            end
+          end
+          AgentCodingTool::TaskReset.prepend(ResetFaultBoundary)
+          if ENV["ACT28_LEGACY_LAYOUT"] == "1"
+            module ResetLegacyWorktrees
+              def initialize(**options)
+                super(**options.merge(attempt_paths: false, invocation_id: nil))
+              end
+            end
+            module ResetLegacyReport
+              def save_report
+                @report.delete("worktree_layout")
+                super
+              end
+            end
+            AgentCodingTool::WorktreeManager.prepend(ResetLegacyWorktrees)
+            AgentCodingTool::Launcher.prepend(ResetLegacyReport)
+          end
+        RUBY
+      end
+      yield
+    end
+  end
+
+  # Invokes a cold public CLI with genuine terminal input or redirected stdin.
+  # Captures binary streams/status separately; a bounded wait owns only this
+  # newly spawned fixture child. No production process is signaled.
+  def hard_reset_cli(*arguments, answer: "yes\n", interactive: true, fault: nil, break_retirement: false)
+    environment = { "PATH" => "#{@fixture}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
+      "RUBYOPT" => "#{ENV['RUBYOPT']} -r#{@preload}", "ACT28_RESET_FAULT" => fault,
+      "ACT28_BREAK_RETIREMENT" => break_retirement ? "1" : nil }
+    command = [RbConfig.ruby, "-I#{File.join(Dir.pwd, 'lib')}", File.join(Dir.pwd, "bin", "agent-coding-tool"), *arguments]
+    return Open3.capture3(environment, *command, stdin_data: answer == :eof ? "" : answer, binmode: true).then { |out, err, status| [status.exitstatus, out, err] } unless interactive
+    PTY.open do |master, slave|
+      Tempfile.create("act28-out-") do |output|
+        Tempfile.create("act28-err-") do |error|
+          child = Process.spawn(environment, *command, in: slave, out: output, err: error, pgroup: true)
+          master.write(answer == :eof ? "\x04" : answer)
+          status = Timeout.timeout(20) { Process.wait2(child).last }
+          [status.exitstatus, File.binread(output.path), File.binread(error.path)]
+        ensure
+          if child && !status
+            Process.kill("KILL", child) rescue Errno::ESRCH
+            Process.waitpid(child) rescue Errno::ECHILD
+          end
+        end
+      end
+    end
+  end
+
+  # Requires success and returns the printed reset summary for scope assertions.
+  def hard_reset_succeeds(*arguments, **options)
+    code, output, error = hard_reset_cli(*arguments, **options)
+    assert_equal 0, code, error
+    output
+  end
+
+  # Returns reset receipts from their separate private, non-discovery root.
+  def reset_receipts
+    Dir.glob("#{@data}-resets/T/*/operation.yml").map { |path| YAML.safe_load_file(path) }
+  end
+
+  # Uses the same explicit boot/lsof host boundaries as cold CLI fixtures for
+  # deterministic confirmation-race checks. Native PID checks remain enabled.
+  def with_reset_handler(**options)
+    previous_path = ENV.fetch("PATH")
+    ENV["PATH"] = "#{@fixture}:#{previous_path}"
+    AgentCodingTool::RetryLiveness.stub(:host_identity, { "fixture_boot" => "deterministic external identity" }) do
+      yield AgentCodingTool::TaskReset.new(data_root: @data, **options)
+    end
+  ensure
+    ENV["PATH"] = previous_path
+  end
+
+  # The same continuous public journey must fail if retirement handoff is removed.
+  # It covers the OS-EV-03-shaped access/membership change and fresh preparation
+  # without retry. Only fake worker and explicit host boundaries are substituted.
+  def assert_hard_reset_journey(break_retirement: false)
+    succeeds("launch", "T", "--codex")
+    first = reports.first
+    task_path = File.join(@data, "tasks", "T.yml")
+    task = YAML.safe_load_file(task_path)
+    task.fetch("repositories").fetch("writer")["access"] = "read_only"
+    task.fetch("repositories")["af-evidence"] = task.fetch("repositories").delete("reader1").merge("access" => "write")
+    File.write(task_path, YAML.dump(task))
+    succeeds("reset", "T")
+    code, _output, error = cli("prepare", "T", "--retry")
+    assert_equal 2, code
+    assert_includes error, "explicit close-attempt required"
+    before = bytes
+    preview = hard_reset_succeeds("reset", "--hard", "T", "--dry-run")
+    assert_includes preview, first.fetch("workspace")
+    assert_equal before, bytes
+    output = hard_reset_succeeds("reset", "T", "--hard", break_retirement: break_retirement)
+    assert_includes output, "T: READY"
+    assert_includes output, "Next: act prepare T"
+    receipt = reset_receipts.fetch(0)
+    assert_equal "complete", receipt.fetch("phase")
+    archive = receipt.fetch("archive")
+    assert_equal first, JSON.parse(File.binread(Dir.glob(File.join(archive, "original", "runs", "*", "handoff.json")).fetch(0)))
+    first.fetch("worktrees").fetch("entries").each do |entry|
+      refute File.exist?(entry.fetch("path"))
+      refute_includes git("worktree", "list", "--porcelain", directory: entry.fetch("parent")), entry.fetch("path")
+    end
+    assert_empty JSON.parse(succeeds("worktrees", "T")).fetch("attempts")
+    next_view = JSON.parse(succeeds("next", "--json"))
+    task_fact = next_view.fetch("facts").fetch("tasks").find { |row| row["id"] == "T" }
+    assert_equal "READY", task_fact.fetch("status")
+    assert_equal archive, task_fact.fetch("reset_history").first.fetch("archive")
+    foreign = File.join("#{@data}-runs", "foreign-active-evidence")
+    File.write(foreign, "unknown active namespace entry")
+    before = bytes
+    assert_equal 2, cli("launch", "T", "--codex").first
+    assert_equal before, bytes
+    File.unlink(foreign)
+    succeeds("prepare", "T")
+    succeeds("launch", "T", "--codex")
+    second = reports.fetch(0)
+    assert_equal 2, second.fetch("attempt")
+    assert_equal %w[af-evidence writer], second.fetch("preparation").keys.sort
+    assert_equal ["af-evidence"], second.fetch("writable_repositories")
+    refute_equal first.fetch("workspace"), second.fetch("workspace")
+    refute_equal first.fetch("invocation_id"), second.fetch("invocation_id")
+    history = JSON.parse(succeeds("worktrees", "T"))
+    assert_equal 1, history.fetch("attempts").length
+    assert_equal archive, history.fetch("resets").fetch(0).fetch("archive")
+    assert_includes succeeds("status", "T"), archive
+    assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-1", directory: File.join(@fixture, "writer"))
+  end
+
+  # Real terminal confirmation, genuine native retirement and archive handoff
+  # are part of one fresh-process journey; a removed handoff fails that journey.
+  def test_hard_reset_changed_scope_public_journey_and_retirement_negative_control
+    hard_reset_fixture(readers: 1) { assert_hard_reset_journey }
+    hard_reset_fixture(readers: 1) do
+      failure = assert_raises(Minitest::Assertion) { assert_hard_reset_journey(break_retirement: true) }
+      assert_includes failure.message, "evidence retirement incomplete"
+      refute_equal "complete", reset_receipts.fetch(0).fetch("phase")
+      refute @states.load("T")["snapshot"]
+      assert File.directory?("#{@data}-runs/T")
+    end
+  end
+
+  # All read-only/declined paths preserve bytes, POSIX modes, links and native
+  # registries/index/refs. Noninteractive yes cannot consent to destruction.
+  def test_hard_reset_preview_decline_eof_and_unsafe_arguments_are_read_only
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      archive = AgentCodingTool::ResetArchive.new
+      before = archive.inventory(@fixture)
+      [%w[reset T --hard --dry-run], %w[reset --hard T --dry-run]].each do |arguments|
+        hard_reset_succeeds(*arguments)
+        assert_equal before, archive.inventory(@fixture)
+      end
+      [{answer: "\n"}, {answer: "no\n"}, {answer: :eof}, {interactive: false}].each do |options|
+        assert_includes hard_reset_succeeds("reset", "--hard", "T", **options), "Declined"
+        assert_equal before, archive.inventory(@fixture)
+      end
+      [%w[reset T --hard --force], %w[reset T --dry-run], %w[reset T --hard --hard],
+       %w[reset --hard ../T], %w[reset MISSING --hard], %w[reset T --hard --yes]].each do |arguments|
+        assert_equal 2, hard_reset_cli(*arguments).first
+        assert_equal before, archive.inventory(@fixture)
+      end
+    end
+  end
+
+  # Preserves independent HEAD/index/worktree versions, binary/unmerged stages,
+  # additions/deletions, ignored/untracked content, modes and links. Reconstruction
+  # uses only the archive, with ordinary/sibling/external bytes and refs unchanged.
+  def test_hard_reset_dirty_binary_index_and_worktree_reconstruct_independently
+    hard_reset_fixture do
+      ordinary = File.join(@fixture, "writer")
+      File.binwrite(File.join(ordinary, "delete.bin"), "delete\0\xff".b)
+      git("add", "delete.bin", directory: ordinary)
+      git("commit", "-m", "fixture binary baseline", directory: ordinary)
+      git("push", "origin", "main", directory: ordinary)
+      succeeds("launch", "T", "--codex")
+      report = reports.first
+      workspace = report.fetch("workspace")
+      write_task(@data, id: "B", repositories: YAML.safe_load_file(File.join(@data, "tasks", "T.yml")).fetch("repositories"))
+      succeeds("launch", "B", "--codex", "--allow-write-collision")
+      sibling_path = Dir.glob("#{@data}-runs/B/*/handoff.json").fetch(0)
+      sibling = JSON.parse(File.binread(sibling_path))
+      sibling_files = bytes(sibling.fetch("workspace")).merge(bytes(File.dirname(sibling_path)))
+        .merge(bytes(git("rev-parse", "--absolute-git-dir", directory: sibling.fetch("workspace"))))
+      sibling_files[@states.state_path("B")] = File.binread(@states.state_path("B"))
+      sibling_snapshot = sibling_files.to_h { |path, content| [path, [content, File.stat(path).mode]] }
+      git("commit", "--allow-empty", "-m", "fixture advanced task candidate", directory: workspace)
+      File.binwrite(File.join(workspace, "file.txt"), "index\0\xff".b)
+      File.binwrite(File.join(workspace, "added.bin"), "added index\0\xfe".b)
+      git("add", "file.txt", "added.bin", directory: workspace)
+      File.binwrite(File.join(workspace, "file.txt"), "worktree\0\x80".b)
+      File.unlink(File.join(workspace, "delete.bin"))
+      File.binwrite(File.join(workspace, "untracked.bin"), "untracked\0\xff".b)
+      File.write(File.join(workspace, ".gitignore"), "ignored.bin\n")
+      File.binwrite(File.join(workspace, "ignored.bin"), "ignored\0\xff".b)
+      File.chmod(0o755, File.join(workspace, "file.txt"))
+      external = File.join(@fixture, "external.bin")
+      File.binwrite(external, "external\0\xff".b)
+      File.symlink(external, File.join(workspace, "external-link"))
+      base_blob = git("rev-parse", "HEAD:file.txt", directory: workspace)
+      staged_blob = git("rev-parse", ":added.bin", directory: workspace)
+      _out, error, status = Open3.capture3("git", "update-index", "--index-info", chdir: workspace,
+        stdin_data: "100644 #{base_blob} 1\tconflict.bin\n100644 #{staged_blob} 2\tconflict.bin\n100644 #{base_blob} 3\tconflict.bin\n")
+      assert status.success?, error
+      File.binwrite(File.join(workspace, "conflict.bin"), "unmerged working bytes\0\xff".b)
+      source_head = git("rev-parse", "HEAD", directory: workspace)
+      stages = git("ls-files", "--stage", directory: workspace)
+      index_path = git("rev-parse", "--path-format=absolute", "--git-path", "index", directory: workspace)
+      index_bytes = File.binread(index_path)
+      index_mode = File.stat(index_path).mode & 0o7777
+      original = AgentCodingTool::ResetArchive.new.inventory(workspace).reject { |path, _row| path == ".git" }
+      refs = git("show-ref", directory: ordinary)
+      ordinary_files = bytes(ordinary).reject { |path, _value| path.include?("/.git/worktrees/") }
+      hard_reset_succeeds("reset", "T", "--hard")
+      receipt = reset_receipts.fetch(0)
+      snapshot = File.join(receipt.fetch("archive"), "candidates", "0")
+      rebuilt = File.join(@fixture, "independent")
+      FileUtils.cp_r(File.join(snapshot, "worktree"), rebuilt, preserve: true)
+      File.unlink(File.join(rebuilt, ".git"))
+      FileUtils.cp_r(File.join(snapshot, "repository.git"), File.join(rebuilt, ".git"), preserve: true)
+      git("config", "core.bare", "false", directory: rebuilt)
+      assert_equal source_head, git("rev-parse", "HEAD", directory: rebuilt)
+      assert_equal stages, git("ls-files", "--stage", directory: rebuilt)
+      assert_equal index_bytes, File.binread(File.join(rebuilt, ".git", "index"))
+      assert_equal index_mode, File.stat(File.join(rebuilt, ".git", "index")).mode & 0o7777
+      actual = AgentCodingTool::ResetArchive.new.inventory(rebuilt).reject { |path, _row| path == ".git" || path.start_with?(".git/") }
+      assert_equal original, actual
+      assert_equal refs, git("show-ref", directory: ordinary)
+      assert_equal ordinary_files, bytes(ordinary).reject { |path, _value| path.include?("/.git/worktrees/") }
+      assert_equal "external\0\xff".b, File.binread(external)
+      assert_equal external, File.readlink(File.join(rebuilt, "external-link"))
+      assert_equal sibling_snapshot, sibling_snapshot.keys.to_h { |path| [path, [File.binread(path), File.stat(path).mode]] }
+    end
+  end
+
+  # Cold repeats at archive/native/evidence/lifecycle boundaries either resume
+  # the exact operation or refuse new material. No old evidence is rewritten.
+  def test_hard_reset_interruptions_fence_admission_and_resume_same_archive
+    ["before_archive", "before_archive_verified", "after_archive", "before_remove:0", "after_remove:0",
+     "after_move:original/runs", "before_state", "after_state"].each do |phase|
+      hard_reset_fixture do
+        succeeds("launch", "T", "--codex")
+        original = bytes(File.dirname(reports.first.fetch("worktrees_path")))
+        code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: phase)
+        assert_equal 2, code, phase
+        assert_includes error, "injected #{phase}"
+        receipt = reset_receipts.fetch(0)
+        refute_equal "complete", receipt.fetch("phase")
+        assert_equal 2, cli("prepare", "T").first
+        assert_equal 2, cli("launch", "T", "--codex").first
+        assert_includes succeeds("status", "T"), "unfinished hard reset"
+        hard_reset_succeeds("reset", "--hard", "T")
+        assert_equal [receipt.fetch("archive")], reset_receipts.map { |record| record.fetch("archive") }
+        assert_equal "complete", reset_receipts.fetch(0).fetch("phase")
+        original.each do |path, content|
+          archived = File.join(receipt.fetch("archive"), "original", "runs", File.basename(File.dirname(path)), File.basename(path))
+          assert_equal content, File.binread(archived)
+        end
+        before = bytes
+        assert_includes hard_reset_succeeds("reset", "T", "--hard"), "already reset"
+        assert_equal before, bytes
+      end
+    end
+  end
+
+  # Reusing a logical repository name never hides an older attempt's external
+  # authority. Real observation envelopes must block in either attempt order;
+  # ending each observation removes only its own blocker without rewriting inputs.
+  def test_hard_reset_retains_each_historical_external_authority
+    fixture(readers: 1) do
+      stores = AgentCodingTool::TaskStore.new(File.join(@data, "tasks"))
+      original = stores.load("T").fetch("repositories")
+      old_spec = original.fetch("writer")
+      new_spec = original.fetch("reader1").merge("access" => "write")
+      write_task(@data, id: "T", repositories: { "writer" => new_spec })
+      write_task(@data, id: "OLD", repositories: { "writer" => old_spec })
+      write_task(@data, id: "NEW", repositories: { "writer" => new_spec })
+      inspector = AgentCodingTool::RepoInspector.new(AgentCodingTool::Config.load(File.join(@data, "config.yml")))
+      external = AgentCodingTool::ExternalActivity.new(data_root: @data, task_store: stores,
+        state_store: @states, repo_inspector: inspector)
+      observations = %w[OLD NEW].to_h do |id|
+        document = external.report(id, reporter: "fixture", kind: "external", scope_complete: true)
+        assert_equal "bounded", document.fetch("active").fetch("envelope").fetch("scope")
+        [id, document.fetch("active").fetch("observation_id")]
+      end
+      preparations = [old_spec, new_spec].map { |spec| { "writer" => inspector.snapshot("writer", spec) } }
+      attempts = preparations.each_with_index.map do |preparation, index|
+        { "report" => { "attempt" => index + 1, "preparation" => preparation }, "inventory" => {}, "entries" => [] }
+      end
+      state = { "snapshot" => preparations.last }
+      task = stores.load("T")
+      original_inputs = Marshal.dump([task, state, attempts])
+      liveness = AgentCodingTool::RetryLiveness.new
+      liveness.stub(:check, :clear) do
+        with_reset_handler(liveness: liveness) do |handler|
+          [attempts, attempts.reverse].each do |ordered|
+            blockers = handler.send(:liveness_blockers, task, state, ordered)
+            assert_equal 2, blockers.length
+            observations.each_value { |id| assert_equal 1, blockers.count { |message| message.include?(id) } }
+          end
+          external.end_activity("OLD", observations.fetch("OLD"), disposition: "ended")
+          blockers = handler.send(:liveness_blockers, task, state, attempts)
+          assert_equal 1, blockers.length
+          assert_includes blockers.first, observations.fetch("NEW")
+          external.end_activity("NEW", observations.fetch("NEW"), disposition: "ended")
+          assert_empty handler.send(:liveness_blockers, task, state, attempts)
+        end
+      end
+      assert_equal original_inputs, Marshal.dump([task, state, attempts])
+    end
+  end
+
+  # Live/reused host identities, uncertain boot proof, foreign paths/inventories,
+  # external observations and busy physical locks refuse without changing data.
+  # The real live sentinel remains alive until this test releases its own pipe.
+  def test_hard_reset_live_unknown_foreign_external_and_busy_refusals
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      report = reports.first
+      report_path = File.join(File.dirname(report.fetch("worktrees_path")), "handoff.json")
+      original_report = File.binread(report_path)
+      sentinel, release = independent_worker
+      begin
+        [{ "host_pid" => sentinel }, { "host_identity" => nil }].each do |changes|
+          File.write(report_path, JSON.pretty_generate(report.merge(changes)))
+          before = bytes
+          code, _output, error = hard_reset_cli("reset", "T", "--hard")
+          assert_equal 2, code
+          assert_match(/use (active|unknown)/, error)
+          assert_equal before, bytes
+          assert Process.kill(0, sentinel)
+        end
+      ensure
+        File.binwrite(report_path, original_report)
+        release.write("x") rescue Errno::EPIPE
+        release.close
+        Process.waitpid(sentinel)
+      end
+      inventory_path = report.fetch("worktrees_path")
+      original_inventory = File.binread(inventory_path)
+      tampered = JSON.parse(original_inventory)
+      tampered.fetch("entries").first["access"] = "read_only"
+      tampered.fetch("entries").first["branch"] = nil
+      File.write(inventory_path, JSON.generate(tampered))
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      File.binwrite(inventory_path, original_inventory)
+      foreign = File.join(@visible, "T", "foreign")
+      File.write(foreign, "unowned bytes")
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      File.unlink(foreign)
+      activity = JSON.parse(succeeds("external", "report", "T", "--reporter", "fixture", "--kind", "external"))
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, activity.fetch("active").fetch("observation_id")
+      assert_equal before, bytes
+      succeeds("external", "end", "T", activity.fetch("active").fetch("observation_id"), "--disposition", "ended")
+      File.open("#{@data}-runs/launch.lock", "r+") do |lock|
+        lock.flock(File::LOCK_EX)
+        before = bytes
+        code, _output, error = hard_reset_cli("reset", "T", "--hard")
+        assert_equal 2, code
+        assert_includes error, "reservation busy"
+        assert_equal before, bytes
+        marker = File.join(@fixture, "gate-must-not-run")
+        [["prepare", "T"], ["launch", "T", "--codex"],
+         ["checkpoint", "record", "T", "--workspace", report.fetch("workspace")],
+         ["checkpoint", "gate", "T", "--workspace", report.fetch("workspace"), "--", RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'ran')", marker]].each do |arguments|
+          code, _output, error = cli(*arguments)
+          assert_equal 2, code
+          assert_includes error, "reservation busy"
+          refute File.exist?(marker)
+          assert_equal before, bytes
+        end
+      end
+      assert_empty reset_receipts
+    end
+  end
+
+  # Confirmation binds both raw state/task sources and index-only content.
+  # An archive I/O failure retains all original candidates/evidence and records
+  # an unfinished phase; none of these failures may manufacture READY.
+  def test_hard_reset_confirmation_races_archive_capacity_and_new_resource_refuse
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      report = reports.first
+      with_reset_handler do |handler|
+        preview = handler.preview("T")
+        task_path = File.join(@data, "tasks", "T.yml")
+        task_bytes = File.binread(task_path)
+        File.write(task_path, task_bytes.sub("title: Task", "title: Changed"))
+        before = bytes
+        assert_includes assert_raises(AgentCodingTool::InvalidState) { handler.execute("T", preview: preview) }.message, "source changed after preview"
+        assert_equal before, bytes
+        File.binwrite(task_path, task_bytes)
+        preview = handler.preview("T")
+        git("add", "file.txt", directory: report.fetch("workspace"))
+        # Force an index-only semantic change while preserving working bytes.
+        git("update-index", "--chmod=+x", "file.txt", directory: report.fetch("workspace"))
+        before = bytes
+        assert_includes assert_raises(AgentCodingTool::InvalidState) { handler.execute("T", preview: preview) }.message, "source changed after preview"
+        assert_equal before, bytes
+      end
+      archive = AgentCodingTool::ResetArchive.new
+      archive.define_singleton_method(:preserve) { |*| raise Errno::ENOSPC, "fixture capacity" }
+      AgentCodingTool::ResetArchive.stub(:new, archive) do
+        with_reset_handler do |handler|
+          preview = handler.preview("T")
+          original = bytes(File.dirname(report.fetch("worktrees_path"))).merge(bytes(report.fetch("workspace")))
+          assert_includes assert_raises(AgentCodingTool::InvalidState) { handler.execute("T", preview: preview) }.message, "ENOSPC"
+          assert_equal original, original.keys.to_h { |path| [path, File.binread(path)] }
+        end
+      end
+      assert_equal "preserving", reset_receipts.first.fetch("phase")
+      extra = File.join(@data, "state", "prompts", "T-new.txt")
+      File.write(extra, "new unowned preparation")
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      assert File.directory?(report.fetch("workspace"))
+      assert_equal 2, cli("prepare", "T").first
+    end
+  end
+
+  # Pre-worker partial creation, malformed state/log progress and multiple owned
+  # attempts can be independently preserved. Missing original prompt/ownership
+  # cannot be substituted by current task state or a caller's reset receipt.
+  def test_hard_reset_partial_creation_and_malformed_progress_preserve_original_bytes
+    %w[before after].each do |fault|
+      hard_reset_fixture(readers: 1) do
+        assert_equal 2, cli("launch", "T", "--codex", fault: fault).first
+        original_report = reports.first
+        raw = "id: [unterminated\n\xff".b
+        File.binwrite(@states.state_path("T"), raw)
+        directory = File.dirname(original_report.fetch("worktrees_path"))
+        File.binwrite(File.join(directory, "progress.tmp"), "malformed\0\xff".b)
+        hard_reset_succeeds("reset", "T", "--hard")
+        receipt = reset_receipts.first
+        assert_equal raw, File.binread(File.join(receipt.fetch("archive"), "original", "state"))
+        assert_equal "malformed\0\xff".b, File.binread(Dir.glob(File.join(receipt.fetch("archive"), "original", "runs", "*", "progress.tmp")).fetch(0))
+        assert_equal({ "id" => "T" }, @states.load("T"))
+        succeeds("prepare", "T")
+      end
+    end
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      report = reports.first
+      File.unlink(report.fetch("worktrees_path"))
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      assert File.directory?(report.fetch("workspace"))
+    end
+  end
+
+  # Hard reset clears each explicit lifecycle/deferral state, preserving prior
+  # outcomes and downstream declarations. Real dependency blockers survive.
+  # A second unchanged reset creates no archive; a fresh run gets a new identity.
+  def test_hard_reset_lifecycle_variants_deferral_dependencies_and_repeat
+    hard_reset_fixture do
+      write_task(@data, id: "DEPENDENT", depends_on: ["T"])
+      write_task(@data, id: "PREREQUISITE")
+      succeeds("icebox", "T")
+      deferred = @states.load("T")
+      succeeds("reset", "T")
+      assert_equal deferred, @states.load("T")
+      hard_reset_succeeds("reset", "T", "--hard")
+      refute @states.load("T").key?("icebox")
+      %w[prepared blocked failed needs_judgment candidate_complete complete].each do |state|
+        succeeds("prepare", "T")
+        succeeds("launch", "T", "--codex") unless state == "prepared"
+        succeeds("record", "T", state) unless state == "prepared"
+        previous = File.binread(@states.state_path("T"))
+        output = hard_reset_succeeds("reset", "T", "--hard")
+        assert_includes output, "DEPENDENT"
+        receipt = reset_receipts.max_by { |record| record.fetch("created_at") }
+        assert_equal previous, File.binread(File.join(receipt.fetch("archive"), "original", "state"))
+        assert_equal({ "id" => "T" }, @states.load("T"))
+      end
+      task_path = File.join(@data, "tasks", "T.yml")
+      task = YAML.safe_load_file(task_path)
+      task["depends_on"] = ["PREREQUISITE"]
+      File.write(task_path, YAML.dump(task))
+      @states.write("T", { "id" => "T", "icebox" => { "at" => "2026-10-31T12:00:00Z" }, "operator_note" => "retain" })
+      output = hard_reset_succeeds("reset", "T", "--hard")
+      assert_includes output, "T: BLOCKED; dependencies incomplete: PREREQUISITE"
+      assert_equal task, YAML.safe_load_file(task_path)
+      assert_empty @states.load("PREREQUISITE")
+      assert_empty @states.load("DEPENDENT")
+      assert_equal({ "id" => "T", "operator_note" => "retain" }, @states.load("T"))
+      before = bytes
+      count = reset_receipts.length
+      assert_includes hard_reset_succeeds("reset", "T", "--hard"), "already reset"
+      assert_equal count, reset_receipts.length
+      assert_equal before, bytes
+      task["depends_on"] = []
+      task.fetch("repositories").fetch("writer")["path"] = File.join(@fixture, "missing-repository")
+      File.write(task_path, YAML.dump(task))
+      output = succeeds("status", "T")
+      assert_includes output, "T: BLOCKED"
+      assert_includes output, "configuration: writer: repository path does not exist"
+    end
+  end
+
+  # Retires every owned generation/repository without branch reuse or adoption of
+  # old checkpoint/delivery proof. An interrupted second native removal resumes
+  # against the same inventory, with original outcomes/evidence kept intact.
+  def test_hard_reset_multiple_attempts_native_retirement_and_fresh_binding
+    hard_reset_fixture(readers: 1) do
+      succeeds("launch", "T", "--codex")
+      succeeds("record", "T", "failed")
+      succeeds("close-attempt", "T")
+      succeeds("prepare", "T", "--retry")
+      succeeds("launch", "T", "--codex")
+      old = reports
+      code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: "after_remove:1")
+      assert_equal 2, code
+      assert_includes error, "injected after_remove:1"
+      hard_reset_succeeds("reset", "T", "--hard")
+      receipt = reset_receipts.first
+      assert_equal 2, receipt.fetch("last_attempt")
+      assert_equal 4, receipt.fetch("retired").length
+      assert receipt.fetch("retired").values.all? { |status| status == "removed" }
+      succeeds("prepare", "T")
+      succeeds("launch", "T", "--codex")
+      current = reports.fetch(0)
+      assert_equal 3, current.fetch("attempt")
+      assert_equal 2, cli("checkpoint", "verify", "T", "--attempt", "1").first
+      old.each do |report|
+        record = Dir.glob(File.join(receipt.fetch("archive"), "original", "runs", "*", "handoff.json"))
+          .find { |path| JSON.parse(File.binread(path))["invocation_id"] == report.fetch("invocation_id") }
+        assert_equal report, JSON.parse(File.binread(record))
+        handler = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: Object.new)
+        assert_includes assert_raises(AgentCodingTool::InvalidState) { handler.deliver("T", run_dir: File.dirname(record)) }.message, "foreign run"
+        assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-#{report.fetch('attempt')}", directory: File.join(@fixture, "writer"))
+      end
+      succeeds("record", "T", "failed")
+      succeeds("close-attempt", "T")
+      succeeds("prepare", "T", "--retry")
+      assert_equal [3], reports.map { |report| report.fetch("attempt") }
+    end
+  end
+
+  # Old fixed-path inventories with independently verifiable boot/process proof
+  # retain their original layout. A new generation uses fresh isolated paths.
+  def test_hard_reset_legacy_owned_layout_without_rewriting_history
+    hard_reset_fixture do
+      previous = ENV["ACT28_LEGACY_LAYOUT"]
+      begin
+        ENV["ACT28_LEGACY_LAYOUT"] = "1"
+        succeeds("launch", "T", "--codex")
+      ensure
+        ENV["ACT28_LEGACY_LAYOUT"] = previous
+      end
+      old = reports.first
+      assert_equal File.join(@visible, "T", "writer"), old.fetch("workspace")
+      assert_nil old.fetch("worktrees")["layout"]
+      original = bytes(File.dirname(old.fetch("worktrees_path")))
+      hard_reset_succeeds("reset", "T", "--hard")
+      receipt = reset_receipts.first
+      original.each do |path, value|
+        assert_equal value, File.binread(File.join(receipt.fetch("archive"), "original", "runs", File.basename(File.dirname(path)), File.basename(path)))
+      end
+      succeeds("prepare", "T")
+      succeeds("launch", "T", "--codex")
+      assert_equal 2, reports.first.fetch("attempt")
+      assert_equal File.join(@visible, "T", "attempt-2", "writer"), reports.first.fetch("workspace")
+    end
+  end
+
+  # Unsafe roots/types, unfinished gates/publication and altered archives refuse
+  # at their own boundary. A reoccupied retired path is never removed on resume.
+  def test_hard_reset_unsafe_progress_and_archive_tampering_refuse
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      report = reports.first
+      workspace = report.fetch("workspace")
+      parked = workspace + "-parked"
+      File.rename(workspace, parked)
+      File.symlink(parked, workspace)
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "symlinked"
+      assert_equal before, bytes
+      File.unlink(workspace)
+      File.rename(parked, workspace)
+      socket_path = File.join(workspace, "fifo")
+      File.mkfifo(socket_path)
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "nonpreservable entry"
+      assert_equal before, bytes
+      File.unlink(socket_path)
+      gates = File.join("#{@data}-runs", "checkpoints", "T", "a" * 32)
+      FileUtils.mkdir_p(gates, mode: 0o700)
+      started = File.join(gates, "gate-#{SecureRandom.uuid}.started.json")
+      File.write(started, "{}")
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "unresolved active gate"
+      assert_equal before, bytes
+      File.unlink(started)
+      delivery = File.join(File.dirname(report.fetch("worktrees_path")), "delivery.json")
+      File.write(delivery, JSON.generate("schema" => AgentCodingTool::DeliveryManager::SCHEMA, "task_id" => "T", "stage" => "pushed"))
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "unresolved publication"
+      assert_equal before, bytes
+      File.unlink(delivery)
+      code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: "after_archive")
+      assert_equal 2, code
+      assert_includes error, "injected after_archive"
+      receipt = reset_receipts.first
+      copy = File.join(receipt.fetch("archive"), "candidates", "0", "worktree", "file.txt")
+      File.binwrite(copy, "altered archive")
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "candidate archive changed"
+      assert_equal before, bytes
+      assert File.directory?(workspace)
+    end
+    hard_reset_fixture do
+      succeeds("launch", "T", "--codex")
+      workspace = reports.first.fetch("workspace")
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard", fault: "after_remove:0").first
+      Dir.mkdir(workspace)
+      File.write(File.join(workspace, "foreign"), "keep new resource")
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      assert_equal "keep new resource", File.read(File.join(workspace, "foreign"))
+    end
+  end
+
+  # Administrative outcomes/overrides cannot prove that a manual worker ended.
+  # No receipt, archive or source removal may result from these declarations.
+  def test_hard_reset_manual_reservations_do_not_become_inactive_by_declaration
+    hard_reset_fixture do
+      succeeds("prepare", "T")
+      succeeds("start", "T")
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "manual/unknown worker"
+      assert_equal before, bytes
+      succeeds("record", "T", "failed")
+      before = bytes
+      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      assert_equal 2, code
+      assert_includes error, "manual/unknown outcome"
+      assert_equal before, bytes
+      succeeds("reset", "T", "--force")
+      before = bytes
+      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal before, bytes
+      assert_empty reset_receipts
     end
   end
 

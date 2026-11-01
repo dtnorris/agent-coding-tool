@@ -76,6 +76,7 @@ module AgentCodingTool
     end
 
     def record(id, workspace:, artifact: nil, reservation_lock: nil)
+      reservation_lock ||= gate_reservation
       ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       task, state, name, base = context!(id, require_in_flight: true)
       raise InvalidState, "#{id}: checkpoint exempt" unless CheckpointPolicy.required?(task)
@@ -139,6 +140,7 @@ module AgentCodingTool
     # Verifies current or explicitly selected closed-attempt evidence against its
     # original base. Historical verification is read-only and accepts no workspace.
     def verify(id, workspace: nil, attempt: nil, read_only: false, reservation_lock: nil)
+      reservation_lock ||= gate_reservation
       ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       raise InvalidState, "checkpoint: historical verification accepts no workspace" if attempt && workspace
       historical = AttemptRecovery.new(data_root: @data_root, transport: @transport).closed_state(id, attempt) if attempt
@@ -189,10 +191,23 @@ module AgentCodingTool
       ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       raise InvalidState, "checkpoint: validation command required" if command.empty?
       raise InvalidState, "checkpoint: --reason requires --force" if reason && !force
-      if force && !reservation_lock
+      task, initial_state, = context!(id, require_in_flight: !force)
+      # Preserve the existing evidence-path diagnostic before lock acquisition.
+      # Exempt manual commands have no candidate/evidence requirement.
+      if CheckpointPolicy.required?(task) || initial_state["checkpoint"]
+        cursor = @root
+        loop do
+          raise InvalidState, "checkpoint: symlinked evidence path" if File.symlink?(cursor)
+          break if cursor == File.dirname(cursor)
+          cursor = File.dirname(cursor)
+        end
+      end
+      unless reservation_lock || unavailable_manual_exempt_storage?(id, task, initial_state, force)
         return ReservationLock.synchronize(@data_root) do |lock|
-          gate(id, workspace: workspace, command: command, requested: requested, observations: observations,
-            force: true, reason: reason, reservation_lock: lock)
+          with_gate_reservation(lock) do
+            gate(id, workspace: workspace, command: command, requested: requested, observations: observations,
+              force: force, reason: reason, reservation_lock: lock)
+          end
         end
       end
       _task, state, name, base = context!(id, require_in_flight: !force)
@@ -230,7 +245,7 @@ module AgentCodingTool
       receipt["command_outcome"] = { "status" => "not_run" }
       phase = "pre_check"
       begin
-        before = verify(id, workspace: workspace, read_only: force)
+        before = verify(id, workspace: workspace, read_only: force, reservation_lock: reservation_lock)
         # Receipt setup is optional; verification still supplies the binding when
         # storage setup failed, and the post-check must match that exact record.
         record = before["record"] unless directory
@@ -266,7 +281,7 @@ module AgentCodingTool
           persist_gate(directory, "gate-#{token}.command.json", receipt, required: true)
         end
         phase = "post_check"
-        after = verify(id, workspace: workspace, read_only: force)
+        after = verify(id, workspace: workspace, read_only: force, reservation_lock: reservation_lock)
         verify_gate_binding!(after, record)
         receipt["post_check"] = "verified"
         receipt["candidate_validation"] = success ? (record ? "passed" : "not_applicable") : "failed"
@@ -328,6 +343,36 @@ module AgentCodingTool
     end
 
     private
+
+    # Retains the old best-effort command path only for an exempt manual attempt
+    # with no checkpoint/managed resources and a regular file occupying the run
+    # root. Hard reset cannot enter this namespace and independently refuses the
+    # manual reservation. Busy locks and unsafe managed evidence never fall back.
+    def unavailable_manual_exempt_storage?(id, task, state, force)
+      root = "#{File.realpath(@data_root)}-runs"
+      !force && !CheckpointPolicy.required?(task) && !state["checkpoint"] &&
+        state["started_at"].is_a?(String) && !File.symlink?(root) && File.file?(root) &&
+        !File.exist?(File.join(root, id))
+    end
+
+    # Borrows a checkpoint gate's same-thread lock for synchronous nested
+    # checkpoint operations. Other threads/processes still acquire/refuse their
+    # own lock; ReservationLock revalidates every borrowed token and path.
+    def gate_reservation
+      Thread.current[:act_checkpoint_gate_reservations]&.fetch(File.realpath(@data_root), nil)
+    end
+
+    # Holds the physical lock across the command and checks, restoring the prior
+    # same-thread context even on exceptions. This grants no other writer access.
+    def with_gate_reservation(lock)
+      locks = Thread.current[:act_checkpoint_gate_reservations] ||= {}
+      root = File.realpath(@data_root)
+      previous = locks[root]
+      locks[root] = lock
+      yield
+    ensure
+      previous ? locks[root] = previous : locks.delete(root)
+    end
 
     # Qualifies retained managed ownership and inactivity for forced validation.
     # Manual attempts have no managed report; external reports are checked by the
@@ -461,6 +506,7 @@ module AgentCodingTool
     # InvalidState; this helper does not change lifecycle or evidence.
     def context!(id, require_in_flight: false, historical: nil)
       raise InvalidTask, "checkpoint: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      TaskReset.new(data_root: File.realpath(@data_root), transport: @transport).assert_admission!(id)
       task = @tasks.load(id)
       state = historical || @states.load(id)
       raise InvalidState, "#{id}: checkpoint requires an in-flight attempt" unless

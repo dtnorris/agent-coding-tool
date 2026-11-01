@@ -57,12 +57,13 @@ module AgentCodingTool
       File.expand_path("../#{File.basename(root)}-data", root)
     end
 
-    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil)
+    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil, input: $stdin)
       @root = root
       @out = out
       @err = err
       @data_root = data_root || self.class.default_data_root(root)
       @terminal_width = terminal_width
+      @input = input
       @transport = transport || NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     end
 
@@ -409,6 +410,11 @@ module AgentCodingTool
         return 0
       end
       root = File.join("#{@data_root}-runs", id)
+      resets = TaskReset.new(data_root: @data_root, transport: @transport).history(id)
+      unless resets.empty? || File.directory?(root)
+        @out.puts JSON.pretty_generate("task_id" => id, "attempts" => [], "resets" => resets)
+        return resets.all? { |receipt| receipt["phase"] == "complete" } ? 0 : 2
+      end
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
       history = AttemptRecovery.new(data_root: @data_root, transport: @transport).inspect(id)
       records = IncidentalMetadata.children(root).sort.map do |attempt|
@@ -450,7 +456,9 @@ module AgentCodingTool
       rescue Error, JSON::ParserError, KeyError, TypeError => error
         { "run_dir" => directory, "classification" => "unverified", "blockers" => [error.message] }
       end
-      @out.puts JSON.pretty_generate("task_id" => id, "attempts" => records)
+      result = { "task_id" => id, "attempts" => records }
+      result["resets"] = resets unless resets.empty?
+      @out.puts JSON.pretty_generate(result)
       records.any? { |row| row.nil? || !row.fetch("blockers", []).empty? } ? 2 : 0
     rescue JSON::ParserError, KeyError, TypeError
       raise InvalidState, "#{id}: malformed worktree/delivery evidence"
@@ -784,6 +792,7 @@ module AgentCodingTool
                 status.fetch("status") == "ICEBOX" ? { "icebox" => status.fetch("state").fetch("icebox"),
                                                         "lifecycle_status" => status.fetch("lifecycle_status") } : {})
             row["external_activity"] = status["external_activity"] if status["external_activity"]
+            row["reset_history"] = status["reset_history"] if status["reset_history"]
             row["external_conflicts"] = status["external_conflicts"] if status["external_conflicts"]
             row["lifecycle_status"] = status["lifecycle_status"] if status["lifecycle_status"]
             row["writable_source_changes"] = status["writable_source_changes"] if status["writable_source_changes"]
@@ -1281,6 +1290,9 @@ module AgentCodingTool
     # Prints full task details, including designation/restoration and lifecycle
     # evidence. Missing fields and output errors propagate; no state is changed.
     def display_explicit_details(item)
+      item.fetch("reset_history", []).each do |receipt|
+        puts_full_detail("hard reset history", "#{receipt.fetch('phase')}; archive: #{receipt.fetch('archive')}; retired through attempt #{receipt.fetch('last_attempt')}")
+      end
       if item["administrative_override"]
         puts_full_detail("operator declaration", item.fetch("administrative_override").fetch("audit_path"))
         puts_full_detail("resource eligibility", item.fetch("resource_eligibility"))
@@ -1672,11 +1684,21 @@ module AgentCodingTool
     # arguments/state/locks raise Error; output identifies retained scheduling.
     def reset_command(argv)
       options = {}
-      parser = OptionParser.new { |opts| lifecycle_force_options(opts, options) }
+      raise Error, "reset: repeated flags" if argv.count("--hard") > 1 || argv.count("--dry-run") > 1
+      parser = OptionParser.new do |opts|
+        lifecycle_force_options(opts, options)
+        opts.on("--hard", "archive complete candidates and retire verified task resources") { options[:hard] = true }
+        opts.on("--dry-run", "preview --hard without writes") { options[:dry_run] = true }
+      end
       parser.require_exact = true
       parser.parse!(argv)
       id = argv.shift
-      raise Error, "usage: agent-coding-tool reset TASK" unless id && argv.empty?
+      raise Error, "usage: agent-coding-tool reset TASK [--hard [--dry-run]]" unless id && argv.empty?
+      if options[:hard]
+        raise Error, "reset --hard accepts neither --force nor --reason" if options[:force] || options[:reason]
+        return hard_reset_command(id, dry_run: options[:dry_run])
+      end
+      raise Error, "reset: --dry-run requires --hard" if options[:dry_run]
 
       state = coordinator.reset(id, **options)
       display_override(state) if options[:force]
@@ -1685,6 +1707,40 @@ module AgentCodingTool
       else
         @out.puts "Reset #{id} runtime state"
       end
+    end
+
+    # Displays the complete affected scope, then requires one terminal-only,
+    # default-no confirmation. Preview/decline perform no writes or preparation.
+    # Success reports scheduler facts; preparation retains its own current gates.
+    def hard_reset_command(id, dry_run: false)
+      handler = TaskReset.new(data_root: @data_root, transport: @transport)
+      preview = handler.preview(id)
+      summary = preview.reject { |key, _value| %w[intent receipt].include?(key) }
+      summary["attempts"] = preview.fetch("intent").fetch("attempts").map { |attempt|
+        attempt.fetch("report").slice("attempt", "invocation_id", "status", "prepared_at") }
+      summary["evidence"] = preview.fetch("intent").fetch("sources").map { |source| source.slice("path", "archive", "retire") }
+      summary["phase"] = preview.dig("receipt", "phase")
+      @out.puts JSON.pretty_generate(summary)
+      return if dry_run
+      if preview.fetch("noop")
+        @out.puts "#{id}: already reset; no new archive or changes"
+        return
+      end
+      raise InvalidState, "hard reset: #{preview.fetch('blockers').join('; ')}" unless preview.fetch("blockers").empty?
+      @out.print "Hard reset #{id}? [y/N] "
+      @out.flush
+      unless @input.tty? && (answer = @input.gets) && answer.strip.match?(/\A(?:y|yes)\z/i)
+        @out.puts "Declined; no changes made"
+        return
+      end
+      result = handler.execute(id, preview: preview)
+      status = coordinator.status(id)
+      @out.puts "Hard reset #{id} complete; archive: #{result.fetch('archive')}"
+      preview.fetch("resources").each do |resource|
+        @out.puts "Retired: #{resource.fetch('path')}; retained branch: #{resource['branch'] || '(detached)'}"
+      end
+      @out.puts "#{id}: #{status.fetch('status')}#{status['reason'] ? '; ' + status.fetch('reason') : ''}"
+      @out.puts "Next: act prepare #{id} (current definition, configuration, prerequisites and source checks still apply)"
     end
 
     # Adds only invocation-local metadata override consent and its optional reason.
@@ -1790,6 +1846,12 @@ module AgentCodingTool
           record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]
                               generic/manual outcome primitive
           reset TASK [--force] [--reason TEXT]
+          reset TASK --hard [--dry-run]
+                              same as reset --hard TASK; preview then one terminal yes/no
+                              complete private archive before exact owned worktree removal
+                              clears deferral; branches and historical outcomes survive
+                              interrupted reset blocks admission; repeat the same command
+                              ordinary prepare TASK follows; READY is conditional
           publish [TASK | --all] [--dry-run]
                               explicitly commit and push ACTD changes
 
@@ -1813,7 +1875,7 @@ module AgentCodingTool
           <data-root>-runs/.lifecycle-overrides/TASK/UUID; inspect hashes after interruption.
           Force gate preserves lifecycle bytes and checkpoint attempt, requires
           verification and durable receipts, and retains child failure results.
-          --force is not --hard; destructive reset combinations are unsupported.
+          --hard accepts neither --force nor --reason; EOF/nonterminal input declines.
 
           Icebox is scheduling, not an outcome; it never receives a start recommendation.
           Only unstarted READY may enter. Prepare/start/launch/record refuse it;

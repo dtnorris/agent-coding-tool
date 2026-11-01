@@ -4,6 +4,7 @@ require 'minitest/mock'
 require_relative 'support/fake_inspector'
 require_relative 'support/child_processes'
 require_relative 'support/memory_git/broker'
+require_relative 'feedback_runtime'
 
 # Only external boundaries are replaced in decision tests. Coordinator lifecycle,
 # prompt rendering, locks, trust checks and durable evidence use production code.
@@ -90,9 +91,43 @@ module LauncherSupport
     forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker || ENV['ACT_TEST_MEMORY_ENDPOINT']
     approval = ChildProcesses.permit('launcher_worker', arguments: command, environment: forwarded,
       options: settings, endpoint: @memory_broker&.endpoint)
-    NoGitExecution.with_permit(approval) do
+    pid = NoGitExecution.with_permit(approval) do
       Process.spawn(approval.environment, *approval.argv, **approval.options, **pipes)
     end
+    register_fixture_process(pid)
+  end
+
+  # Binds a newly spawned direct fixture child to its kernel birth identity.
+  # Returns the PID; unavailable inspection or foreign parentage raises.
+  def register_fixture_process(pid)
+    identity = FeedbackRuntime.identity(pid)
+    raise GitContract::UnexpectedObservation, 'fixture child identity unavailable' unless
+      identity && identity.fetch('pid') == pid && identity.fetch('parent') == Process.pid
+    (@fixture_processes ||= {})[pid] = identity
+    pid
+  end
+
+  # Adapts only production's exact Darwin parent/group query for a registered
+  # live child or its direct descendant. Observations come from libproc, never
+  # handoff expectations. Missing observations return failure; foreign/reused
+  # identities and changed argv/options raise without starting a process.
+  def fixture_process_capture(command, options)
+    unless options.empty? && command.length == 7 &&
+           command.take(6) == ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p'] &&
+           command.last.is_a?(String) && command.last.match?(/\A[1-9][0-9]*\z/)
+      raise GitContract::UnexpectedObservation, 'unexpected process query'
+    end
+    pid = Integer(command.last)
+    observed = FeedbackRuntime.identity(pid)
+    return ['', 'fixture process observation unavailable', status_result(false)] unless observed
+
+    registered = (@fixture_processes || {})[pid] || (@fixture_processes || {})[observed.fetch('parent')]
+    anchor = registered && FeedbackRuntime.identity(registered.fetch('pid'))
+    unless registered && observed.fetch('pid') == pid && anchor == registered &&
+           (registered.fetch('pid') != pid || observed == registered)
+      raise GitContract::UnexpectedObservation, 'unowned or reused fixture process'
+    end
+    ["#{observed.fetch('parent')} #{observed.fetch('group')}\n", '', status_result(true)]
   end
 
   def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true,
@@ -119,12 +154,15 @@ module LauncherSupport
   # All remotes are private; mutable_remote remains a legacy keyword. Real worker
   # execution is explicit and guarded; setup/model/protocol failures propagate.
   def fixture(git: false, process: false, mutable_remote: false)
-    Dir.mktmpdir('act-launch-') do |root|
+    # Keep the owned broker's w.sock below Darwin's sockaddr_un path ceiling
+    # even under the longer reconstructed worker TMPDIR. No external fallback.
+    Dir.mktmpdir('al-') do |root|
       @root = File.realpath(root)
       previous_tmpdir = ENV['TMPDIR']
       ENV['TMPDIR'] = @root
       @unit_workspace = nil
       @memory_broker = nil
+      @fixture_processes = {}
       @dep_ordinary = nil
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
@@ -180,23 +218,26 @@ module LauncherSupport
       case_id: "launcher-#{@data}")
   end
 
-  # Captures the public CLI in a fresh guarded interpreter. Exact preflight and
-  # worker adapters are installed by the named fixture; status is genuinely reaped.
+  # Captures the public CLI in a fresh guarded interpreter. Registered sibling
+  # birth identities cross only this exact permitted environment; the child
+  # rechecks live kernel identities. Status is genuinely reaped.
   def cold_launcher(*arguments, fixture: "launcher_cli", environment: {})
     endpoint = launcher_broker.endpoint
     ChildProcesses.capture(fixture, arguments: [@root, @data, *arguments],
-      environment: environment, endpoint: endpoint, seconds: 15)
+      environment: environment.merge("ACT_TEST_LAUNCHER_PROCESSES" => JSON.generate(@fixture_processes || {})),
+      endpoint: endpoint, seconds: 15)
   end
 
   # Starts a live public CLI without waiting for it. The caller owns termination
   # and reaping; IO handles are opened here so the exact permit checks real pipes.
   def start_cold_launcher(*arguments, stdout:, stderr:)
     approval = ChildProcesses.permit("launcher_cli", arguments: [@root, @data, *arguments],
-      endpoint: launcher_broker.endpoint)
+      endpoint: launcher_broker.endpoint,
+      environment: { "ACT_TEST_LAUNCHER_PROCESSES" => JSON.generate(@fixture_processes || {}) })
     File.open(stdout, "w") do |output|
       File.open(stderr, "w") do |error|
         NoGitExecution.with_permit(approval) do
-          Process.spawn(approval.environment, *approval.argv, out: output, err: error)
+          register_fixture_process(Process.spawn(approval.environment, *approval.argv, out: output, err: error))
         end
       end
     end
@@ -205,9 +246,7 @@ module LauncherSupport
   # Exact external preflight observations for existing ordinary decision cases.
   # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
-    if command.first == 'ps'
-      return worker_parent_observation(command, options)
-    end
+    return fixture_process_capture(command, options) if command.first == 'ps'
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
       return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
     end
@@ -232,15 +271,28 @@ module LauncherSupport
     end
     if command.first.is_a?(Hash)
       env = command.shift
-      # Probe only a workspace already recorded by this case's persisted handoff.
-      # Task IDs, attempts and the number of writers are not fixed.
-      workspaces = Dir.glob("#{@data}-runs/*/*/handoff.json").flat_map do |path|
-        JSON.parse(File.binread(path)).fetch('worktrees', nil).to_h.fetch('entries', []).select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+      # Probe cwd comes from the durable owned inventory, including attempt and
+      # non-T task layouts. A nearby or unrecorded directory is never eligible.
+      reports = Dir.glob("#{@data}-runs/*/*/handoff.json").filter_map do |path|
+        record = JSON.parse(File.binread(path))
+        record if record['schema_version'] == AgentCodingTool::Launcher::SCHEMA && record['worktrees'].is_a?(Hash)
       end
-      allowed_options = [{ unsetenv_others: true }] + workspaces.map { |workspace| { chdir: workspace, unsetenv_others: true } }
+      workspaces = reports.flat_map do |record|
+        record.fetch('worktrees').fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+      end
+      allowed_options = [{ unsetenv_others: true }] + workspaces.map do |path|
+        { chdir: path, unsetenv_others: true }
+      end
       raise GitContract::UnexpectedObservation, 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
                                                     allowed_options.include?(options)
       raise GitContract::UnexpectedObservation, "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
+      expected_environment = %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
+      if command.include?('act-probe')
+        report = reports.find { |record| record['workspace'] == options[:chdir] }
+        raise GitContract::UnexpectedObservation, 'unowned sandbox cwd' unless report
+        expected_environment.merge!('TMPDIR' => report.fetch('fixture').fetch('path'), 'CODEX_HOME' => env.fetch('CODEX_HOME'))
+      end
+      raise GitContract::UnexpectedObservation, 'changed preflight environment' unless env == expected_environment
       case command
       when ['--version'] then [@fake_version, '', status_result(true)]
       when ['exec', '--help'] then [@fake_help, '', status_result(true)]
@@ -253,8 +305,9 @@ module LauncherSupport
         raise GitContract::UnexpectedObservation, 'unsupported top-level sandbox flag or inherited configuration' unless
           prefix.length.even? && prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? } &&
           File.directory?(home) && (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
-          home != ENV['CODEX_HOME'] &&
-          ([options.fetch(:chdir)] + JSON.parse(command.find { |arg| arg.start_with?('sandbox_workspace_write.writable_roots=') }.split('=', 2).last)).none? { |path| home == path || home.start_with?(path + '/') }
+          home != ENV['CODEX_HOME'] && home != env.fetch('TMPDIR') &&
+          File.dirname(home) == @root && File.basename(home).match?(/\Aact-sandbox-config-\d{8}-\d+-[a-z0-9]+\z/) &&
+          !workspaces.any? { |path| home == path || home.start_with?(path + '/') }
         @observed_sandbox_home = home
         raise GitContract::UnexpectedObservation, 'legacy or unenforced sandbox invocation' unless
           command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&
@@ -291,30 +344,6 @@ module LauncherSupport
       else raise GitContract::UnexpectedObservation, "unexpected Git operation: #{command.inspect}"
       end
     end
-  end
-
-  # Answers only the recorded fixture worker's exact parent/group query using
-  # facts sampled by that real child, never expected handoff values. Live PID and
-  # group checks still run; unknown envelopes, missing evidence and dead workers
-  # raise. This adapter does not establish native ps conformance.
-  def worker_parent_observation(command, options)
-    pid_argument = command.last
-    raise GitContract::UnexpectedObservation, 'invalid worker PID' unless pid_argument&.match?(/\A[1-9][0-9]*\z/)
-    path = File.join(@root, "worker-process-#{pid_argument}")
-    unless @real_process && options.empty? && File.file?(path)
-      raise GitContract::UnexpectedObservation, 'unbound worker process query'
-    end
-    observed = JSON.parse(File.binread(path))
-    pid, parent, group = observed.values_at('pid', 'parent', 'group')
-    unless [pid, parent, group].all? { |value| value.is_a?(Integer) && value.positive? } &&
-           command == ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p', pid.to_s]
-      raise GitContract::UnexpectedObservation, 'unexpected worker process query'
-    end
-    Process.kill(0, pid)
-    unless Process.getpgid(pid) == group
-      raise GitContract::UnexpectedObservation, 'worker process group changed'
-    end
-    ["#{parent} #{group}\n", '', status_result(true)]
   end
 
   def launcher(real_sandbox_probe: false, **extra)

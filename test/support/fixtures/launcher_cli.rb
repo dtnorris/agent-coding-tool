@@ -8,6 +8,10 @@ require_relative '../../coding_skill_support'
 raise "missing shared launcher authority" unless MemoryGit::Session.transport.is_a?(MemoryGit::Client)
 root, data, *arguments = ARGV
 context = Object.new.extend(LauncherSupport)
+# The parent passes only its registered fixture hosts. Queries independently
+# recheck live kernel birth/parent/group; no report supplies observed values.
+context.instance_variable_set(:@fixture_processes,
+  JSON.parse(ENV.delete("ACT_TEST_LAUNCHER_PROCESSES") || "{}").transform_keys { |pid| Integer(pid, 10) })
 context.instance_variable_set(:@root, root)
 context.instance_variable_set(:@data, data)
 context.instance_variable_set(:@ordinary, File.join(root, 'ordinary'))

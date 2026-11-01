@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require_relative "support/child_processes"
+require_relative "support/memory_git/broker"
 require "stringio"
 require "timeout"
 require "socket"
@@ -10,6 +11,7 @@ require "minitest/mock"
 # Deterministic ACT records stand in only for the external worker/checkpoint
 # producer. All selection, transport, accounting and byte reading are real.
 class RunEvidenceTest < Minitest::Test
+  include TestHelpers
   # Builds canonical private fixture paths and one completed managed run.
   def setup
     @temporary = File.realpath(Dir.mktmpdir("act-evidence-"))
@@ -32,6 +34,8 @@ class RunEvidenceTest < Minitest::Test
 
   # Removes only this test's disposable records, never real ACT evidence.
   def teardown
+    @sharing_broker&.close
+    @sharing_world&.verify!
     FileUtils.remove_entry(@temporary)
   end
 
@@ -73,7 +77,8 @@ class RunEvidenceTest < Minitest::Test
       File.binwrite(File.join(directory, "0001.patch"), patch)
       write_json(File.join(directory, "current.json"), "record_file" => "0001.json", "sha256" => Digest::SHA256.file(record_path).hexdigest)
       write_json(File.join(directory, "gate-0001.finished.json"), record.merge("schema_version" => "agent-coding-tool-checkpoint-gate/v1",
-        "invocation_id" => "gate-0001", "candidate" => { "sha256" => record["sha256"], "launch_invocation" => identity["invocation_id"] },
+        "invocation_id" => "0001", "candidate" => { "record_file" => "0001.json", "artifact" => record["artifact"],
+          "sha256" => record["sha256"], "launch_invocation" => identity["invocation_id"] },
         "command_outcome" => { "status" => "exited", "exit_code" => 1 }, "candidate_validation" => "failed", "output" => { "status" => "not_captured" }))
     end
     { identity: identity, run: run, contents: contents }
@@ -114,6 +119,99 @@ class RunEvidenceTest < Minitest::Test
     manifest.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES).merge(
       "operation" => "read", "handle" => manifest.fetch("handle"), "revision" => manifest.fetch("revision"),
       "artifact" => artifact, "offset" => offset, "length" => length)
+  end
+
+  # Shared transcript reads stream beyond the ordinary-file ceiling, bind the
+  # complete managed source and refuse mutation/foreign paths without broadening v1.
+  def test_shared_oversized_transcript_chunks_and_source_refusals
+    path = File.join(@first[:run], "stdout.jsonl")
+    line = JSON.generate("type" => "item.completed", "text" => "x" * 16_000) + "\n"
+    File.open(path, "ab") { |file| 263.times { file.write(line) } }
+    report_path = File.join(@first[:run], "handoff.json")
+    report = JSON.parse(File.binread(report_path))
+    recorded = report.fetch("artifacts").find { |entry| entry["path"] == path }
+    recorded.merge!("bytes" => File.size(path), "sha256" => Digest::SHA256.file(path).hexdigest)
+    write_json(report_path, report)
+    store = AgentCodingTool::RunEvidenceStore.new(@data)
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager")
+    end
+    config = store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager", shared: true)
+    reader = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym))
+    manifest = reader.call(@first[:identity].merge("operation" => "manifest", "revision" => nil), caller: "fixture-manager")
+    manifest["handle"] = "direct-reader"
+    assert_equal recorded["sha256"], manifest.dig("artifacts", "transcript", "sha256")
+    assert_equal "complete", manifest.dig("artifacts", "final", "status")
+    final_request = read_request(manifest).reject { |key, _| key == "handle" }
+    assert_equal @first[:contents]["final"].byteslice(0, 16_384), reader.call(final_request, caller: "fixture-manager")["data"].unpack1("m0")
+    digest, offset, response = Digest::SHA256.new, 0, nil
+    loop do
+      # The shared session reconstructs a reader for each request; cumulative
+      # authorization/accounting remains owned by the admission ledger.
+      request = read_request(manifest, "transcript", offset: offset).reject { |key, _| key == "handle" }
+      response = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(request, caller: "fixture-manager")
+      chunk = response.fetch("data").unpack1("m0")
+      assert_operator chunk.bytesize, :<=, AgentCodingTool::RunEvidenceReader::MAX_CHUNK
+      assert_equal Digest::SHA256.hexdigest(chunk), response["chunk_sha256"]
+      digest.update(chunk)
+      offset += chunk.bytesize
+      break unless response["next_offset"]
+    end
+    assert_equal recorded["bytes"], offset
+    assert_equal recorded["sha256"], digest.hexdigest
+    assert_equal "complete", response["status"]
+    File.open(path, "r+b") { |file| file.seek(-2, IO::SEEK_END); file.write("y") }
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      reader.call(read_request(manifest, "transcript").reject { |key, _| key == "handle" }, caller: "fixture-manager")
+    end
+    File.open(path, "r+b") { |file| file.seek(-2, IO::SEEK_END); file.write("}") }
+    assert_equal recorded["sha256"], Digest::SHA256.file(path).hexdigest
+    outside = File.join(@temporary, "foreign-transcript")
+    File.write(outside, "private foreign source")
+    File.rename(path, "#{path}.saved")
+    begin
+      %w[symlink fifo].each do |kind|
+        kind == "symlink" ? File.symlink(outside, path) : File.mkfifo(path, 0o600)
+        assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+          reader.call(read_request(manifest, "transcript").reject { |key, _| key == "handle" }, caller: "fixture-manager")
+        end
+        File.unlink(path)
+      end
+    ensure
+      File.unlink(path) if File.exist?(path) || File.symlink?(path)
+      File.rename("#{path}.saved", path)
+    end
+    report["status"] = "running"
+    write_json(report_path, report)
+    pending_config = store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager", shared: true)
+    pending_reader = AgentCodingTool::RunEvidenceReader.new(**pending_config.transform_keys(&:to_sym))
+    pending_manifest = pending_reader.call(@first[:identity].merge("operation" => "manifest", "revision" => nil), caller: "fixture-manager").merge("handle" => "direct-reader")
+    assert_equal "pending", pending_reader.call(read_request(pending_manifest, "transcript").reject { |key, _| key == "handle" }, caller: "fixture-manager")["status"]
+    File.open(path, "ab") { |file| file.write(line) }
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      pending_reader.call(read_request(pending_manifest, "transcript").reject { |key, _| key == "handle" }, caller: "fixture-manager")
+    end
+    report["status"] = "exited"
+    write_json(report_path, report)
+    foreign = write_run(2, checkpoint: false)
+    report["jsonl_path"] = File.join(foreign[:run], "stdout.jsonl")
+    write_json(report_path, report)
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager", shared: true)
+    end
+    report["jsonl_path"] = path
+    write_json(report_path, report)
+    File.open(path, "wb") { |file| file.truncate(AgentCodingTool::RunEvidenceReader::MAX_TRANSCRIPT + 1) }
+    unavailable = store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager", shared: true)
+    assert_equal "missing", unavailable.dig("approvals", "transcript", "status")
+    assert_equal "transcript.scan_limit", unavailable.dig("approvals", "transcript", "reason")
+    assert_equal "complete", unavailable.dig("approvals", "final", "status")
+    File.open(path, "wb") do |file|
+      file.write(@first[:contents]["transcript"])
+      file.write('{' + 'x' * AgentCodingTool::RunEvidenceReader::MAX_FILE + "\n")
+    end
+    unavailable = store.select(@first[:identity], artifacts: %w[final transcript], manager: "fixture-manager", shared: true)
+    assert_equal "transcript.record_limit", unavailable.dig("approvals", "transcript", "reason")
   end
 
   # Proves full modern dispatch, all hints/context and exact binary/empty chunks.
@@ -509,6 +607,91 @@ class RunEvidenceTest < Minitest::Test
     refute_includes error.message, "private-response"
   end
 
+  # A forced gate's durable command receipt remains readable when final receipt
+  # persistence fails. Real scoped dispatch keeps post-check uncertainty and old
+  # selections, rejects phase tampering, and leaves legacy grants unchanged.
+  def test_shared_command_receipt_survives_missing_final_without_claiming_acceptance
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE", "title" => "Fixture"))
+    path = File.join(@temporary, "command-sharing")
+    grant = @grant.merge("schema" => "agent-coding-tool-task-sharing/v2", "session_path" => path, "tasks" => [])
+    AgentCodingTool::EvidenceSession.start(path, write_json(File.join(@temporary, "command-grant.json"), grant))
+    @session = AgentCodingTool::EvidenceSession.new(path)
+    @session.sharing_ready
+    @session.share_task("FIXTURE", seconds: 60)
+    @adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
+    directory = File.join("#{@data}-runs", "checkpoints", "FIXTURE", "1".rjust(32, "0"))
+    final_path = File.join(directory, "gate-0001.finished.json")
+    receipt = JSON.parse(File.binread(final_path))
+    File.unlink(final_path)
+    receipt.merge!("receipt_phase" => "command_finished", "post_check" => "not_checked", "candidate_validation" => "unknown")
+    bytes = "diagnostic\x00\xff".b
+    output_path = File.join(directory, "gate-0001.stdout")
+    File.binwrite(output_path, bytes)
+    receipt["output"] = { "status" => "complete", "streams" => { "stdout" => {
+      "file" => File.basename(output_path), "status" => "complete", "bytes" => bytes.bytesize, "sha256" => Digest::SHA256.hexdigest(bytes) } } }
+    write_json(File.join(directory, "gate-0001.started.json"), receipt.merge("receipt_phase" => "started"))
+    command_path = write_json(File.join(directory, "gate-0001.command.json"), receipt)
+    manifest = select
+    command_name = "validation:gate-0001.command.json"
+    assert_equal [command_name], manifest.fetch("artifacts").keys.grep(/\Avalidation:/)
+    retained = JSON.parse(tool(read_request(manifest, command_name))["data"].unpack1("m0"))
+    assert_equal "not_checked", retained["post_check"]
+    assert_equal "unknown", retained["candidate_validation"]
+    assert_equal 1, retained.dig("command_outcome", "exit_code")
+    assert_equal bytes, tool(read_request(manifest, "validation_output:gate-0001.stdout"))["data"].unpack1("m0")
+    legacy = AgentCodingTool::RunEvidenceStore.new(@data).select(@first[:identity], artifacts: %w[validation], manager: "fixture-manager")
+    assert_empty legacy.fetch("approvals").keys.grep(/\.command\.json\z/)
+    write_json(final_path, receipt.merge("receipt_phase" => "finished", "post_check" => "verified", "candidate_validation" => "failed"))
+    tool({ "operation" => "refresh", "task_id" => "FIXTURE" })
+    refreshed = select
+    assert_equal ["validation:gate-0001.finished.json"], refreshed.fetch("artifacts").keys.grep(/\Avalidation:/)
+    assert_equal "unknown", JSON.parse(tool(read_request(manifest, command_name))["data"].unpack1("m0"))["candidate_validation"]
+    File.unlink(final_path)
+    write_json(command_path, receipt.merge("receipt_phase" => "finished"))
+    assert @adapter.dispatch(rpc("tools/call", @first[:identity].merge("operation" => "select"))).dig("result", "isError")
+  end
+
+  # Version-two selection/manifest pages remain immutable across a newer run.
+  # Pending artifacts and per-invocation receipts use the real store and reader;
+  # only the worker/checkpoint producer is a declared deterministic fixture.
+  def test_shared_discovery_refresh_pagination_and_exact_invocation_binding
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE", "title" => "Fixture"))
+    path = File.join(@temporary, "task-sharing")
+    grant = @grant.merge("schema" => "agent-coding-tool-task-sharing/v2", "session_path" => path, "tasks" => [])
+    AgentCodingTool::EvidenceSession.start(path, write_json(File.join(@temporary, "sharing-grant.json"), grant))
+    @session = AgentCodingTool::EvidenceSession.new(path)
+    @session.sharing_ready
+    @session.share_task("FIXTURE", seconds: 60)
+    @adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
+    directory = File.join("#{@data}-runs", "checkpoints", "FIXTURE", "1".rjust(32, "0"))
+    original = JSON.parse(File.binread(File.join(directory, "gate-0001.finished.json")))
+    18.times do |number|
+      token = (number + 2).to_s(16).rjust(4, "0")
+      write_json(File.join(directory, "gate-#{token}.finished.json"), original.merge("invocation_id" => token))
+    end
+    assert_equal ["FIXTURE"], tool({ "operation" => "discover" }).fetch("tasks").map { |task| task["task_id"] }
+    discovered = tool({ "operation" => "discover", "task_id" => "FIXTURE" }).fetch("tasks").first
+    assert_equal @first[:identity], discovered.fetch("runs").first.slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
+    manifest = select
+    assert_equal 16, manifest.fetch("artifacts").length
+    page = tool(@first[:identity].merge("operation" => "manifest", "handle" => manifest["handle"],
+      "revision" => manifest["revision"], "offset" => manifest.fetch("next_offset")))
+    assert_nil page["next_offset"]
+    assert_equal manifest["artifact_total"], manifest["artifacts"].length + page["artifacts"].length
+    second = write_run(2, status: "running")
+    refreshed = tool({ "operation" => "refresh", "task_id" => "FIXTURE" }).fetch("tasks").first
+    assert_equal [1, 2], refreshed.fetch("runs").map { |run| run["attempt"] }
+    pending = select(second)
+    assert_equal "pending", pending.dig("artifacts", "final", "status")
+    assert_equal "codex-1", tool(read_request(manifest)).dig("binding", "session_id")
+    receipt_path = File.join(directory, "gate-0001.finished.json")
+    write_json(receipt_path, original.merge("invocation_id" => "foreign-invocation"))
+    refused = @adapter.dispatch(rpc("tools/call", @first[:identity].merge("operation" => "select")))
+    assert refused.dig("result", "isError")
+  end
+
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
@@ -716,7 +899,8 @@ class RunEvidenceTest < Minitest::Test
     grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), @grant)
     arguments = ["evidence", "open",
       "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
-    environment = { "OPENAI_TUNNEL_KEY" => nil, "CONTROL_PLANE_API_KEY" => nil, "OTHER_SECRET" => nil }
+    environment = { "OPENAI_TUNNEL_KEY" => nil, "CONTROL_PLANE_API_KEY" => nil, "OTHER_SECRET" => nil,
+      "ACT_FIXTURE_TUNNEL_CLIENT" => client }
     evidence_process(*arguments, mode: controller_loss ? "controller_loss" : "plain",
       environment: environment, cwd: @temporary) do |input, output, error, waiter|
       begin
@@ -932,6 +1116,243 @@ class RunEvidenceTest < Minitest::Test
         assert_equal "not_attested", result["retrieval"]
         assert_equal "stopped", result["admission_stop"]
         assert_equal 0, cli("status", "--session", path)["decoded_bytes"]
+      end
+    end
+  end
+
+  # Uses fresh public processes, real checkpoint preservation/capture and
+  # the actual reader/adapter. Only the worker records and hosted client are
+  # external fakes; Git uses the shared memory contract. Independent file hashes
+  # prove failed and passing diagnostics. Host acceptance still uses native Git.
+  def test_native_share_continuous_public_journey
+    FileUtils.remove_entry(File.join("#{@data}-runs", "checkpoints", "FIXTURE"))
+    source = File.join(@temporary, "source")
+    remote = File.join(@temporary, "remote.git")
+    @sharing_world = MemoryGit::PatchWorld.new(root: @temporary)
+    checkout, = memory_repository(@sharing_world, path: source, remote: remote)
+    base = checkout.head
+    snapshot = { "source" => { "path" => source, "remote" => "origin", "remote_url" => remote,
+      "branch" => "main", "pushed_sha" => base } }
+    FileUtils.mkdir_p(File.join(@data, "tasks"), mode: 0o700)
+    FileUtils.mkdir_p(File.join(@data, "state"), mode: 0o700)
+    task = { "id" => "FIXTURE", "title" => "Share fixture", "repositories" => { "source" => { "access" => "write" } },
+      "goal" => "Read preserved failed and passing bytes", "constraints" => ["fixture only"], "acceptance" => ["exact bytes"] }
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump(task))
+    worktrees = File.join(@temporary, "worktrees")
+    File.write(File.join(@data, "config.yml"), YAML.dump("worktree_root" => worktrees, "secret_setting" => "OUTSIDE_CONFIG_SENTINEL"))
+    File.write(File.join(@data, ".env"), "OUTSIDE_ENV_SENTINEL")
+    report_path = File.join(@first[:run], "handoff.json")
+    report = JSON.parse(File.binread(report_path))
+    ownership = File.join(@first[:run], "worktrees.json")
+    inventory = MemoryGit::Session.with(@sharing_world) do
+      AgentCodingTool::WorktreeManager.new(root: worktrees, record_path: ownership).create(
+        task_id: "FIXTURE", attempt: 1, task: task, snapshot: snapshot)
+    end
+    @sharing_broker = MemoryGit::Broker.new(world: @sharing_world, directory: @temporary, case_id: "share-journey")
+    workspace = inventory.fetch("entries").first.fetch("path")
+    prepared_at = "2026-01-01T00:00:00Z"
+    AgentCodingTool::StateStore.new(File.join(@data, "state")).write("FIXTURE",
+      "id" => "FIXTURE", "prepared_at" => prepared_at, "started_at" => prepared_at, "snapshot" => snapshot)
+    exports = File.join(@temporary, "exports")
+    Dir.mkdir(exports, 0o700)
+    stat = File.stat(exports)
+    report.merge!("workspace" => workspace, "prepared_at" => prepared_at, "worktrees_path" => ownership,
+      "preparation" => snapshot, "writable_authority" => snapshot.fetch("source").slice("remote_url", "branch", "pushed_sha"),
+      "fixture" => { "path" => exports, "device" => stat.dev, "inode" => stat.ino, "uid" => stat.uid })
+    write_json(report_path, report)
+    File.write(File.join(workspace, "file.txt"), "candidate\n")
+    # Keep checkpoint scratch indexes and objects inside this case's memory world.
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
+    run_cli = lambda do |*arguments, success: true|
+      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
+        environment: environment, endpoint: @sharing_broker.endpoint, seconds: 15)
+      assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
+      [output, error]
+    end
+    artifact = File.join(exports, "FIXTURE.patch")
+    focused = File.join(exports, "focused.json")
+    write_json(focused, "schema" => "fixture-worker-claims/v1", "task_id" => "FIXTURE", "checks" => [{ "exit_code" => 0 }])
+    export, = run_cli.call("checkpoint", "export", "FIXTURE", "--workspace", workspace, "--base", base,
+      "--artifact", artifact, "--repository", "source", "--focused", focused)
+    package = JSON.parse(export).fetch("package")
+    register = ["evidence", "register", "--task", "FIXTURE", "--attempt", "1", "--invocation", @first[:identity]["invocation_id"],
+      "--codex-session", @first[:identity]["session_id"]]
+    original_package = JSON.parse(File.binread(package.fetch("path")))
+    { "task_id" => "OTHER", "base_sha" => "b" * 40, "workspace" => "/foreign" }.each do |field, value|
+      bad = write_json(File.join(exports, "bad.export.json"), original_package.merge(field => value))
+      run_cli.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest, success: false)
+    end
+    run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
+    outside = File.join(@temporary, "outside-task")
+    File.write(outside, "outside-task-secret-sentinel")
+    %w[symlink fifo].each do |kind|
+      File.rename(artifact, "#{artifact}.saved")
+      begin
+        kind == "symlink" ? File.symlink(outside, artifact) : File.mkfifo(artifact, 0o600)
+        run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"), success: false)
+      ensure
+        File.unlink(artifact)
+        File.rename("#{artifact}.saved", artifact)
+      end
+    end
+    assert_empty Dir.children(@first[:run]).grep(/\Aregistration-/)
+    run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"))
+    record, = run_cli.call("checkpoint", "record", "FIXTURE", "--workspace", workspace, "--artifact", artifact)
+    record = JSON.parse(record)
+    client = tunnel_fixture
+    run_cli.call("share", "setup", "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime,
+      "--account", "fixture-account", "--workspace", "fixture-workspace", "--endpoint", "tunnel_fixture/main")
+    # Use the same reviewed external client and real socket/adapter boundary as
+    # existing tunnel tests; Git authority is shared with each fresh CLI child.
+    original_hashes = nil
+    2.times do |iteration|
+      evidence_process("share", "tunnel", "--min", "30",
+        environment: environment.merge("ACT_FIXTURE_TUNNEL_CLIENT" => client)) do |input, output, error, waiter|
+        begin
+          assert IO.select([output], [], [], 5), "tunnel startup missing"
+          assert_equal [], JSON.parse(output.gets)["tasks"]
+          assert IO.select([output], [], [], 5), "tunnel readiness missing"
+          assert_equal "ready", JSON.parse(output.gets)["status"]
+          path = JSON.parse(File.binread("#{@data}-sharing/active.json")).fetch("session")
+          wire = Dir.chdir(path) { UNIXSocket.new("wire") }
+          responses = wire
+          requests_sent = 0
+          exchange = lambda do |arguments, success: true|
+            requests_sent += 1
+            wire.write(JSON.generate(rpc("tools/call", arguments)) + "\n")
+            wire.flush
+            assert IO.select([responses], [], [], 5), "tool response missing"
+            frame = responses.gets
+            assert frame, File.binread(File.join(path, "adapter-diagnostics.jsonl"))
+            response = JSON.parse(frame).fetch("result")
+            assert_equal !success, response.fetch("isError"), response.inspect
+            success ? JSON.parse(response.dig("content", 0, "text")) : response
+          end
+          assert_empty exchange.call({ "operation" => "discover" }).fetch("tasks")
+          exchange.call(@first[:identity].merge("operation" => "select"), success: false)
+          shared, = run_cli.call("share", "FIXTURE")
+          assert_equal "shared", JSON.parse(shared)["status"]
+          discovered = exchange.call({ "operation" => "discover", "task_id" => "FIXTURE" }).fetch("tasks").first
+          refute_includes JSON.generate(discovered), "OUTSIDE_CONFIG_SENTINEL"
+          refute_includes JSON.generate(discovered), "OUTSIDE_ENV_SENTINEL"
+          assert_equal @first[:identity], discovered.fetch("runs").first.slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
+          if iteration.zero?
+            failed_selection = nil
+            [7, 0].each do |exit_code|
+              if exit_code.zero?
+                File.write(File.join(workspace, "file.txt"), "candidate B\n")
+                replacement, = run_cli.call("checkpoint", "record", "FIXTURE", "--workspace", workspace)
+                record = JSON.parse(replacement)
+              end
+              observation = File.join(File.dirname(record.fetch("path")), "passing.observation.json")
+              arguments = ["checkpoint", "gate", "FIXTURE", "--workspace", workspace]
+              arguments += ["--observations", observation] if exit_code.zero?
+              arguments += ["--", RbConfig.ruby,
+                File.join(ChildProcesses::FIXTURES, "checkpoint_validator.rb"), "share", exit_code.to_s]
+              arguments << observation if exit_code.zero?
+              run_cli.call(*arguments, success: exit_code.zero?)
+              failed_selection = exchange.call(@first[:identity].merge("operation" => "select")) unless exit_code.zero?
+            end
+            # Candidate B cannot roll an already selected failed A forward.
+            old_candidate = exchange.call(read_request(failed_selection, "candidate"))
+            assert_equal Digest::SHA256.file(artifact).hexdigest, old_candidate["sha256"]
+            old_receipt = failed_selection.fetch("artifacts").keys.find { |name| name.start_with?("validation:") }
+            assert_equal 7, JSON.parse(exchange.call(read_request(failed_selection, old_receipt))["data"].unpack1("m0")).dig("command_outcome", "exit_code")
+          end
+          exchange.call({ "operation" => "refresh", "task_id" => "FIXTURE" })
+          manifest = exchange.call(discovered.fetch("runs").first.slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES).merge("operation" => "select"))
+          page = manifest
+          while page["next_offset"]
+            page = exchange.call(read_request(manifest).reject { |key, _| %w[artifact offset length].include?(key) }.merge(
+              "operation" => "manifest", "offset" => page["next_offset"]))
+            manifest.fetch("artifacts").merge!(page.fetch("artifacts"))
+          end
+          historical_candidates = manifest.fetch("artifacts").select { |name, _| name.start_with?("candidate:") }
+          assert_equal [Digest::SHA256.file(artifact).hexdigest, record.fetch("sha256")].sort,
+            historical_candidates.values.map { |spec| spec.fetch("sha256") }.sort
+          exchange.call(read_request(manifest).reject { |key, _| %w[artifact offset length].include?(key) }.merge("operation" => "manifest"))
+          hashes = {}
+          manifest.fetch("artifacts").each do |name, spec|
+            next if spec["status"] == "missing"
+            bytes, offset = "".b, 0
+            loop do
+              evidence = exchange.call(read_request(manifest, name, offset: offset))
+              chunk = evidence.fetch("data").unpack1("m0")
+              assert_equal Digest::SHA256.hexdigest(chunk), evidence.fetch("chunk_sha256")
+              bytes << chunk
+              break unless evidence["next_offset"]
+              offset = evidence.fetch("next_offset")
+            end
+            assert_equal File.binread(spec.fetch("path")), bytes
+            refute_includes bytes, "OUTSIDE_CONFIG_SENTINEL"
+            refute_includes bytes, "OUTSIDE_ENV_SENTINEL"
+            refute_includes bytes, "outside-task-secret-sentinel"
+            hashes[name] = Digest::SHA256.hexdigest(bytes)
+            assert_equal spec.fetch("sha256"), hashes[name]
+          end
+          assert_equal 4, hashes.keys.grep(/\Avalidation_output:/).length
+          assert_equal 3, hashes.keys.grep(/\Aworker:/).length
+          assert_equal 1, hashes.keys.grep(/\Avalidation_result:/).length
+          assert_equal record.fetch("sha256"), hashes["candidate"]
+          assert_equal original_hashes, hashes if original_hashes
+          original_hashes = hashes
+          receipts = manifest["artifacts"].select { |name, _| name.start_with?("validation:") }.values.map { |spec| JSON.parse(File.binread(spec["path"])) }
+          assert_equal [0, 7], receipts.map { |receipt| receipt.dig("command_outcome", "exit_code") }.sort
+          assert_equal 1, receipts.find { |receipt| receipt.dig("command_outcome", "exit_code") == 0 }.dig("observed", "summary", "tests")
+          if iteration.zero?
+            failed_name, failed_spec = manifest.fetch("artifacts").find do |name, spec|
+              name.start_with?("validation:") && JSON.parse(File.binread(spec["path"])).dig("command_outcome", "exit_code") == 7
+            end
+            original_receipt = File.binread(failed_spec.fetch("path"))
+            corrupted = JSON.parse(original_receipt)
+            corrupted.fetch("candidate")["sha256"] = record.fetch("sha256")
+            write_json(failed_spec.fetch("path"), corrupted)
+            exchange.call(@first[:identity].merge("operation" => "select"), success: false)
+            exchange.call(read_request(manifest, failed_name), success: false)
+            File.binwrite(failed_spec.fetch("path"), original_receipt)
+            corrupted = JSON.parse(original_receipt)
+            corrupted.fetch("candidate")["record_file"] = record.fetch("record_file")
+            write_json(failed_spec.fetch("path"), corrupted)
+            exchange.call(@first[:identity].merge("operation" => "select"), success: false)
+            File.binwrite(failed_spec.fetch("path"), original_receipt)
+            prior = historical_candidates.values.find { |spec| spec["sha256"] == Digest::SHA256.file(artifact).hexdigest }
+            original_patch = File.binread(prior.fetch("path"))
+            File.binwrite(prior.fetch("path"), original_patch + "corrupt")
+            exchange.call(@first[:identity].merge("operation" => "select"), success: false)
+            File.binwrite(prior.fetch("path"), original_patch)
+          end
+          run_cli.call("share", "revoke", "FIXTURE")
+          exchange.call(read_request(manifest), success: false)
+          run_cli.call("share", "FIXTURE")
+          exchange.call(read_request(manifest), success: false) # old generation never revives
+          assert IO.select([output], [], [], 3), "foreground activity missing"
+          line = output.gets
+          assert_match(/\AACT_SHARE /, line)
+          refute_includes line, @temporary
+          refute_includes line, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
+        ensure
+          _stop_output, stop_error, stop_status = ChildProcesses.capture("evidence_cli",
+            arguments: ["plain", "share", "stop"], environment: environment, seconds: 8)
+          wire&.close
+          responses&.close unless responses&.closed?
+          input.close
+          # Drain activity concurrently: a full console pipe must not prevent cleanup.
+          drain = Thread.new { output.read }
+          tunnel_status = Timeout.timeout(5) { waiter.value }
+          remaining_activity = drain.value
+        end
+        assert tunnel_status.success?, error.read
+        assert stop_status.success?, stop_error
+        activity = [line, *remaining_activity.lines]
+        assert_equal requests_sent, activity.length
+        events = activity.map do |event_line|
+          assert_operator event_line.bytesize, :<=, 1024
+          refute_includes event_line, @temporary
+          refute_includes event_line, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
+          JSON.parse(event_line.delete_prefix("ACT_SHARE "))
+        end
+        assert events.any? { |event| event["operation"] == "read" && event["bytes"] > 0 && event["wire_bytes"] > event["bytes"] && event["result"] == "delivered" }
+        assert events.any? { |event| event["operation"] == "read" && event["bytes"] == 0 && event["result"] == "refused" }
       end
     end
   end

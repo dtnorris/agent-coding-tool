@@ -10,6 +10,7 @@ module ChildProcesses
   FIXTURES = File.realpath(File.join(__dir__, "fixtures")).freeze
 
   HASHES = {
+    "process_family" => "ac335450fd2d2acf30f9a3503a41878108c40784b362fbefc9aee5359f3aebec",
     "native_observer" => "42dc07d57751164e7180ccd17bfa7f5991f746828711d719723eba5c7c5c27a7",
     "feedback_worker" => "64b4781273cdf1bf8cb4ff539a62d23f0875f41db5acb9002603609df8d043a8",
     "retry_probe" => "2ac042125d3e8334ec69a79fcd8be39703648edafe529b2609e6f687d6b93fa3",
@@ -18,22 +19,22 @@ module ChildProcesses
     "apply_cli" => "3a04cc7d56e4260165359b77ee14fb6fd7d39b17d147d378ad9a7073a1ced853",
     "readiness_cli" => "0e103eb6aeff4937a2409fd48761805e14d087f51d44a87e534bd28a4fbfcf83",
     "checkpoint_cli" => "2619e666754844fae65605c1083f9f9af946026203380ce742b5c8c562327999",
-    "checkpoint_validator" => "1edde26a02c4971b89ba67e015bb0416fb5c99512f8fedbdd12121f5458490e4",
+    "checkpoint_validator" => "1eb4c90c65cf160cfd0f6006319f2cbb854cafb2a517ff20bde36e5f8a4d8ac5",
     "icebox_control" => "4de00827a67fc6457c8ea8609f8cf8241e377240a88db13e45da3189477c7c9b",
     "icebox_cli" => "049ccce0d2f471256ddd9c7a41e122f77c80f3dfd0f2aa9078987b560a258310",
     "publication_lease" => "5c424dd35af21d56561b89e8b6956200708d3c781223644eeb63bbb4f35cc862",
     "validation_worker" => "ac5c8f580a7949db8a5400a065e3a39edd94422edbb9dfadd5abd5905362955e",
-    "evidence_cli" => "5547775b775026b6c45271e7a95a63ee0aec50927dc36d79be13b4e79157cc2b",
+    "evidence_cli" => "c1c0eb6d26712c862fe2862c258837b333a6785bb3381f942cfe49f930018e9b",
     "state_reader" => "c79822d71b24b5147c081f6ac260c143e1de1d11adf55947540be7456ee31a42",
     "external_race" => "29d52f5928ee7cf892557524e177fbceb5ca2af7649642ca8d22c7ff12c78853",
-    "launcher_cli" => "b1438e99ece26b9036010a0746a65ea8240860b9d6bbc0a5396e5cd5745bba0a",
+    "launcher_cli" => "0652e4128bfaaafee14965bb9281042693ee73dcc943a9c305041546642a62f1",
     "planning_consumer" => "10952eb6feabb2aa3f106494e494f782e4049964b3ff3e13d145b66e56fdb851",
 
     "status" => "2b3b1ffc56c1774ddaf4c11329d6da73984e588cf95ed74049d97a13bc0beeee",
     "manual_worker" => "405dc429f07e250755eb0a4406d7e5afdf47338412ec7e3e517a467a3f89f2e7",
     "cold_cli" => "c0fcdc00673b283c718fd8c93aa3b27b92590afa76eecf26009d98af0b516a69",
     "process_probe" => "7cb7536f1c8e40e19a7e0ba49310df26098826a47860b1bf94de7ef74109bb15",
-    "launcher_worker" => "431b98fe25a165b40ec972b906b950884b2291c5d2966a0407cdb797d4a18947"
+    "launcher_worker" => "342bbe65a6f71e9b612c527a762380a5a9e9b01048bf9ee1eb6f2a6ea0732070"
   }.freeze
 
   # Builds a permit for a named repository-owned script and exact invocation.
@@ -64,6 +65,20 @@ module ChildProcesses
     approval = permit(name, arguments: arguments, environment: environment, endpoint: endpoint, options: { pgroup: true })
     NoGitExecution.with_permit(approval) do
       GitContract::Native.new(seconds: seconds).capture3(approval.environment, *approval.argv, stdin_data: input)
+    end
+  end
+
+  # Opens genuine Open3 pipes under a single-use permit, releasing the permit
+  # before user code can launch another reviewed child. Streams and waiter are
+  # closed/joined exactly as Open3's block API; native errors propagate.
+  def self.popen(name, arguments: [], environment: {}, endpoint: nil)
+    approval = permit(name, arguments: arguments, environment: environment, endpoint: endpoint)
+    streams = NoGitExecution.with_permit(approval) { Open3.popen3(approval.environment, *approval.argv) }
+    begin
+      yield(*streams)
+    ensure
+      streams.take(3).each { |stream| stream.close unless stream.closed? }
+      streams.last.join
     end
   end
 end

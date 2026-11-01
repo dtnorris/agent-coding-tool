@@ -32,9 +32,9 @@ module AgentCodingTool
       properties = (RunEvidenceReader::IDENTITIES + %w[revision handle artifact]).to_h { |name| [name, { "type" => "string" }] }
       properties["attempt"] = { "type" => "integer", "minimum" => 1 }
       properties["revision"] = { "type" => ["string", "null"] }
-      properties["operation"] = { "enum" => %w[select manifest read] }
+      properties["operation"] = { "enum" => %w[discover refresh select manifest read] }
       %w[offset length].each { |name| properties[name] = { "type" => "integer" } }
-      { "type" => "object", "properties" => properties, "required" => RunEvidenceReader::IDENTITIES + ["operation"], "additionalProperties" => false }
+      { "type" => "object", "properties" => properties, "required" => ["operation"], "additionalProperties" => false }
     end
 
     # Builds a fixed RPC refusal with a previously validated ID; no input values
@@ -83,6 +83,7 @@ module AgentCodingTool
     # Normalizes transport fields before invoking closed reader arguments.
     # Returns an RPC result/refusal; notifications never invoke the reader.
     def dispatch(request)
+      @tool_request, @evidence, @release_request, @tool_call = nil, nil, nil, false
       @stage = "envelope"
       id = nil
       raise ArgumentError unless request.is_a?(Hash) && request["jsonrpc"] == "2.0" &&
@@ -97,6 +98,8 @@ module AgentCodingTool
       @stage = "envelope.params"
       raise ArgumentError unless params.is_a?(Hash)
       method = request["method"]
+      @tool_call = method == "tools/call"
+      @tool_request = params["arguments"] if @tool_call
       modern = params.key?("_meta") || method == "server/discover"
       if modern
         version = metadata(params.fetch("_meta"), tool_call: method == "tools/call")
@@ -122,10 +125,14 @@ module AgentCodingTool
         raise ArgumentError unless params.empty?
         {}
       when "tools/call"
+        @tool_call = true
+        @tool_request = params["arguments"]
         raise ArgumentError unless params.keys.sort == %w[arguments name] && params["name"] == TOOL
         @stage = "reader.dispatch"
         begin
           evidence = @session.call(params["arguments"], wait: LOCK_WAIT)
+          @release_request = evidence.delete("_release") || (evidence["handle"] && evidence.fetch("binding").slice(*RunEvidenceReader::IDENTITIES).merge("handle" => evidence["handle"]))
+          @evidence = evidence
           { "content" => [{ "type" => "text", "text" => JSON.generate(evidence) }], "isError" => false }
         rescue RunEvidenceReader::Refused
           @stage = "reader.refused"
@@ -203,6 +210,7 @@ module AgentCodingTool
     # Emits exact UTF-8 JSON with lossless base64 evidence. Cumulative incoming
     # plus outgoing wire and decoded totals are durably reserved before output.
     def emit(output, response)
+      emitted_wire = 0
       bytes = JSON.generate(response) + "\n"
       raise RunEvidenceReader::Refused, "envelope.frame_size" if bytes.bytesize > FRAME
       decoded = 0
@@ -211,11 +219,19 @@ module AgentCodingTool
         decoded = evidence.fetch("data", "").unpack1("m0").bytesize
       end
       @session.charge(wire: bytes.bytesize, decoded: decoded, wait: LOCK_WAIT)
+      delivered = false
       until bytes.empty?
         ready(output, writing: true)
-        count = output.write_nonblock(bytes, exception: false)
+        count = @session.release(@release_request) { output.write_nonblock(bytes, exception: false) }
         next if count == :wait_writable
+        emitted_wire += count
         bytes = bytes.byteslice(count..)
+      end
+      delivered = true
+    ensure
+      if @tool_call
+        @session.activity(@tool_request, @evidence, released: delivered ? decoded || 0 : 0,
+          wire: emitted_wire, result: delivered ? (@evidence ? "delivered" : "refused") : "delivery_failed")
       end
     end
 
@@ -227,6 +243,7 @@ module AgentCodingTool
       @input = input
       @session.serve_owner do
         loop do
+          @tool_call, @tool_request, @evidence, @release_request = false, nil, nil, nil
           @session.admit(wait: LOCK_WAIT)
           bytes = frame(input)
           begin
@@ -239,8 +256,10 @@ module AgentCodingTool
           emit(output, response) if response
         end
       end
-    rescue EOFError, Errno::EPIPE, RunEvidenceReader::Refused
-      @stage = "lifecycle.closed"
+    rescue EOFError, Errno::EPIPE, RunEvidenceReader::Refused => error
+      @err.puts "ACT_SHARE activity_or_admission_closed" if @tool_request
+      reasons = %w[session.state session.busy lifecycle.closed lifecycle.stopped lifecycle.expired share.scope share.activity_failed envelope.frame_size lifecycle.budget]
+      @stage = reasons.include?(error.message) ? "lifecycle.#{error.message}" : "lifecycle.closed"
       observe
       nil
     end

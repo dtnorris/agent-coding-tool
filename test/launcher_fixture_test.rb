@@ -28,6 +28,8 @@ class LauncherFixtureTest < Minitest::Test
   # ordinary create/read/write/delete works and evidence stays outside fixtures.
   def test_scoped_fixture_environment_permissions_and_retention
     fixture(process: true) do
+      assert_kernel_process_observer
+      assert_kernel_process_descendant
       worker = launcher(real_sandbox_probe: true)
       host_tmpdir = worker.send(:worker_env)["TMPDIR"]
       assert_equal 0, worker.launch("T")
@@ -61,6 +63,103 @@ class LauncherFixtureTest < Minitest::Test
     end
   end
 
+  # Proves the cold launch topology without a socket: a registered Ruby host
+  # owns a live permitted child. A nonleader group is observed truthfully and
+  # removing the host registration refuses access to that same live PID.
+  def assert_kernel_process_descendant
+    ChildProcesses.popen('process_family', arguments: [File.join(@root, 'observer-descendant')]) do |input, output, error, waiter|
+      begin
+        assert IO.select([output], nil, nil, 2), 'family readiness timed out'
+        child = Integer(output.gets)
+        host = register_fixture_process(waiter.pid)
+        query = ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p', child.to_s]
+        observed, diagnostic, status = unit_capture(*query)
+        assert status.success?, diagnostic
+        assert_equal [host, Process.getpgid(child)], observed.split.map(&:to_i)
+        refute_equal child, Process.getpgid(child)
+        saved = @fixture_processes.delete(host)
+        assert_raises(GitContract::UnexpectedObservation) { unit_capture(*query) }
+        @fixture_processes[host] = saved
+        assert unit_capture(*query).last.success?
+      ensure
+        input.write('R') unless input.closed?
+        input.close unless input.closed?
+      end
+      assert waiter.value.success?, error.read
+    end
+  end
+
+  # Qualifies the exact ps adapter using live permitted children and independent
+  # kernel identities. Production still checks liveness, group and parent; no
+  # report supplies observed values. Every child has a finite lease and is reaped.
+  def assert_kernel_process_observer
+    [true, false].each do |own_group|
+      approval = ChildProcesses.permit('manual_worker',
+        arguments: [File.join(@root, 'observer-worker'), '5'], options: { pgroup: own_group })
+      streams = NoGitExecution.with_permit(approval) do
+        Open3.popen3(approval.environment, *approval.argv, **approval.options)
+      end
+      input, output, error, waiter = streams
+      begin
+        assert IO.select([output], nil, nil, 2), 'observer child readiness timed out'
+        assert_equal "ready\n", output.gets
+        pid = register_fixture_process(waiter.pid)
+        identity = FeedbackRuntime.identity(pid)
+        query = ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p', pid.to_s]
+        observed, diagnostic, status = unit_capture(*query)
+        assert status.success?, diagnostic
+        assert_equal [identity.fetch('parent'), identity.fetch('group')], observed.split.map(&:to_i)
+        assert_equal Process.pid, identity.fetch('parent')
+        assert_equal Process.getpgid(pid), identity.fetch('group')
+        report = { 'task_id' => 'T', 'child_pid' => pid, 'host_pid' => Process.pid,
+          'child_started_at' => Time.now.utc.iso8601, 'sandbox_probe' => {},
+          'heartbeat_child_pid' => pid, 'heartbeat_at' => Time.now.utc.iso8601(6) }
+        worker = launcher
+        if own_group
+          worker.send(:verify_running_process!, report)
+          refusal = assert_raises(AgentCodingTool::InvalidState) do
+            worker.send(:verify_running_process!, report.merge('host_pid' => Process.ppid))
+          end
+          assert_match(/parent\/group changed/, refusal.message)
+          [query + ['extra'], query.take(6) + ["0#{pid}"], query.take(6) + ['0'],
+           ['ps', '-o', 'pgid=', '-o', 'ppid=', '-p', pid.to_s]].each do |changed|
+            assert_raises(GitContract::UnexpectedObservation) { unit_capture(*changed) }
+          end
+          [{ chdir: @root }, { stdin_data: '' }, { pgroup: true }].each do |options|
+            assert_raises(GitContract::UnexpectedObservation) { unit_capture(*query, **options) }
+          end
+          assert_raises(GitContract::UnexpectedObservation) { unit_capture(*query.take(6), Process.pid.to_s) }
+          FeedbackRuntime.stub(:identity, nil) do
+            unavailable, _message, missing = unit_capture(*query)
+            assert_empty unavailable
+            refute missing.success?
+            assert_raises(AgentCodingTool::InvalidState) { worker.send(:verify_running_process!, report) }
+          end
+          # A changed birth cannot reuse an otherwise live registered PID.
+          @fixture_processes[pid] = identity.merge('birth' => [0, 0])
+          assert_raises(GitContract::UnexpectedObservation) { unit_capture(*query) }
+          @fixture_processes[pid] = identity
+        else
+          refusal = assert_raises(AgentCodingTool::InvalidState) { worker.send(:verify_running_process!, report) }
+          # The expected group does not exist, so production's earlier group
+          # liveness probe rejects this real mismatch before its getpgid check.
+          assert_match(/liveness is unknown/, refusal.message)
+        end
+        input.write('R')
+        input.close
+        assert waiter.value.success?, error.read
+        unavailable, _message, missing = unit_capture(*query)
+        assert_empty unavailable
+        refute missing.success?
+        refusal = assert_raises(AgentCodingTool::InvalidState) { worker.send(:verify_running_process!, report) }
+        assert_match(/liveness is unknown/, refusal.message)
+      ensure
+        streams.take(3).each { |stream| stream.close unless stream.closed? }
+        waiter.join(6) || raise('observer child exceeded finite lease')
+      end
+    end
+  end
+
   # No symlinked or permissive container is adopted or repaired.
   def test_foreign_container_refuses_without_repair
     %i[symlink dangling_symlink file permissive foreign_owner].each do |kind|
@@ -70,7 +169,10 @@ class LauncherFixtureTest < Minitest::Test
         when :symlink then File.symlink(@ordinary, container)
         when :dangling_symlink then File.symlink(File.join(@root, "absent"), container)
         when :file then File.write(container, "foreign")
-        else Dir.mkdir(container, kind == :permissive ? 0o755 : 0o700)
+        else
+          Dir.mkdir(container, 0o700)
+          # Preserve the intended unsafe fixture even under a private umask.
+          File.chmod(0o755, container) if kind == :permissive
         end
         if kind == :foreign_owner
           real_stat = File.method(:stat)

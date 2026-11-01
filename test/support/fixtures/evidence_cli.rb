@@ -22,6 +22,8 @@ else
   abort 'unknown evidence fixture mode'
 end
 require_relative '../tunnel_processes'
+require_relative '../checkpoint_processes'
+require_relative '../fixture_tunnel'
 TunnelProcesses.install
-abort 'expected evidence command' unless ARGV.first == 'evidence'
+abort 'unexpected fixture command' unless %w[evidence checkpoint share].include?(ARGV.first)
 load File.expand_path('../../../bin/agent-coding-tool', __dir__)

@@ -13,6 +13,8 @@ module CheckpointProcesses
   # The real status remains in the invoking thread; exceptions are not rescued.
   module Execution
     def system(*command, **options)
+      streams = options.select { |key, _| %i[out err].include?(key) }
+      options = options.reject { |key, _| streams.key?(key) }
       prefix = [RbConfig.ruby, File.join(ChildProcesses::FIXTURES, 'checkpoint_validator.rb')]
       if options.keys == [:chdir] && command == [File.join(File.dirname(options[:chdir]), 'no-git-missing-executable'), '--missing-executable-probe']
         preloads = {}
@@ -23,11 +25,11 @@ module CheckpointProcesses
         preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest if ENV['ACT_COVERAGE_CONTEXT']
         approval = NoGitExecution::MissingExecutablePermit.new(directory: File.dirname(options[:chdir]),
           options: options, preloads: preloads, operation: :system)
-        return NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options) }
+        return NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options, **streams) }
       end
-      return super unless command.take(2) == prefix
+      return super(*command, **options, **streams) unless command.take(2) == prefix
       approval = ChildProcesses.permit('checkpoint_validator', arguments: command.drop(2), options: options, operation: :system)
-      NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options) }
+      NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options, **streams) }
     end
   end
 end

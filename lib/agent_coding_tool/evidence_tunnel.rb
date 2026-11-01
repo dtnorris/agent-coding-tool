@@ -130,10 +130,16 @@ module AgentCodingTool
     # Writes a fixed bounded operator event, never raw client output or errors.
     # Returns nil; broken diagnostics cannot suppress independent cleanup.
     def observe(stage, reason)
-      @err.puts "ACT_EVIDENCE_TUNNEL #{JSON.generate('stage' => stage, 'reason' => reason)}"
-      @err.flush
+      line = "ACT_EVIDENCE_TUNNEL #{JSON.generate('stage' => stage, 'reason' => reason)}\n"
+      if @err.respond_to?(:write_nonblock)
+        @diagnostic_failed = true unless @err.write_nonblock(line, exception: false) == line.bytesize
+      else
+        @err.write(line)
+        @err.flush
+      end
       nil
     rescue IOError, SystemCallError
+      @diagnostic_failed = true
       nil
     end
 
@@ -181,6 +187,7 @@ module AgentCodingTool
         return "deadline" if startup_deadline && now >= startup_deadline
         begin
           status = @session.status
+          raise Refused, "share.activity_failed" if status["activity_failure"]
           if status.fetch("status") == "active"
             @expires_at = [@expires_at || Float::INFINITY, status.fetch("expires_at")].min
             remaining = [@expires_at - Time.now.to_f, status.fetch("limits").fetch("seconds")].min
@@ -224,6 +231,7 @@ module AgentCodingTool
         was_ready = false
         loop do
           IO.select([watch], nil, nil, 0.1)
+          drain_activity
           status = owner_status(watch, was_ready ? nil : startup_deadline)
           if status != "active"
             stage = was_ready ? "lifecycle" : "readiness"
@@ -238,7 +246,9 @@ module AgentCodingTool
           end
           if available && !was_ready
             was_ready = true
-            @out.puts JSON.generate("status" => "ready", "meaning" => "client readyz; retrieval and hosted acceptance remain separate")
+            @session.sharing_ready
+            @out.puts JSON.generate("status" => "ready", "expires_at" => @expires_at,
+              "meaning" => "client readyz; retrieval and hosted acceptance remain separate")
             @out.flush
             observe("readiness", "ready")
           elsif was_ready && !available
@@ -248,17 +258,20 @@ module AgentCodingTool
             break
           end
         end
-      rescue StandardError
+      rescue StandardError => error
         # Never serialize exceptions: child spawn/HTTP/platform errors can carry
         # argv, environment values or client responses. Preserve the fixed stage.
-        reason = "failed"
+        stage, reason = error.is_a?(Refused) && error.message == "share.activity_failed" ? ["activity", "activity_failed"] : [stage, "failed"]
       ensure
+        drain_activity rescue observe("activity", "delivery_failed")
         observe(stage, reason)
         admission_stop = stop_admission
         cleanup = cleanup_group(pid) if pid
+        observe("cleanup", cleanup)
         receipt = { "stage" => stage, "reason" => reason, "local_cleanup" => cleanup,
           "admission_stop" => admission_stop, "retrieval" => "not_attested",
           "hosted_shutdown" => "not_observed", "saved_settings" => "not_modified" }
+        receipt["diagnostics"] = @diagnostic_failed ? "failed" : "ok"
         temporary = File.join(@path, "tunnel-result.tmp")
         File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
           file.write(JSON.generate(receipt))
@@ -267,12 +280,47 @@ module AgentCodingTool
         end
         File.rename(temporary, File.join(@path, "tunnel-result.json"))
         File.open(@path, File::RDONLY, &:fsync)
-        observe("cleanup", cleanup)
         @endpoint_lock.close
         watch.close
       end
       was_ready && stage == "lifecycle" && admission_stop == "stopped" &&
         %w[owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped].include?(cleanup) ? 0 : 2
+    end
+
+    # Relays only bounded safe activity records from the private session. A
+    # nonblocking foreground write failure closes this tunnel rather than
+    # suppressing observation or trapping independent owned-process cleanup.
+    def drain_activity
+      path = File.join(@path, "activity.jsonl")
+      return unless File.exist?(path)
+      @activity_offset ||= 0
+      File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+        raise Refused, "share.activity_failed" unless file.stat.file? && file.stat.uid == Process.uid && file.stat.size <= RunEvidenceReader::MAX_FILE
+        file.seek(@activity_offset)
+        32.times do
+          line = file.gets(1025)
+          break unless line
+          raise Refused, "share.activity_failed" unless line.bytesize <= 1024 && line.end_with?("\n") && line.start_with?("ACT_SHARE {")
+          event = RunEvidenceStore.parse(line.delete_prefix("ACT_SHARE "))
+          required = %w[at operation bytes wire_bytes result]
+          raise Refused, "share.activity_failed" unless event.is_a?(Hash) && (required - event.keys).empty? &&
+            (event.keys - required - RunEvidenceReader::IDENTITIES - ["artifact"]).empty? &&
+            event["at"].is_a?(String) && event["at"].match?(/\A[0-9TZ:.+-]{1,32}\z/) &&
+            %w[discover refresh select manifest read invalid].include?(event["operation"]) &&
+            %w[delivered refused delivery_failed].include?(event["result"]) &&
+            %w[bytes wire_bytes].all? { |key| event[key].is_a?(Integer) && event[key].between?(0, EvidenceAdapter::FRAME) } &&
+            event.slice(*RunEvidenceReader::IDENTITIES, "artifact").all? { |_key, value| value.is_a?(Integer) || value.is_a?(String) && value.match?(/\A[A-Za-z0-9_-]{1,128}\z/) }
+          if @out.respond_to?(:write_nonblock)
+            raise Refused, "share.activity_failed" unless @out.write_nonblock(line, exception: false) == line.bytesize
+          else
+            @out.write(line)
+            @out.flush
+          end
+          @activity_offset += line.bytesize
+        end
+      end
+    rescue JSON::ParserError, IOError, SystemCallError
+      raise Refused, "share.activity_failed", cause: nil
     end
 
     # Stop itself bounds ledger lock contention to the existing one second.

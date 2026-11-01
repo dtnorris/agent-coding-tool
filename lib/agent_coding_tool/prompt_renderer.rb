@@ -86,6 +86,10 @@ module AgentCodingTool
       lines << "## Operator handoffs"
       lines << ""
       lines << "For a routine patch handoff, give David links to the complete root-relative patch and matching act apply JSON, plus one paste-ready native `act apply PATH_TO_JSON` invocation for his actual shell. Explain the outcome, validation results and remaining owner steps outside the paste box. Let native tools perform their own checks and preserve separate consent for application, validation and commit. Add a wrapper only for a named prerequisite the native command does not cover. If a command refuses or fails, report the reason and stop dependent actions; do not silently switch to manual Git. Keep host-owned checkpoint record, verify and gate steps separate; worker exports and apply manifests do not establish host verification, acceptance or publication authority."
+      lines << "David may open act share tunnel, then act share TASK in another terminal. Managers first use scoped discover/refresh, select the exact run/revision and read available artifacts; state the precise missing acceptance fact when blocked, and do not request log attachments solely for optional detail. Previously uncaptured historical logs remain unavailable."
+      if CheckpointPolicy.required?(task)
+        lines << "Evidence handoff: preserve the candidate/apply/package JSON and bounded focused-check evidence in the launch-recorded fixture. Use the envelope's checkpoint export command with --repository and optional --focused PATH. The launcher retains a valid exported package automatically; the host may also use evidence register with all exact run identities and the package digest. Registration retains worker claims outside the worktree; it is not checkpoint adoption or acceptance. Host validation uses checkpoint gate, which retains bounded stdout/stderr and separate command/capture/candidate outcomes, including failures."
+      end
       lines << ""
       lines << "## Implementation checkpoint"
       lines << ""

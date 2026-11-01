@@ -60,6 +60,9 @@ class PromptRendererTest < Minitest::Test
         assert_includes rendered, "If a command refuses or fails, report the reason and stop dependent actions; do not silently switch to manual Git."
         assert_includes rendered, "Keep host-owned checkpoint record, verify and gate steps separate"
         assert_includes rendered, "worker exports and apply manifests do not establish host verification, acceptance or publication authority."
+        assert_includes rendered, "The launcher retains a valid exported package automatically"
+        assert_includes rendered, "Managers first use scoped discover/refresh"
+        assert_includes rendered, "bounded stdout/stderr and separate command/capture/candidate outcomes"
         assert_equal 1, rendered.scan("- #{task_check}\n").length
       end
       assert_equal 1, prompt.scan(/^## Test performance$/).length

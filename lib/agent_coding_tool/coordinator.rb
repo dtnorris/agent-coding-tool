@@ -38,7 +38,8 @@ module AgentCodingTool
     # Defers an unstarted, effectively READY task under the launch reservation.
     # Returns retained/new state; identical reasons are idempotent. Changed
     # reasons, lifecycle/run evidence or ineligibility raise InvalidState.
-    def icebox(id, reason: nil)
+    def icebox(id, reason: nil, force: false)
+      return force_transition(id, "icebox", reason: reason) if force
       unless reason.nil? || reason.is_a?(String)
         raise InvalidState, "#{id}: icebox reason must be a string"
       end
@@ -68,7 +69,9 @@ module AgentCodingTool
 
     # Removes only Icebox under the launch reservation, returning retained state.
     # An absent designation is a no-op; invalid state/identity/locks raise.
-    def unicebox(id)
+    def unicebox(id, force: false, reason: nil)
+      return force_transition(id, "unicebox", reason: reason) if force
+      raise InvalidState, "--reason requires --force" if reason
       with_reservation_lock(id) do
         state = @state_store.load(id)
         next state unless state.key?("icebox")
@@ -262,7 +265,9 @@ module AgentCodingTool
     # Snapshots a task and writes its prompt/state, clearing only attempt-local
     # overlap/checkpoint pointers. Invalid prerequisites, skill material, pins or
     # changed planning designation raise before any prompt/state writes.
-    def prepare(id, retry_result: false, reservation_lock: nil)
+    def prepare(id, retry_result: false, reservation_lock: nil, force: false, reason: nil)
+      return force_transition(id, "prepare", reason: reason, held: reservation_lock) if force
+      raise InvalidState, "--reason requires --force" if reason
       with_reservation_lock(id, held: reservation_lock) { prepare_locked(id, retry_result: retry_result) }
     end
 
@@ -316,6 +321,7 @@ module AgentCodingTool
       new_state.delete("write_collision_override")
       new_state.delete("write_overlap")
       new_state.delete("checkpoint")
+      new_state.delete("administrative_override")
       @state_store.write(id, new_state)
 
       { "task" => task, "state" => new_state, "prompt" => prompt, "write_collisions" => collisions }
@@ -326,7 +332,12 @@ module AgentCodingTool
     # Manual overlaps are advisory, never verified isolation. Invalid input raises
     # InvalidState/RepositoryError before any state write; all callers share a lock.
     # Opted-in planning verifies full skill material and saved prompt bytes first.
-    def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil, reservation_lock: nil)
+    def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil, reservation_lock: nil, force: false, reason: nil)
+      if force
+        raise InvalidState, "force start is a declaration, not launch authorization" if launch_authorization || expected_collisions
+        return force_transition(id, "start", reason: reason, held: reservation_lock)
+      end
+      raise InvalidState, "--reason requires --force" if reason
       with_reservation_lock(id, held: reservation_lock) do
         start_locked(id, allow_write_collision: allow_write_collision,
                      expected_collisions: expected_collisions, launch_authorization: launch_authorization)
@@ -414,7 +425,12 @@ module AgentCodingTool
 
     # Records an explicit outcome while serialized with scheduling/preparation.
     # Returns state; a designation must be explicitly removed before recording.
-    def record(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [], reservation_lock: nil)
+    def record(id, outcome:, summary: nil, next_action: nil, artifact: nil, tests: [], reservation_lock: nil, force: false, reason: nil)
+      if force
+        return force_transition(id, "record", reason: reason, held: reservation_lock,
+          outcome: outcome, summary: summary, next_action: next_action, artifact: artifact, tests: tests)
+      end
+      raise InvalidState, "--reason requires --force" if reason
       with_reservation_lock(id, held: reservation_lock) do
         record_locked(id, outcome: outcome, summary: summary, next_action: next_action, artifact: artifact, tests: tests)
       end
@@ -455,7 +471,9 @@ module AgentCodingTool
     # Resets legacy runtime state under the reservation; deferred tasks retain
     # their complete state until explicit restoration. Returns bytes written or
     # retained state; malformed state/identity/locks raise before a write.
-    def reset(id)
+    def reset(id, force: false, reason: nil)
+      return force_transition(id, "reset", reason: reason) if force
+      raise InvalidState, "--reason requires --force" if reason
       with_reservation_lock(id) do
         state = @state_store.load(id)
         next state if state.key?("icebox")
@@ -465,6 +483,158 @@ module AgentCodingTool
     end
 
     private
+
+    # Executes an invocation-local metadata declaration under the physical lock.
+    # Identity/structure and required source material stay mandatory. Returns the
+    # normal command value with a durable audit pointer; operational errors raise.
+    def force_transition(id, command, reason:, held: nil, **result_options)
+      raise InvalidState, "reason must be a string" unless reason.nil? || reason.is_a?(String)
+      if command == "record"
+        outcome = result_options.fetch(:outcome)
+        raise InvalidState, "invalid outcome: #{outcome}" unless OUTCOMES.include?(outcome)
+        if result_options[:next_action] && !NEXT_ACTION_OUTCOMES.include?(outcome)
+          raise InvalidState, "--next is only supported for blocked, needs_judgment, and failed outcomes"
+        end
+      end
+      raise InvalidTask, "unsafe task ID" unless id.is_a?(String) && id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      task = @task_store.load(id)
+      raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
+      data_root = File.dirname(File.dirname(@state_store.state_path(id)))
+      ReservationLock.synchronize(data_root, held: held) do
+        state = begin
+          @state_store.load(id)
+        rescue InvalidState
+          raise unless command == "reset"
+          nil
+        end
+        if state && ((state.key?("id") && state["id"] != id) ||
+          (command != "reset" && !state["result"].nil? && !state["result"].is_a?(Hash)))
+          raise InvalidState, "#{id}: ambiguous or malformed task state"
+        end
+        state = nil if command == "reset" && state && !state["result"].nil? && !state["result"].is_a?(Hash)
+        observations = override_observations(id, task, state, command)
+        audit = LifecycleOverride.new(store: @state_store, id: id, state: state,
+          command: command == "record" ? "record #{outcome}" : command, reason: reason, observations: observations)
+        replacement = (state || {}).dup
+        prepared = nil
+        case command
+        when "reset"
+          replacement = { "id" => id }
+        when "prepare"
+          # This is a new real preparation, never a freshness or skill fabrication.
+          snapshot = snapshot_task(task)
+          dependencies = preparation_dependencies(task)
+          prompt = @prompt_renderer.render(task, snapshot, dependencies: dependencies)
+          # Match audit path handling without accepting arbitrary prompt links.
+          prompt_root = WorktreeManager.canonical_system_path(@prompt_root)
+          FileUtils.mkdir_p(prompt_root)
+          raise InvalidState, "#{id}: unsafe prompt root" unless File.realpath(prompt_root) == prompt_root
+          prompt_path = File.join(prompt_root, "#{id}-#{SecureRandom.uuid}.txt")
+          File.write(prompt_path, prompt, mode: "wx")
+          replacement = { "id" => id, "prepared_at" => Time.now.utc.iso8601(6),
+            "snapshot" => snapshot, "prompt_path" => prompt_path, "coding_skill" => @prompt_renderer.skill_identity }
+          if task["planning_guidance"] == "required"
+            replacement.merge!("planning_guidance" => "required", "planning_skill" => @prompt_renderer.planning_skill_identity)
+          end
+          prepared = { "task" => task, "state" => replacement, "prompt" => prompt, "write_collisions" => [] }
+        when "start"
+          unless state["snapshot"].is_a?(Hash) && state["prepared_at"].is_a?(String)
+            raise InvalidState, "#{id}: force start requires a real preparation"
+          end
+          begin
+            Time.iso8601(state.fetch("prepared_at"))
+          rescue ArgumentError
+            raise InvalidState, "#{id}: invalid preparation timestamp"
+          end
+          state.fetch("snapshot").each do |name, repository|
+            unless repository.is_a?(Hash) && %w[remote_url branch pushed_sha].all? { |field| repository[field].is_a?(String) && !repository[field].empty? }
+              raise InvalidState, "#{id}/#{name}: malformed preparation"
+            end
+          end
+          # A new timestamp cannot inherit a preserved checkpoint's proof.
+          %w[result completion_snapshot checkpoint icebox write_overlap write_collision_override].each { |key| replacement.delete(key) }
+          replacement["started_at"] = Time.now.utc.iso8601(9)
+        when "record"
+          replacement["id"] = id
+          replacement["result"] = result_options.transform_keys(&:to_s).merge("recorded_at" => Time.now.utc.iso8601(6))
+            .reject { |_key, value| value.nil? || value == [] }
+          replacement.delete("started_at")
+          replacement.delete("icebox")
+          replacement.delete("completion_snapshot")
+          if outcome == "complete"
+            # Optional completion observations must not demand remote access.
+            replacement["completion_observations"] = { "status" => "not_observed", "source" => "operator_declaration" }
+          end
+        when "icebox"
+          replacement["icebox"] = { "at" => Time.now.utc.iso8601(6) }
+          replacement.fetch("icebox")["reason"] = reason if reason
+        when "unicebox"
+          replacement.delete("icebox")
+        end
+        replacement["administrative_override"] = audit.summary.slice("audit_path", "at", "command").merge(
+          "resource_blockers" => observations.select { |fact| %w[history_admission external_activity].include?(fact["rule"]) })
+        audit.publish(replacement)
+        prepared || replacement
+      end
+    end
+
+    # Enumerates independently observable policy facts without treating unavailable
+    # remote/liveness observations as evidence. Reads only; malformed identities
+    # still raise. Returns compact rules and retained resource warnings for audit.
+    def override_observations(id, task, state, command)
+      return [{ "rule" => "damaged_state", "status" => "overridden", "detail" => "exact raw bytes retained" }] unless state
+      facts = []
+      facts << { "rule" => "icebox", "status" => "overridden" } if state.key?("icebox")
+      if state.dig("result", "outcome")
+        facts << { "rule" => "recorded_outcome", "status" => %w[prepare start icebox].include?(command) ? "overridden" : "observed", "outcome" => state.dig("result", "outcome") }
+      end
+      facts << { "rule" => "already_started", "status" => "overridden" } if state["started_at"]
+      facts << { "rule" => "missing_preparation", "status" => "overridden" } unless state["snapshot"]
+      incomplete = incomplete_dependencies(task)
+      facts << { "rule" => "dependencies_incomplete", "status" => "overridden", "tasks" => incomplete } unless incomplete.empty?
+      if state["snapshot"].is_a?(Hash) && state["snapshot"].keys.sort != task.fetch("repositories").keys.sort
+        facts << { "rule" => "task_scope_changed", "status" => "overridden" }
+      end
+      %i[validate_skill_identity! validate_planning_guidance!].each do |check|
+        begin
+          check == :validate_skill_identity! ? send(check, id, state) : send(check, task, state)
+        rescue InvalidState => error
+          facts << { "rule" => check.to_s, "status" => "overridden", "detail" => error.message }
+        end
+      end
+      root = File.join("#{File.realpath(File.dirname(File.dirname(@state_store.state_path(id))))}-runs", id)
+      if File.exist?(root) || File.symlink?(root)
+        recovery = AttemptRecovery.new(data_root: File.dirname(File.dirname(@state_store.state_path(id))), transport: @transport)
+        rows = recovery.inspect(id)
+        facts << { "rule" => "retained_execution", "status" => "observed", "attempts" => rows.map { |row| row.slice("run_dir", "attempt", "status", "blockers", "liveness") },
+          "detail" => "resources/reservations retained; no retirement or execution authority" }
+        begin
+          recovery.retry_ready!(id)
+        rescue InvalidState => error
+          facts << { "rule" => "history_admission", "status" => "overridden", "detail" => error.message }
+        end
+      end
+      activity = external_activity.conflicts(task, state)
+      facts << { "rule" => "external_activity", "status" => "overridden", "conflicts" => activity } unless activity.empty?
+      if %w[start prepare].include?(command) && state["snapshot"].is_a?(Hash)
+        begin
+          references = freshness_references(task, state.fetch("snapshot"))
+          heads = @repo_inspector.pushed_heads(references)
+          validate_freshness!(references, heads)
+          changed = changed_repositories(task, state.fetch("snapshot"), heads)
+          facts << { "rule" => "stale_source", "status" => "overridden", "repositories" => changed } unless changed.empty?
+        rescue RepositoryError => error
+          facts << { "rule" => "freshness", "status" => "unavailable", "detail" => error.message }
+        end
+      else
+        facts << { "rule" => "freshness", "status" => "not_observed", "detail" => "metadata declaration needs no remote lookup" }
+      end
+      facts << { "rule" => "worker_liveness", "status" => "unknown", "detail" => "declaration does not establish inactivity" }
+      if command == "icebox" && execution_evidence?(id, state)
+        facts << { "rule" => "unstarted_ready_only", "status" => "overridden", "detail" => "execution evidence retained" }
+      end
+      facts
+    end
 
     # Locks every lifecycle/scheduling writer, including tasks without runs.
     # Rechecks identity and managed history under the lock; returns block value.
@@ -629,11 +799,34 @@ module AgentCodingTool
     def status_context(task)
       id = task.fetch("id")
       state = @state_store.load(id)
-      if state.key?("icebox") && ((state.key?("id") && state["id"] != id) || execution_evidence?(id, state))
+      if state.key?("icebox") && ((state.key?("id") && state["id"] != id) ||
+        (execution_evidence?(id, state) && !state["administrative_override"]))
         raise InvalidState, "#{id}: Icebox conflicts with lifecycle/execution evidence; inspect state before restoration"
       end
       result = state["result"] || {}
       outcome = result["outcome"]
+
+      if state["administrative_override"]
+        lifecycle = outcome == "candidate_complete" ? "CANDIDATE" : outcome ? outcome.upcase :
+          state["started_at"] ? "IN_FLIGHT" : state["snapshot"] ? "PREPARED" : "READY"
+        if state.key?("icebox")
+          return { "status" => status_hash("ICEBOX", task, state, "operator declaration; retained execution is not retired")
+            .merge("lifecycle_status" => lifecycle) }
+        end
+        if %w[READY PREPARED IN_FLIGHT].include?(lifecycle) &&
+          !state.fetch("administrative_override").fetch("resource_blockers", []).empty?
+          return { "status" => status_hash("BLOCKED", task, state, "retained execution/resource blockers; declaration grants no execution authority")
+            .merge("lifecycle_status" => lifecycle) }
+        end
+        if state["snapshot"].is_a?(Hash) && state["snapshot"].keys.sort != task.fetch("repositories").keys.sort
+          label = %w[IN_FLIGHT PREPARED].include?(lifecycle) ? "STALE" : lifecycle == "CANDIDATE" ? "STALE_CANDIDATE" : lifecycle
+          return { "status" => status_hash(label, task, state, "task scope differs from historical preparation; eligibility unverified")
+            .merge("lifecycle_status" => lifecycle) }
+        end
+        if lifecycle == "CANDIDATE" && !state["snapshot"]
+          return { "status" => status_hash(lifecycle, task, state, "operator declaration without preparation; verification unavailable") }
+        end
+      end
 
       status = status_hash("COMPLETE", task, state) if outcome == "complete"
       status ||= status_hash("NEEDS_JUDGMENT", task, state, result["summary"]) if outcome == "needs_judgment"
@@ -904,6 +1097,11 @@ module AgentCodingTool
         "state" => state
       }
       result = state["result"]
+      if state["administrative_override"]
+        status["administrative_override"] = state.fetch("administrative_override")
+        status["resource_eligibility"] = "unverified; retained execution/reservations require independent checks"
+        status["resource_blockers"] = state.fetch("administrative_override").fetch("resource_blockers", [])
+      end
       if state["started_at"] || result&.fetch("outcome", nil) == "candidate_complete"
         status["execution_evidence"] = {
           "isolation" => state.dig("write_collision_override", "launch") ? "last_verified_at_launch" : "unverified",

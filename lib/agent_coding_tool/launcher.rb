@@ -397,6 +397,14 @@ module AgentCodingTool
         end
         entries.delete("checkpoints")
       end
+      if entries.include?(LifecycleOverride::NAMESPACE)
+        audit_root = File.join(@run_root, LifecycleOverride::NAMESPACE)
+        unless File.directory?(audit_root) && !File.symlink?(audit_root) &&
+               File.stat(audit_root).uid == Process.uid && (File.stat(audit_root).mode & 0o077).zero?
+          raise InvalidState, "launch: foreign lifecycle override evidence; operator judgment required"
+        end
+        entries.delete(LifecycleOverride::NAMESPACE)
+      end
       paths = entries.flat_map do |task_id|
         task_path = File.join(@run_root, task_id)
         unless task_id != ".DS_Store" && File.directory?(task_path) && !File.symlink?(task_path)

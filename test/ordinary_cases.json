@@ -330,5 +330,12 @@
     "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls": [],
     "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch": [],
     "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch": []
+  },
+  "test/lifecycle_force_test.rb": {
+    "LifecycleForceTest#test_public_metadata_overrides_preserve_bytes_and_report_all_policy_facts": ["coding", "coding"],
+    "LifecycleForceTest#test_missing_preparation_damaged_reset_and_non_overridable_errors": [],
+    "LifecycleForceTest#test_audit_and_state_publication_failures_remain_truthful": [],
+    "LifecycleForceTest#test_stale_scope_and_unobserved_completion_are_explicit": ["coding"],
+    "LifecycleForceTest#test_system_alias_preserves_canonical_audit_and_rejects_other_symlinks": ["coding", "coding"]
   }
 }

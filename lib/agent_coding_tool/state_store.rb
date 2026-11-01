@@ -40,7 +40,12 @@ module AgentCodingTool
     # This is not a transaction lock or proof of physical power-loss durability.
     def write(id, state)
       validate_icebox!(id, state)
-      bytes = YAML.dump(state)
+      publish_bytes(id, YAML.dump(state))
+    end
+
+    # Publishes exact bytes using the state replacement/sync contract. Used for
+    # raw override recovery copies as well as serialized state; I/O errors raise.
+    def publish_bytes(id, bytes)
       FileUtils.mkdir_p(@root)
       # Follow existing links as File.write did; rename the target, not the link.
       path = File.realdirpath(state_path(id))

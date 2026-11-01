@@ -45,45 +45,43 @@ module RetryDecisionSupport
       @decision_root = File.realpath(temporary)
       @decision_data = File.join(@decision_root, "data")
       FileUtils.mkdir_p(File.join(@decision_data, "tasks"))
-      seed = TestHelpers.git_seed
-      repositories = %w[writer reader].to_h do |name|
-        parent = File.join(@decision_root, name)
-        remote = File.join(@decision_root, "#{name}.git")
-        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), parent)
-        FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
-        output, error, status = Open3.capture3("git", "remote", "set-url", "origin", remote, chdir: parent)
-        raise "retry fixture remote: #{output}#{error}" unless status.success?
-        [name, { "path" => parent, "access" => name == "writer" ? "write" : "read_only" }]
-      end
-      write_task(@decision_data, id: "T", repositories: repositories)
-      visible = File.join(@decision_root, "worktrees")
-      File.write(File.join(@decision_data, "config.yml"), YAML.dump("repo_root" => @decision_root, "worktree_root" => visible))
-      @decision_states = AgentCodingTool::StateStore.new(File.join(@decision_data, "state"))
-      @decision_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @decision_data, out: StringIO.new, err: StringIO.new)
-      @decision_coordinator = @decision_cli.send(:coordinator)
-      prepared = @decision_coordinator.prepare("T")
-      @decision_directory = File.join("#{@decision_data}-runs", "T", "decision")
-      FileUtils.mkdir_p(@decision_directory, mode: 0o700)
-      File.binwrite(File.join(@decision_directory, "prompt.txt"), prepared.fetch("prompt"))
-      inventory = AgentCodingTool::WorktreeManager.new(root: visible, record_path: File.join(@decision_directory, "worktrees.json"),
-        attempt_paths: true, invocation_id: "retry-decision").create(task_id: "T", attempt: 1,
-          task: prepared.fetch("task"), snapshot: prepared.fetch("state").fetch("snapshot"))
-      @decision_coordinator.start("T")
-      report = retry_failure_report(preparation: prepared.fetch("state"), execution: @decision_states.load("T"),
-        inventory: inventory, directory: @decision_directory, invocation: "retry-decision",
-        host_pid: RecoveryObservations.status(0).pid, host_identity: { "fixture_boot" => "deterministic external identity" })
-      File.write(File.join(@decision_directory, "handoff.json"), JSON.generate(report))
-      observations = inventory.fetch("entries").map do |entry|
-        recovery_observation(nil, "lsof", "-n", "-P", "+D", entry.fetch("path"), exit_code: 1)
-      end
-      lsof = GitContract::Replay.new(observations * liveness_checks)
-      @decision_liveness = AgentCodingTool::RetryLiveness.new(capture: lsof)
-      begin
-        AgentCodingTool::RetryLiveness.stub(:host_identity, report.fetch("host_identity")) do
-          yield AgentCodingTool::AttemptRecovery.new(data_root: @decision_data, liveness: @decision_liveness), report
+      with_memory_world(@decision_root) do |world|
+        repositories = %w[writer reader].to_h do |name|
+          parent = File.join(@decision_root, name)
+          remote = File.join(@decision_root, "#{name}.git")
+          memory_repository(world, path: parent, remote: remote)
+          [name, { "path" => parent, "access" => name == "writer" ? "write" : "read_only" }]
         end
-      ensure
-        assert lsof.verify!
+        write_task(@decision_data, id: "T", repositories: repositories)
+        visible = File.join(@decision_root, "worktrees")
+        File.write(File.join(@decision_data, "config.yml"), YAML.dump("repo_root" => @decision_root, "worktree_root" => visible))
+        @decision_states = AgentCodingTool::StateStore.new(File.join(@decision_data, "state"))
+        @decision_cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @decision_data, out: StringIO.new, err: StringIO.new)
+        @decision_coordinator = @decision_cli.send(:coordinator)
+        prepared = @decision_coordinator.prepare("T")
+        @decision_directory = File.join("#{@decision_data}-runs", "T", "decision")
+        FileUtils.mkdir_p(@decision_directory, mode: 0o700)
+        File.binwrite(File.join(@decision_directory, "prompt.txt"), prepared.fetch("prompt"))
+        inventory = AgentCodingTool::WorktreeManager.new(root: visible, record_path: File.join(@decision_directory, "worktrees.json"),
+          attempt_paths: true, invocation_id: "retry-decision").create(task_id: "T", attempt: 1,
+            task: prepared.fetch("task"), snapshot: prepared.fetch("state").fetch("snapshot"))
+        @decision_coordinator.start("T")
+        report = retry_failure_report(preparation: prepared.fetch("state"), execution: @decision_states.load("T"),
+          inventory: inventory, directory: @decision_directory, invocation: "retry-decision",
+          host_pid: RecoveryObservations.status(0).pid, host_identity: { "fixture_boot" => "deterministic external identity" })
+        File.write(File.join(@decision_directory, "handoff.json"), JSON.generate(report))
+        observations = inventory.fetch("entries").map do |entry|
+          recovery_observation(nil, "lsof", "-n", "-P", "+D", entry.fetch("path"), exit_code: 1)
+        end
+        lsof = GitContract::Replay.new(observations * liveness_checks)
+        @decision_liveness = AgentCodingTool::RetryLiveness.new(capture: lsof)
+        begin
+          AgentCodingTool::RetryLiveness.stub(:host_identity, report.fetch("host_identity")) do
+            yield AgentCodingTool::AttemptRecovery.new(data_root: @decision_data, liveness: @decision_liveness), report
+          end
+        ensure
+          assert lsof.verify!
+        end
       end
     end
   end

@@ -1,0 +1,11 @@
+[
+  "SharedApplyAdapterVerifier#test_apply_fixture_dirty_state_copy_and_config_adapters",
+  "SharedApplyAdapterVerifier#test_apply_observation_protocol_and_missing_handoff",
+  "SharedLauncherAdapterVerifier#test_launcher_and_manual_preflight_adapter_contract",
+  "SharedLauncherAdapterVerifier#test_launcher_real_worker_boundary_and_reaped_status",
+  "SharedLauncherAdapterVerifier#test_manual_worker_ready_release_and_lease",
+  "SharedRecoveryAdapterVerifier#test_replay_result_bytes_exit_signal_and_exception_adaptation",
+  "SharedRecoveryAdapterVerifier#test_retry_fixture_and_genuine_reaped_pid",
+  "SharedSourceAdapterVerifier#test_publisher_observation_result_and_consumption",
+  "SharedSourceAdapterVerifier#test_skill_snapshot_and_finite_source_observations"
+]

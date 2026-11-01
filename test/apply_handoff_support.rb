@@ -2,7 +2,7 @@
 
 require_relative "test_helper"
 
-# Shared disposable apply-family worlds; native Git creates the oracle history.
+# Shared disposable apply-family memory worlds with real files and durable evidence.
 # No source decisions are replaced and all mutations stay under TMPDIR.
 module ApplyHandoffFixtures
   include TestHelpers
@@ -39,60 +39,60 @@ module ApplyHandoffFixtures
       @repos = File.join(@root, "repositories")
       @a, @b = %w[A B].map { |name| File.join(@repos, name) }
       FileUtils.mkdir_p(@repos)
-      seed = TestHelpers.git_seed
-      [@a, @b].each do |path|
-        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), path)
-        remote = "#{path}.git"
-        FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
-        git(path, "remote", "set-url", "origin", remote)
-      end
-      FileUtils.mkdir_p([File.join(@a, "tasks"), File.join(@a, "state")])
-      File.write(File.join(@a, "state", "ACT-UX-02.yml"), "result: retained\n")
-      File.write(File.join(@a, "config.yml"), YAML.dump("repo_root" => @repos))
-      File.write(File.join(@b, "verify.rb"), script)
-      [@a, @b].each do |path|
-        if nonportable
-          NONPORTABLE_PATHS.each do |relative|
-            File.binwrite(File.join(path, relative), "unrelated\x00\xff".b)
-            File.chmod(0o755, File.join(path, relative))
-          end
-          File.write(File.join(path, ".git", "info", "exclude"), "/#{IGNORED_PATH}\n")
-          File.binwrite(File.join(path, IGNORED_PATH), "ignored\x00\xfe".b)
+      with_memory_world(@root) do |world|
+        @memory_world = world
+        @apply_checkouts = [@a, @b].to_h do |path|
+          [path, memory_repository(world, path: path, remote: "#{path}.git").first]
         end
-        git(path, "add", ".")
-        git(path, "commit", "-m", "fixture")
+        FileUtils.mkdir_p([File.join(@a, "tasks"), File.join(@a, "state")])
+        File.write(File.join(@a, "state", "ACT-UX-02.yml"), "result: retained\n")
+        File.write(File.join(@a, "config.yml"), YAML.dump("repo_root" => @repos))
+        File.write(File.join(@b, "verify.rb"), script)
+        [@a, @b].each do |path|
+          if nonportable
+            NONPORTABLE_PATHS.each do |relative|
+              File.binwrite(File.join(path, relative), "unrelated\x00\xff".b)
+              File.chmod(0o755, File.join(path, relative))
+            end
+            @apply_checkouts.fetch(path).ignored << IGNORED_PATH
+            File.binwrite(File.join(path, IGNORED_PATH), "ignored\x00\xfe".b)
+          end
+          checkout = @apply_checkouts.fetch(path)
+          files = world.scan(checkout).reject { |relative, _entry| checkout.ignored.include?(relative) }
+          world.build_commit(checkout, files: files, message: "fixture", advance: true)
+        end
+        @bases = [@a, @b].map { |path| git(path, "rev-parse", "HEAD").strip }
+        downloads = File.join(@root, "Downloaded proposals")
+        FileUtils.mkdir_p(downloads)
+        @json = File.join(downloads, "new task.json")
+        @patch_path = File.join(downloads, "new task.patch")
+        # A complete new-file task-registration handoff, generated without staging.
+        @task = File.join(@a, "tasks", "NEW.yml")
+        @patch = "diff --git a/tasks/NEW.yml b/tasks/NEW.yml\nnew file mode 100644\n--- /dev/null\n+++ b/tasks/NEW.yml\n@@ -0,0 +1,#{TASK.lines.length} @@\n" + TASK.lines.map { |line| "+#{line}" }.join
+        File.binwrite(@patch_path, @patch)
+        @manifest = {
+          "schema" => AgentCodingTool::ApplyHandoff::SCHEMA, "target" => "data",
+          "repositories" => { "data" => { "path" => "A", "remote_url" => "#{@a}.git", "baseline" => @bases[0] },
+                              "tool" => { "path" => "B", "remote_url" => "#{@b}.git", "baseline" => @bases[1] } },
+          "patch" => { "file" => "new task.patch", "sha256" => Digest::SHA256.hexdigest(@patch) },
+          "paths" => ["tasks/NEW.yml"],
+          "validation" => [{ "action" => "ruby_test", "repository" => "tool", "cwd" => ".", "files" => ["verify.rb"],
+                             "env" => { "AGENT_CODING_TOOL_DATA_DIR" => "data" } },
+                           { "action" => "git_diff_check", "repository" => "data", "cwd" => ".", "env" => {} }],
+          "commit_message" => "Register NEW task"
+        }
+        save_manifest
+        yield
       end
-      @bases = [@a, @b].map { |path| git(path, "rev-parse", "HEAD").strip }
-      downloads = File.join(@root, "Downloaded proposals")
-      FileUtils.mkdir_p(downloads)
-      @json = File.join(downloads, "new task.json")
-      @patch_path = File.join(downloads, "new task.patch")
-      # A complete new-file task-registration handoff, generated without staging.
-      @task = File.join(@a, "tasks", "NEW.yml")
-      @patch = "diff --git a/tasks/NEW.yml b/tasks/NEW.yml\nnew file mode 100644\n--- /dev/null\n+++ b/tasks/NEW.yml\n@@ -0,0 +1,#{TASK.lines.length} @@\n" + TASK.lines.map { |line| "+#{line}" }.join
-      File.binwrite(@patch_path, @patch)
-      @manifest = {
-        "schema" => AgentCodingTool::ApplyHandoff::SCHEMA, "target" => "data",
-        "repositories" => { "data" => { "path" => "A", "remote_url" => "#{@a}.git", "baseline" => @bases[0] },
-                            "tool" => { "path" => "B", "remote_url" => "#{@b}.git", "baseline" => @bases[1] } },
-        "patch" => { "file" => "new task.patch", "sha256" => Digest::SHA256.hexdigest(@patch) },
-        "paths" => ["tasks/NEW.yml"],
-        "validation" => [{ "action" => "ruby_test", "repository" => "tool", "cwd" => ".", "files" => ["verify.rb"],
-                           "env" => { "AGENT_CODING_TOOL_DATA_DIR" => "data" } },
-                         { "action" => "git_diff_check", "repository" => "data", "cwd" => ".", "env" => {} }],
-        "commit_message" => "Register NEW task"
-      }
-      save_manifest
-      yield
     end
   end
 
   # Executes local fixture Git with optional stdin; returns stdout, raising on
   # unexpected failure. Mutations are confined to the disposable fixture.
   def git(path, *args, input: "")
-    stdout, stderr, status = Open3.capture3("git", *args, chdir: path, stdin_data: input)
-    raise stderr unless status.success?
-    stdout
+    result = @memory_world.call(["git", *args], cwd: path, input: input)
+    raise result.stderr unless result.success?
+    result.stdout
   end
 
   # Writes the currently edited proposal as UTF-8 JSON; filesystem errors propagate.
@@ -116,7 +116,8 @@ module ApplyHandoffFixtures
       File.write(File.join(repo, "file.txt"), "different worktree version\n")
       File.chmod(0o755, File.join(repo, "file.txt"))
       File.unlink(File.join(repo, NONPORTABLE_PATHS[0]))
-      git(repo, "rm", "--", NONPORTABLE_PATHS[1])
+      @apply_checkouts.fetch(repo).index.delete(NONPORTABLE_PATHS[1].b)
+      File.unlink(File.join(repo, NONPORTABLE_PATHS[1]))
       File.binwrite(File.join(repo, NONPORTABLE_PATHS[3]), "unstaged\x00\xff".b)
       File.chmod(0o644, File.join(repo, NONPORTABLE_PATHS[3]))
       File.binwrite(File.join(repo, "untracked (keep & dûm's).bin"), "keep\x00\xfe".b)

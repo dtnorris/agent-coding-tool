@@ -12,7 +12,7 @@ module SkillObservations
   def self.read(root:, path:, identity:, text:, success: true, stderr: "")
     GitContract::Observation.new(argv: [ENVIRONMENT, "git", "--no-replace-objects", "-C", root,
       "cat-file", "blob", "#{identity.fetch('revision')}^{commit}:#{path}"], cwd: nil,
-      result: [text.b, stderr.b, success])
+      result: [text.b, stderr.b, AgentCodingTool::CommandResult.new(stdout: text.b, stderr: stderr.b, exitstatus: success ? 0 : 1)])
   end
 
   # Returns a finite replay of explicitly named default coding/planning reads.

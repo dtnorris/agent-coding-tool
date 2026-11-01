@@ -15,10 +15,7 @@ class ManualParallelLaunchTest < Minitest::Test
   # Runs the actual public CLI in a fresh process; returns captured bytes/status.
   # Timeout is a test failure, never permission to proceed with an unknown worker.
   def cli(*args)
-    Timeout.timeout(20) do
-      Open3.capture3({ "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-                     RbConfig.ruby, File.join(Dir.pwd, "bin/agent-coding-tool"), *args)
-    end
+    cold_launcher(*args)
   end
 
   # Asserts one public command succeeds and returns stdout; failure includes stderr.
@@ -57,13 +54,13 @@ class ManualParallelLaunchTest < Minitest::Test
       @coordinator.start("A")
     end
     @external = File.join(@root, "external-A")
-    setup_git("worktree", "add", "-b", "external-A", @external, @base, chdir: @ordinary)
+    setup_git("worktree", "add", "-b", "external-A", "--", @external, @base, chdir: @ordinary)
     if checkpoint
       File.write(File.join(@external, "file.txt"), "earlier checkpoint candidate\n")
       overlap_command!("checkpoint", "record", "A", "--workspace", @external, cold: cold)
     end
     File.binwrite(File.join(@external, "file.txt"), "staged\n")
-    setup_git("add", "file.txt", chdir: @external)
+    setup_git("add", "--", "file.txt", chdir: @external)
     File.binwrite(File.join(@external, "file.txt"), "unfinished\n")
     File.binwrite(File.join(@external, "candidate.bin"), "\x00\xffkeep".b)
     File.chmod(0o755, File.join(@external, "candidate.bin"))
@@ -71,23 +68,27 @@ class ManualParallelLaunchTest < Minitest::Test
     File.binwrite(File.join(@external, "ignored"), "ignored candidate\n")
     if advance
       File.write(File.join(@ordinary, "file.txt"), "new main\n")
-      setup_git("commit", "-am", "advance main", chdir: @ordinary)
-      setup_git("push", "origin", "main", chdir: @ordinary)
+      setup_git("add", "-A", chdir: @ordinary)
+      setup_git("commit", "-m", "advance main", chdir: @ordinary)
+      setup_git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
     end
     cold ? cli!("prepare", "T") : @coordinator.prepare("T")
     @target_base = @store.load("T").fetch("snapshot").fetch("repo").fetch("pushed_sha")
   end
 
-  # Captures exact older candidate, native index/HEAD, task/prompt and artifacts.
-  # This deliberately excludes shared Git registry additions for the new worker.
+  # Captures exact candidate files/modes, modeled index/HEAD and durable evidence.
+  # Shared Git registry additions for a new worker are deliberately excluded;
+  # native administration files do not exist in the supported fixture model.
   def older_bytes
     paths = Dir.glob(File.join(@external, "**/*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
     admin = setup_git("rev-parse", "--absolute-git-dir", chdir: @external)
-    paths += %w[index HEAD].map { |name| File.join(admin, name) }
+    paths += %w[gitdir commondir].map { |name| File.join(admin, name) }
     paths += Dir.glob(File.join(@data, "**/*")).select { |path| File.file?(path) && !path.include?("/T") }
     paths += Dir.glob("#{@data}-runs/A/**/*", File::FNM_DOTMATCH).select { |path| File.file?(path) }
     paths += Dir.glob("#{@data}-runs/checkpoints/A/**/*", File::FNM_DOTMATCH).select { |path| File.file?(path) }
-    paths.sort.to_h { |path| [path, overlap_file_identity(path)] }
+    paths.sort.to_h { |path| [path, overlap_file_identity(path)] }.merge(
+      "modeled_HEAD" => setup_git("rev-parse", "HEAD", chdir: @external),
+      "modeled_index" => setup_git("ls-files", "--stage", "-z", chdir: @external))
   end
 
   # Returns the one target attempt and its directory; ambiguity fails the test.
@@ -102,8 +103,8 @@ class ManualParallelLaunchTest < Minitest::Test
     [false, true].product([false, true]).each do |active, advance|
       fixture(git: true, process: true, mutable_remote: true) do
         manual_pair(advance: advance, checkpoint: true, cold: active && advance)
-        preserved = older_bytes
         journey = lambda do |worker|
+          preserved = older_bytes
           if active && advance
             _output, error, status = cli("launch", "T", "--codex", "--allow-write-collision", "--reasoning", "high")
             assert status.success?, error
@@ -123,7 +124,7 @@ class ManualParallelLaunchTest < Minitest::Test
           assert_equal [], report.fetch("collision_authorization").fetch("verified_conflicts")
           assert_equal ["A"], report.fetch("collision_authorization").fetch("unverified_manual_conflicts").map { |row| row.fetch("task_id") }
           assert_equal "operator_authorized_manual_overlap", @store.load("T").dig("write_overlap", "basis")
-          assert_equal preserved, preserved.to_h { |path, _| [path, overlap_file_identity(path)] }
+          assert_equal preserved, older_bytes
           assert_equal "external-A", setup_git("branch", "--show-current", chdir: @external)
           assert @store.load("A")["started_at"]
           assert @store.load("T")["started_at"]
@@ -200,8 +201,9 @@ class ManualParallelLaunchTest < Minitest::Test
         case scenario
         when "stale"
           File.write(File.join(@ordinary, "file.txt"), "moved\n")
-          setup_git("commit", "-am", "move", chdir: @ordinary)
-          setup_git("push", "origin", "main", chdir: @ordinary)
+          setup_git("add", "-A", chdir: @ordinary)
+          setup_git("commit", "-m", "move", chdir: @ordinary)
+          setup_git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         when "prompt"
           File.write(@store.load(@target).fetch("prompt_path"), "changed")
         when "dependency"
@@ -234,7 +236,7 @@ class ManualParallelLaunchTest < Minitest::Test
         refute File.exist?(File.join(@root, "worker-pid")), scenario
         refute @store.load(@target)["started_at"], scenario
         assert_equal originals.fetch(@store.state_path(@target)), File.binread(@store.state_path(@target)), scenario
-        assert_equal before, before.to_h { |path, _| [path, overlap_file_identity(path)] }, scenario
+        assert_equal before, older_bytes, scenario
         assert_empty Dir.glob("#{@data}-runs/#{@target}/*"), scenario unless %w[occupied symlink branch].include?(scenario)
 
         # Restore only this row's fixture-authored task/prompt/state bytes and
@@ -255,14 +257,12 @@ class ManualParallelLaunchTest < Minitest::Test
     fixture(git: true, process: true) do
       manual_pair
       reader = File.join(@root, "reader")
-      FileUtils.cp_r(@ordinary, reader)
       reader_remote = File.join(@root, "reader.git")
-      setup_git("clone", "--bare", reader, reader_remote)
-      setup_git("remote", "set-url", "origin", reader_remote, chdir: reader)
+      memory_repository(@memory_world, path: reader, remote: reader_remote)
       %w[ordinary reader common worker_admin evidence].each do |leak|
         prepare_overlap_target("T-#{leak}", readers: { "reader" => { "access" => "read_only", "path" => reader } })
         before = older_bytes
-        original = Open3.method(:capture3)
+        original = method(:unit_capture)
         capture = lambda do |*args, **options|
           output, error, status = original.call(*args, **options)
           if args.include?("act-probe")
@@ -287,7 +287,7 @@ class ManualParallelLaunchTest < Minitest::Test
         end
         assert_match(/sandbox boundary unverified/, error.message)
         refute @store.load(@target)["started_at"]
-        assert_equal before, before.to_h { |path, _| [path, overlap_file_identity(path)] }
+        assert_equal before, older_bytes
       end
     end
   end
@@ -299,7 +299,8 @@ class ManualParallelLaunchTest < Minitest::Test
       manual_pair
       %w[identity prompt authority manual_state].each do |scenario|
         prepare_overlap_target("T-#{scenario}")
-        paths = [File.join(@ordinary, ".git/config"), @store.state_path("A")]
+        paths = [@store.state_path("A")]
+        original_remote = setup_git("remote", "get-url", "origin", chdir: @ordinary)
         originals = paths.to_h { |path| [path, File.binread(path)] }
         instance = launcher(real_sandbox_probe: true)
         probe = instance.method(:sandbox_probe!)
@@ -320,6 +321,7 @@ class ManualParallelLaunchTest < Minitest::Test
         refute @store.load(@target)["started_at"]
         refute File.exist?(File.join(@root, "worker-pid"))
         originals.each { |path, bytes| File.binwrite(path, bytes) }
+        setup_git("remote", "set-url", "origin", original_remote, chdir: @ordinary)
       end
     end
   end
@@ -369,7 +371,7 @@ class ManualParallelLaunchTest < Minitest::Test
         else
           assert_raises(AgentCodingTool::InvalidState) { overlap_launch(allow_write_collision: true) }
         end
-        assert_equal before, before.to_h { |path, _| [path, overlap_file_identity(path)] }
+        assert_equal before, older_bytes
       end
     end
   end
@@ -394,7 +396,8 @@ class ManualParallelLaunchTest < Minitest::Test
       observations = manual_preflight_observations
       assert_equal PREFLIGHT.length, observations.length
       observations.each do |observation|
-        assert_instance_of Process::Status, observation.status
+        assert_instance_of AgentCodingTool::CommandResult, observation.status
+        assert_equal [0, nil], [observation.status.exitstatus, observation.status.termsig]
         assert observation.status.success?
         replay = GitContract::Replay.new([observation])
         assert_equal observation.capture3, replay.capture3(*observation.argv)
@@ -423,10 +426,11 @@ class ManualParallelLaunchTest < Minitest::Test
       before = older_bytes
       ordinary = @ordinary
       spawning = lambda do |*args, **options|
-        child = Process.spawn(*args, **options)
+        child = spawn_fake_worker(*args, **options)
         File.write(File.join(ordinary, "file.txt"), "new main\n")
-        setup_git("commit", "-am", "move while worker executes", chdir: ordinary)
-        setup_git("push", "origin", "main", chdir: ordinary)
+        setup_git("add", "-A", chdir: ordinary)
+        setup_git("commit", "-m", "move while worker executes", chdir: ordinary)
+        setup_git("push", "origin", "HEAD:refs/heads/main", chdir: ordinary)
         child
       end
       assert_equal 0, overlap_launch(instance: launcher(real_sandbox_probe: true, spawner: spawning), allow_write_collision: true)
@@ -436,7 +440,7 @@ class ManualParallelLaunchTest < Minitest::Test
       assert_equal @target_base, setup_git("rev-parse", "HEAD", chdir: report.fetch("workspace"))
       assert File.file?(File.join(report.fetch("workspace"), "worker-change.txt"))
       assert_nil @store.load("T")["result"]
-      assert_equal before, before.to_h { |path, _| [path, overlap_file_identity(path)] }
+      assert_equal before, older_bytes
     end
   end
 end

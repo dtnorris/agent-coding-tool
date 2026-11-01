@@ -4,8 +4,8 @@ require_relative "test_helper"
 require "minitest/mock"
 require_relative "skill_observations"
 
-# Exercises immutable-source decisions against finite external responses. The
-# branch/worktree case separately retains actual Git objects as a native oracle.
+# Exercises immutable-source decisions against finite external responses and
+# independent modeled object history; no source request executes native Git.
 class CodingSkillTest < Minitest::Test
   include TestHelpers
 
@@ -179,26 +179,30 @@ class CodingSkillTest < Minitest::Test
        .to_h { |path| [path, File.binread(path)] }
   end
 
-  # Yields a private Git clone and valid pin for text; removes it on exit.
-  # Raises on clone/commit failures, never falling back to operator source.
+  # Yields a fresh modeled source history and its pin. The two immutable source
+  # blobs coexist with independently mutable branch/index/worktree state; source
+  # requests never borrow the operator checkout or start native Git.
   def with_skill_source(text)
-    Dir.mktmpdir do |dir|
-      root = File.join(dir, "source")
-      _out, error, status = Open3.capture3("git", "clone", "--no-hardlinks", AgentCodingTool::PromptRenderer::SKILL_ROOT, root)
-      raise error unless status.success?
-      File.write(File.join(root, AgentCodingTool::PromptRenderer::SKILL_PATH), text)
-      commit_source(root) unless text == CodingSkillSupport::TEXT
-      revision, error, status = Open3.capture3("git", "-C", root, "rev-parse", "HEAD")
-      raise error unless status.success?
-      yield root, { "revision" => revision.strip, "sha256" => Digest::SHA256.hexdigest(text) }
+    Dir.mktmpdir("act-skill-source-") do |directory|
+      @source_world = MemoryGit::PatchWorld.new(root: directory)
+      root = File.join(@source_world.root, "source")
+      files = { AgentCodingTool::PromptRenderer::SKILL_PATH => text,
+                AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH => CodingSkillSupport::PLANNING_TEXT }
+      @source_checkout = @source_world.repository(path: root, template: MemoryGit::Template.files(files))
+      identity = { "revision" => @source_checkout.head, "sha256" => Digest::SHA256.hexdigest(text) }
+      MemoryGit::Session.with(@source_world) { yield root, identity }
+    ensure
+      @source_world&.verify!
+      @source_world = @source_checkout = nil
     end
   end
 
-  # Commits only isolated test source text; returns nil or raises on Git errors.
+  # Stages all fixture changes and commits them through the finite transport.
+  # Returns nil; unsupported operations and modeled commit failures propagate.
   def commit_source(root)
-    [%w[add .], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture change"]].each do |args|
-      _out, error, status = Open3.capture3("git", "-C", root, *args)
-      raise error unless status.success?
+    [["add", "-A"], ["commit", "-m", "fixture change"]].each do |arguments|
+      result = @source_world.call(["git", *arguments], cwd: root)
+      raise result.stderr unless result.success?
     end
     nil
   end

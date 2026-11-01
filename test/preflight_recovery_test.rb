@@ -83,8 +83,7 @@ class PreflightRecoveryTest < Minitest::Test
     fixture(git: true) do
       reader = File.join(@root, "reader")
       reader_remote = File.join(@root, "reader.git")
-      git("clone", "--bare", @remote, reader_remote, chdir: @root)
-      git("clone", reader_remote, reader, chdir: @root)
+      memory_repository(@memory_world, path: reader, remote: reader_remote)
       task_path = File.join(@data, "tasks", "T.yml")
       task = YAML.safe_load_file(task_path)
       task.fetch("repositories")["reader"] = { "access" => "read_only", "path" => reader }
@@ -161,7 +160,9 @@ class PreflightRecoveryTest < Minitest::Test
         File.binwrite(report_path, original_report)
       end
       refute recovery.preflight("T").fetch("abandoned")
-      git("commit", "--allow-empty", "-m", "changed", chdir: path)
+      File.write(File.join(path, "file.txt"), "changed head\n")
+      git("add", "--", "file.txt", chdir: path)
+      git("commit", "-m", "changed", chdir: path)
       assert_raises(AgentCodingTool::InvalidState) { recovery.abandon("T") }
       assert_equal original_inventory, File.binread(report.fetch("worktrees_path"))
     end

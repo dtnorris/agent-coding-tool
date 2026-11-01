@@ -58,7 +58,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
       minimal = cli!("status", "--min")
       assert_equal minimal, cli!("status")
-      assert_equal dashboard.lines.grep(/\ATST-[A-C]:/), minimal.lines
+      assert_equal ["TST-B: READY (NEXT) — Task\n".b, "TST-C: BLOCKED — Task\n".b], minimal.lines
       all = cli!("status", "--all", "--full")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
@@ -117,8 +117,8 @@ class IceboxGitIntegrationTest < Minitest::Test
   # Removing the preparation guard makes the very same journey fail at its
   # safety assertion, proving a refusal cannot pass due to an unready fixture.
   def test_guard_removal_negative_control
-    observer = GitContract::Native.new(environment: { "ACT19_REMOVE_PREPARE_GUARD" => "1" }, seconds: 20)
-    output, error, status = observer.capture3(RbConfig.ruby, "-Ilib:test", __FILE__, "--name", "test_public_cli_journey")
+    output, error, status = ChildProcesses.capture('icebox_control',
+      environment: { 'ACT19_REMOVE_PREPARE_GUARD' => '1' }, seconds: 20)
     refute status.success?, error
     assert_includes output, "Icebox guard missing"
     assert_includes output, "1 failures"
@@ -127,8 +127,7 @@ class IceboxGitIntegrationTest < Minitest::Test
 
   # Qualifies exact binary/text streams and real status for the reused observer.
   def test_process_observer_preserves_bytes_and_status
-    observer = GitContract::Native.new
-    output, error, status = observer.capture3(RbConfig.ruby, "-e", 'STDOUT.binmode; STDERR.binmode; STDOUT.write("text\\n".b + [0,255].pack("C*")); STDERR.write([254,0].pack("C*")); exit 7')
+    output, error, status = ChildProcesses.capture('process_probe', arguments: ['icebox_bytes'])
     assert_equal "text\n".b + [0, 255].pack("C*"), output
     assert_equal [254, 0].pack("C*"), error
     assert_equal 7, status.exitstatus
@@ -175,63 +174,28 @@ class IceboxGitIntegrationTest < Minitest::Test
 
   private
 
-  # Copies production CLI bytes into a disposable tool root, keeping private
-  # test data outside that source as required by Launcher's ownership checks.
-  # Uses one immutable local Git seed; never touches operator repositories.
+  # Builds independent modeled authorities for cold public commands. The shared
+  # launcher bootstrap keeps source identity at the admitted candidate; test data
+  # and mutable stores remain private to this case.
   def journey_fixture
     fixture(git: true, process: true) do
       File.unlink(File.join(@data, "tasks/T.yml"))
-      @tool = File.join(@root, "tool")
-      FileUtils.mkdir_p(@tool)
-      %w[lib bin].each { |path| FileUtils.cp_r(File.expand_path("../../#{path}", __dir__), @tool) }
-      FileUtils.mkdir_p(File.join(@tool, "test"))
-      FileUtils.cp(File.expand_path("../coding_skill_support.rb", __dir__), File.join(@tool, "test"))
       # B has an independent local authority, so A's preparation cannot reserve it.
       second = File.join(@root, "second")
       second_remote = File.join(@root, "second.git")
-      FileUtils.cp_r(File.join(TestHelpers.git_seed.fetch(:root), "ordinary"), second)
-      FileUtils.cp_r(File.join(TestHelpers.git_seed.fetch(:root), "remote.git"), second_remote)
-      setup_git("remote", "set-url", "origin", second_remote, chdir: second)
+      memory_repository(@memory_world, path: second, remote: second_remote)
       write_task(@data, id: "TST-A", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       write_task(@data, id: "TST-B", repositories: { "repo" => { "access" => "write", "path" => second } })
       write_task(@data, id: "TST-C", depends_on: ["TST-A"], repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
-      @preload = File.join(@root, "guard-control.rb")
-      File.write(@preload, <<~'RUBY')
-        require "agent_coding_tool"
-        require "timeout"
-        if ENV["ACT19_REMOVE_PREPARE_GUARD"]
-          class AgentCodingTool::Coordinator
-            # Test-only negative control: remove the lifecycle deferral guard.
-            def refuse_icebox!(_id, _state) = nil
-          end
-        end
-        if ENV["ACT19_BARRIER"]
-          class AgentCodingTool::StateStore
-            alias_method :icebox_fixture_write, :write
-            # Test-only rendezvous at a real write, before state replacement.
-            def write(id, state)
-              if id == "TST-A"
-                barrier = ENV.fetch("ACT19_BARRIER")
-                File.write("#{barrier}.entered", "entered")
-                Timeout.timeout(10) { sleep 0.005 until File.file?("#{barrier}.release") }
-              end
-              icebox_fixture_write(id, state)
-            end
-          end
-        end
-      RUBY
       yield
     end
   end
 
-  # Invokes the actual native binary with raw bytes and a 20-second owned-group
-  # deadline. External Codex is always the finite fixture executable.
+  # Invokes the public binary through the shared guarded launcher with raw bytes
+  # and its 15-second owned-group deadline. Codex remains the finite worker.
   def cli(*args, environment: {})
-    environment = { "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
-                    "GIT_CEILING_DIRECTORIES" => @root,
-                    "RUBYOPT" => "#{ENV['RUBYOPT']} -I#{@tool}/lib -r#{@tool}/test/coding_skill_support.rb -r#{@preload}" }.merge(environment)
-    GitContract::Native.new(environment: environment, seconds: 20)
-                       .capture3(RbConfig.ruby, File.join(@tool, "bin/agent-coding-tool"), *args)
+    controls = { 'ACT19_REMOVE_PREPARE_GUARD' => ENV['ACT19_REMOVE_PREPARE_GUARD'] }.merge(environment)
+    cold_launcher(*args, fixture: 'icebox_cli', environment: controls)
   end
 
   # Asserts public success and returns raw stdout, retaining diagnostic stderr.

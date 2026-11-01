@@ -3,6 +3,7 @@
 require "digest"
 require "rbconfig"
 require "shellwords"
+require "json"
 
 # Selective test preload. Denies all process creation except one reviewed Ruby
 # script invocation per permit. TracePoint also denies cached native methods.
@@ -14,6 +15,7 @@ module NoGitExecution
   COVERAGE = File.realpath(File.join(__dir__, "../feedback_coverage.rb")).freeze
   PROCESS_ENTRIES = %i[spawn system exec fork _fork daemon ` popen].freeze
   FILE_ENTRIES = %i[read binread readlines foreach write binwrite].freeze
+  WATCHED_ENTRIES = (PROCESS_ENTRIES + FILE_ENTRIES + [:open]).to_h { |entry| [entry, true] }.freeze
   @audit = []
 
   # Returns detached audit records; mechanism names distinguish Ruby wrappers,
@@ -30,8 +32,14 @@ module NoGitExecution
   # Records a bounded diagnostic without child argv/environment secrets. Returns
   # nil; the internal audit is not independent proof of OS process creation.
   def self.record(operation, decision, mechanism)
-    @audit << { "pid" => Process.pid, "operation" => operation.to_s,
+    row = { "pid" => Process.pid, "operation" => operation.to_s,
       "decision" => decision, "mechanism" => mechanism }
+    @audit << row
+    if ENV['ACT_EXECUTION_AUDIT']
+      File.open(File.join(ENV.fetch('ACT_EXECUTION_AUDIT'), "#{Process.pid}.jsonl"), 'a') do |file|
+        file.puts(JSON.generate(row))
+      end
+    end
     nil
   end
 
@@ -45,12 +53,14 @@ module NoGitExecution
   # Immutable reviewed launch identity. No bare Ruby executable or arbitrary -e
   # program is authorized. Hashes must come from the caller's reviewed manifest.
   class Permit
-    attr_reader :argv, :environment, :options
+    attr_reader :argv, :environment, :options, :operation
 
     # Builds one exact script/argv/preload/environment/options identity. Hash or
     # bootstrap mismatches or lost/replaced inherited coverage context raise
     # ProhibitedExecution; filesystem errors propagate.
-    def initialize(script:, sha256:, arguments: [], preloads: {}, environment: {}, options: {})
+    def initialize(script:, sha256:, arguments: [], preloads: {}, environment: {}, options: {}, operation: :spawn)
+      NoGitExecution.refuse!("permit operation") unless %i[spawn system].include?(operation)
+      @operation = operation
       @files = { File.realpath(RbConfig.ruby) => Digest::SHA256.file(RbConfig.ruby).hexdigest,
                  GUARD => Digest::SHA256.file(GUARD).hexdigest }
       script = File.realpath(script)
@@ -120,15 +130,17 @@ module NoGitExecution
     # Takes a private directory, reviewed preloads and optional pgroup: true. Refuses
     # existing leaves (including dangling symlinks), directory drift or other
     # options. Native spawn errors remain native; no executable fallback exists.
-    def initialize(directory:, preloads: {}, options: {})
-      NoGitExecution.refuse!("missing executable options") unless options.empty? || options == { pgroup: true }
+    def initialize(directory:, preloads: {}, options: {}, operation: :spawn)
+      NoGitExecution.refuse!("missing executable options") unless options.empty? || options == { pgroup: true } ||
+        (operation == :spawn && options.keys.sort == %i[chdir pgroup] && options[:pgroup] == true && File.realpath(options[:chdir]) == options[:chdir]) ||
+        (operation == :system && options.keys == [:chdir] && File.realpath(options[:chdir]).start_with?(directory + "/"))
       NoGitExecution.refuse!("missing executable directory") unless directory.is_a?(String) &&
         File.realpath(directory) == directory
       @directory = directory.dup.freeze
       @directory_identity = File.stat(@directory).then { |stat| [stat.dev, stat.ino] }
       @executable = File.join(@directory, "no-git-missing-executable").freeze
       absent!
-      super(script: GUARD, sha256: Digest::SHA256.file(GUARD).hexdigest, preloads: preloads, options: options)
+      super(script: GUARD, sha256: Digest::SHA256.file(GUARD).hexdigest, preloads: preloads, options: options, operation: operation)
       # Two argv entries force direct execution even when the path contains spaces.
       @argv = [@executable, "--missing-executable-probe".freeze].freeze
     end
@@ -154,6 +166,78 @@ module NoGitExecution
     end
   end
 
+  # One block-form owner fork bound to an exact reviewed source line and bytes.
+  # No executable permission is implied; all descendant spawn guards remain live.
+  class ForkPermit
+    # Binds callsite, issuing process/thread, cwd and effective environment.
+    # Invalid source identity raises ProhibitedExecution before native entry.
+    def initialize(source:, sha256:, line:)
+      @source = File.realpath(source).freeze
+      @digest, @line = sha256.dup.freeze, line
+      NoGitExecution.refuse!("fork source") unless Digest::SHA256.file(@source).hexdigest == @digest && line.is_a?(Integer)
+      @pid, @thread, @cwd = Process.pid, Thread.current, Dir.pwd.freeze
+      @environment = ENV.to_h.to_h { |key, value| [key.freeze, value.freeze] }.freeze
+      @used = false
+    end
+
+    # Consumes exactly once at the bound block-form callsite; drift refuses.
+    def consume!(location)
+      NoGitExecution.refuse!("fork permit mismatch/reuse") unless !@used && Process.pid == @pid &&
+        Thread.current.equal?(@thread) && Dir.pwd == @cwd && ENV.to_h == @environment &&
+        location.absolute_path == @source && location.lineno == @line &&
+        File.realpath(@source) == @source && Digest::SHA256.file(@source).hexdigest == @digest
+      @used = true
+    end
+
+    # Reports actual consumption, never assumed OS success.
+    def used?
+      @used
+    end
+  end
+
+  # Scopes one exact owner fork; nested, invalid and unused capabilities refuse.
+  def self.with_fork_permit(permit)
+    refuse!("nested/invalid fork permit") unless permit.is_a?(ForkPermit) && !Thread.current[:no_git_fork]
+    Thread.current[:no_git_fork] = permit
+    result = yield
+    refuse!("unconsumed fork permit") unless permit.used?
+    result
+  ensure
+    Thread.current[:no_git_fork] = nil
+  end
+
+  # Preserves native fork identity/status and performs child-only instrumentation
+  # before user code. Non-block and cached native calls remain prohibited.
+  module OwnerFork
+    # Runs a permitted block in a real child; returns native child PID to parent.
+    def fork(*arguments, &block)
+      permit = Thread.current[:no_git_fork]
+      NoGitExecution.refuse!("fork without block permit") unless permit && block && arguments.empty?
+      permit.consume!(caller_locations(1, 1).first)
+      Thread.current[:no_git_native] = [self, :fork]
+      super do
+        Thread.current[:no_git_native] = nil
+        Thread.current[:no_git_fork] = nil
+        Thread.current[:no_git_permit] = nil
+        Thread.current[:no_git_owner_pid] = Process.pid
+        FeedbackCoverage.after_fork if ENV["ACT_COVERAGE_CONTEXT"]
+        block.call
+      end
+    ensure
+      Thread.current[:no_git_native] = nil
+    end
+
+    # Completes fresh owner evidence before native exit!, retaining its status.
+    # Other interpreters retain the ordinary exit! semantics and missing-evidence
+    # detection; this is not permission to omit active child results.
+    def exit!(*arguments)
+      if Thread.current[:no_git_owner_pid] == Process.pid && ENV["ACT_COVERAGE_CONTEXT"]
+        FeedbackCoverage.finish
+      end
+      super
+    end
+  end
+
   # Installs a one-shot, thread-local permit around the caller's real transport.
   # Returns the transport's original result; missing consumption raises and all
   # exceptions propagate. Nested permits are forbidden.
@@ -175,9 +259,26 @@ module NoGitExecution
     def spawn(*command, **options)
       options = command.pop.merge(options) if command.last.is_a?(Hash)
       permit = Thread.current[:no_git_permit]
-      NoGitExecution.refuse!("spawn without permit") unless permit
+      NoGitExecution.refuse!("spawn without permit") unless permit && permit.operation == :spawn
       permit.consume!(command, options)
+      NoGitExecution.record(permit.argv.first, "BOUND", "exact-executable-envelope")
       Thread.current[:no_git_native] = [self, :spawn]
+      super(*command, **options)
+    ensure
+      Thread.current[:no_git_native] = nil
+    end
+  end
+
+  # Exact native system boundary for reviewed validators. Native boolean, $? and
+  # spawn errors remain Ruby's own; no shell/interpreter-only permit is issued.
+  module System
+    # Consumes one system-specific full-envelope permit or refuses before entry.
+    def system(*command, **options)
+      permit = Thread.current[:no_git_permit]
+      NoGitExecution.refuse!("system without permit") unless permit && permit.operation == :system
+      permit.consume!(command, options)
+      NoGitExecution.record(permit.argv.first, "BOUND", "exact-executable-envelope")
+      Thread.current[:no_git_native] = [self, :system]
       super(*command, **options)
     ensure
       Thread.current[:no_git_native] = nil
@@ -211,17 +312,29 @@ module NoGitExecution
     end
   end
 
-  Process.singleton_class.prepend(Spawn)
-  Kernel.prepend(Spawn)
-  Kernel.singleton_class.prepend(Spawn)
-  IO.singleton_class.prepend(FileReads)
-  Kernel.prepend(FileOpen)
-  Kernel.singleton_class.prepend(FileOpen)
+  # Ordinary interpreters already prohibit every native entry, including permitted
+  # children. Keep that stronger boundary authoritative and allow their Ruby-only
+  # observation stubs; the selective wrappers belong to native selections only.
+  unless defined?(OrdinaryExecution)
+    Process.singleton_class.prepend(OwnerFork)
+    Kernel.prepend(OwnerFork)
+    Kernel.singleton_class.prepend(OwnerFork)
+    Process.singleton_class.prepend(Spawn)
+    Kernel.prepend(System)
+    Kernel.singleton_class.prepend(System)
+    Kernel.prepend(Spawn)
+    Kernel.singleton_class.prepend(Spawn)
+    IO.singleton_class.prepend(FileReads)
+    Kernel.prepend(FileOpen)
+    Kernel.singleton_class.prepend(FileOpen)
+  end
 
   # Native observation closes cached-original and Open3 fallback paths. Permits
   # authorize exactly one checked Process.spawn C entry, never Kernel shell forms.
   TRACE = TracePoint.new(:c_call) do |event|
-    receiver, operation = event.self, event.method_id
+    operation = event.method_id
+    next unless WATCHED_ENTRIES[operation]
+    receiver = event.self
     kernel = event.defined_class == Kernel || receiver.equal?(Kernel)
     process = receiver.equal?(Process) || (receiver.is_a?(Module) && receiver.name == "PTY")
     io = receiver.is_a?(Class) && receiver <= IO
@@ -236,5 +349,5 @@ module NoGitExecution
       Thread.current[:no_git_file] = nil
     end
   end
-  TRACE.enable
+  TRACE.enable unless defined?(OrdinaryExecution)
 end

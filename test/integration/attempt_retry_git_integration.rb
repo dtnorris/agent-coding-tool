@@ -6,98 +6,105 @@ require "minitest/mock"
 require "stringio"
 require "pty"
 require "timeout"
+require_relative "../support/memory_git/broker"
+require_relative "../support/child_processes"
+require_relative "../support/memory_git/reset_fixtures"
 
-# Public retry journeys use native fixture Git and real finite fake-worker
+# Public retry journeys use modeled Git and real finite fake-worker
 # processes. Sandbox, boot identity and lsof are declared external test doubles;
 # these tests make no claim of host macOS isolation or descendant containment.
 class AttemptRecoveryTest < Minitest::Test
   include TestHelpers
   include RetryDecisionSupport
 
-  # Builds independent local authorities, private data and external executables.
-  # Every ref, process and write belongs to this disposable fixture.
-  def fixture(readers: 0)
-    Dir.mktmpdir("act16-retry-") do |directory|
-      @fixture = File.realpath(directory)
-      @data, @visible = %w[data worktrees].map { |name| File.join(@fixture, name) }
-      FileUtils.mkdir_p(File.join(@data, "tasks"))
-      seed = TestHelpers.git_seed
-      @base = seed.fetch(:base)
-      repos = (["writer"] + (1..readers).map { |number| "reader#{number}" }).to_h do |name|
-        ordinary, remote = [name, "#{name}.git"].map { |part| File.join(@fixture, part) }
-        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), ordinary)
-        FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
-        git("remote", "set-url", "origin", remote, directory: ordinary)
-        [name, { "path" => ordinary, "access" => name == "writer" ? "write" : "read_only" }]
-      end
-      write_task(@data, id: "T", repositories: repos)
-      File.write(File.join(@data, "config.yml"), YAML.dump("repo_root" => @fixture, "worktree_root" => @visible))
-      @states = AgentCodingTool::StateStore.new(File.join(@data, "state"))
-      @preload = File.join(@fixture, "boundaries.rb")
-      File.write(@preload, <<~'RUBY')
-        require "agent_coding_tool"
-        class AgentCodingTool::RetryLiveness
-          def self.host_identity = { "fixture_boot" => "deterministic external identity" }
-        end
-        # Historical fixture producer only: restore the inspected v1 layout,
-        # missing host identity and old unguarded retry preparation contract.
-        if ENV["ACT16_LEGACY"]
-          class AgentCodingTool::WorktreeManager
-            alias_method :fixture_initialize, :initialize
-            def initialize(**options)
-              fixture_initialize(**options.merge(attempt_paths: false, invocation_id: nil))
-            end
-          end
-          class AgentCodingTool::AttemptRecovery
-            def retry_ready!(*) = nil
-          end
-          class AgentCodingTool::Launcher
-            alias_method :fixture_save_report, :save_report
-            def save_report
-              %w[worktree_layout worktree_creation prompt_sha256 prompt_bytes host_identity preparation_state execution_state].each { |key| @report.delete(key) }
-              fixture_save_report
-            end
-          end
-        end
-        if ENV["ACT16_CREATION_FAULT"]
-          class AgentCodingTool::WorktreeManager
-            alias_method :fixture_git!, :git!
-            def git!(path, *args)
-              raise "injected before native add" if args[0, 2] == ["worktree", "add"] && ENV["ACT16_CREATION_FAULT"] == "before"
-              output = fixture_git!(path, *args)
-              raise "injected after native add" if args[0, 2] == ["worktree", "add"] && ENV["ACT16_CREATION_FAULT"] == "after"
-              output
-            end
-          end
-        end
-        if ENV["ACT16_CHILD_START_FAULT"]
-          class AgentCodingTool::Launcher
-            alias_method :fixture_launcher_initialize, :initialize
-            def initialize(**options)
-              fixture_launcher_initialize(**options.merge(spawner: ->(*) { raise Errno::ENOENT, "fixture spawn failure" }))
-            end
-          end
-        end
-        if ENV["ACT18_BREAK_PROJECTION"]
-          module BrokenExternalProjection
-            # Negative control removes the required public activity handoff only.
-            def statuses(*arguments, **options, &block)
-              super.map { |row| row.reject { |key, _value| key == "external_activity" } }
-            end
-          end
-          AgentCodingTool::Coordinator.prepend(BrokenExternalProjection)
-        end
-      RUBY
-      File.write(File.join(@fixture, "lsof"), "#!/bin/sh\nexit 1\n")
-      File.chmod(0o755, File.join(@fixture, "lsof"))
-      fake_worker
-      yield
+  # Adds only the offline read envelope emitted by TaskReset. No index/object
+  # override is accepted; all other fields retain the shared world's validation.
+  module RetryWorldEnvironment
+    # Matches NativeCommandTransport's untimed Open3 stream encoding. Bytes and
+    # termination facts remain unchanged; binary/grouped/timed streams stay binary.
+    def call(argv, **fields)
+      response = super
+      return response if fields[:binmode] || fields[:pgroup] || fields[:timeout]
+      AgentCodingTool::CommandResult.new(
+        stdout: response.stdout.dup.force_encoding(Encoding.default_external),
+        stderr: response.stderr.dup.force_encoding(Encoding.default_external),
+        exitstatus: response.exitstatus, termsig: response.termsig)
+    end
+
+    # Accepts optional-lock suppression exactly as "0"; wrong values and unknown
+    # keys still raise MemoryGit::Mismatch through the base envelope validator.
+    def supported_environment?(environment)
+      return super unless environment.is_a?(Hash) && environment.key?("GIT_OPTIONAL_LOCKS")
+      environment["GIT_OPTIONAL_LOCKS"] == "0" && super(environment.reject { |key, _value| key == "GIT_OPTIONAL_LOCKS" })
     end
   end
 
-  # Runs Git in fixture repositories only; fixture setup failures are errors.
+  # Builds independent local authorities, private data and external executables.
+  # Every ref, process and write belongs to this disposable fixture.
+  def fixture(readers: 0, native_reset: false)
+    Dir.mktmpdir("act16-retry-") do |directory|
+      @authority_root = File.realpath(directory)
+      @fixture = File.join(@authority_root, "fixture")
+      Dir.mkdir(@fixture, 0o700)
+      @data, @visible = %w[data worktrees].map { |name| File.join(@fixture, name) }
+      FileUtils.mkdir_p(File.join(@data, "tasks"))
+      with_memory_world(@authority_root) do |world|
+        world.extend(RetryWorldEnvironment)
+        @retry_world = world
+        @retry_broker = nil
+        @hard_reset_fixture = false
+        @retry_checkouts = {}
+        world.extend(MemoryGit::ResetFixtures::World) if native_reset
+        seed = native_reset ? MemoryGit::ResetFixtures.seed : TestHelpers.git_seed
+        @base = seed.head
+        repos = (["writer"] + (1..readers).map { |number| "reader#{number}" }).to_h do |name|
+          ordinary, remote = [name, "#{name}.git"].map { |part| File.join(@fixture, part) }
+          checkout, = memory_repository(world, path: ordinary, remote: remote, template: seed)
+          @retry_checkouts[ordinary] = checkout
+          FileUtils.mkdir_p(File.join(ordinary, '.git', 'info'))
+          exclude = File.join(ordinary, '.git', 'info', 'exclude')
+          File.write(exclude, '')
+          world.configure(checkout, 'core.excludesFile', exclude)
+          [name, { "path" => ordinary, "access" => name == "writer" ? "write" : "read_only" }]
+        end
+        write_task(@data, id: "T", repositories: repos)
+        File.write(File.join(@data, "config.yml"), YAML.dump("repo_root" => @fixture, "worktree_root" => @visible))
+        @states = AgentCodingTool::StateStore.new(File.join(@data, "state"))
+        File.write(File.join(@fixture, "lsof"), "#!/bin/sh\nexit 1\n")
+        File.chmod(0o755, File.join(@fixture, "lsof"))
+        fake_worker
+        begin
+          yield
+        ensure
+          @retry_broker&.close
+          @retry_broker = nil
+        end
+      end
+    end
+  end
+
+  # Normalizes legacy setup forms to the existing object/staging APIs only.
+  # No product request is normalized; unsupported model capabilities still fail.
   def git(*args, directory:)
-    output, error, status = Open3.capture3("git", *args, chdir: directory)
+    if args == ['worktree', 'list', '--porcelain']
+      return git('worktree', 'list', '--porcelain', '-z', directory: directory).tr("\0", "\n")
+    elsif args.length == 4 && args.first(3) == ['commit', '--allow-empty', '-m']
+      checkout = @retry_checkouts.values.flat_map { |item| item.repository.worktrees.values }.find { |item| item.path == directory }
+      raise MemoryGit::Mismatch, 'missing empty-commit setup authority' unless checkout
+      commit = @retry_world.build_commit(checkout, files: checkout.index, message: args.last)
+      checkout.move_head!(commit.oid)
+      return commit.oid
+    elsif args == ['push', 'origin', 'main']
+      args = ['push', 'origin', 'refs/heads/main:refs/heads/main']
+    elsif args == ['restore', '--staged', 'file.txt']
+      args = ['reset', '-q', '--', 'file.txt']
+    elsif args.first(2) == ['commit', '-am']
+      git('add', '-A', '--', '.', directory: directory)
+      args = ['commit', '-m', *args.drop(2)]
+    elsif args.first == 'add' && args[1] != '--' && !args[1].start_with?('-')
+      args = ['add', '--', *args.drop(1)]
+    end
+    output, error, status = (@retry_broker || @retry_world).call(["git", *args], cwd: directory)
     raise "fixture git failed: #{error}" unless status.success?
     output.strip
   end
@@ -106,55 +113,32 @@ class AttemptRecoveryTest < Minitest::Test
   # Mode files permit invalid final/nonzero/sandbox-failure controls, no inference.
   def fake_worker
     path = File.join(@fixture, "codex")
-    File.write(path, <<~RUBY)
-      #!#{RbConfig.ruby}
-      require "json"
-      root = File.dirname(File.realpath(__FILE__))
-      mode = File.file?(File.join(root, "mode")) ? File.read(File.join(root, "mode")) : "clean"
-      case ARGV
-      when ["--version"] then puts "codex-cli 0.162.1"
-      when ["exec", "--help"] then puts "--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model"
-      when ["login", "--help"] then puts "status"
-      when ["login", "status"] then puts "Logged in using ChatGPT"
-      when ["sandbox", "--help"] then puts "Usage: codex sandbox [OPTIONS] [COMMAND]..."
-      else
-        if ARGV.include?("sandbox")
-          roots = [Dir.pwd] + JSON.parse(ARGV.find { |arg| arg.start_with?("sandbox_workspace_write.writable_roots=") }.split("=", 2).last)
-          ARGV.drop(ARGV.index("act-probe") + 1).each do |target|
-            allowed = mode == "leaky" || roots.any? { |root| target.start_with?(root + "/") }
-            File.write(target, "breach") if allowed
-            puts(allowed ? "1" : "0")
-          end
-        else
-          abort "unexpected command" unless ARGV.first == "exec"
-          consumed = STDIN.binmode.read
-          capture = File.join(root, "tst20-capture-prompt")
-          if File.file?(capture)
-            # Only this journey opts in; corrupt the observation, never the input.
-            recorded = consumed.dup
-            recorded.setbyte(0, recorded.getbyte(0) ^ 1) if File.read(capture) == "corrupt"
-            File.binwrite(File.join(root, "tst20-consumed-stdin"), recorded)
-            File.write(File.join(root, "tst20-worker.json"), JSON.generate("pid" => Process.pid, "workspace" => Dir.pwd))
-          end
-          puts JSON.generate("type" => "thread.started", "thread_id" => "fixture-session")
-          File.write(ARGV.fetch(ARGV.index("--output-last-message") + 1), mode == "invalid" ? "" : "No candidate. Human judgment required.\\n")
-          exit(mode == "nonzero" ? 7 : 0)
-        end
-      end
-    RUBY
-    File.chmod(0o755, path)
+    File.symlink(File.join(ChildProcesses::FIXTURES, 'retry_worker.rb'), path)
+
   end
 
   # Uses a cold public CLI process, with only host identity/lsof/sandbox external
   # boundaries faked. The real host PID disappears before the next CLI command.
   def cli(*args, fault: nil, legacy: false, child_start_fault: false, break_projection: false)
-    environment = { "PATH" => "#{@fixture}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
-                    "RUBYOPT" => "#{ENV['RUBYOPT']} -r#{@preload}", "ACT16_CREATION_FAULT" => fault,
-                    "ACT16_LEGACY" => legacy ? "1" : nil, "ACT16_CHILD_START_FAULT" => child_start_fault ? "1" : nil,
-                    "ACT18_BREAK_PROJECTION" => break_projection ? "1" : nil }
-    output, error, status = Open3.capture3(environment, RbConfig.ruby, "-I#{File.join(Dir.pwd, 'lib')}",
-                                          File.join(Dir.pwd, "bin", "agent-coding-tool"), *args)
+    environment = retry_environment.merge("ACT16_CREATION_FAULT" => fault,
+      "ACT16_LEGACY" => legacy ? "1" : nil, "ACT16_CHILD_START_FAULT" => child_start_fault ? "1" : nil,
+      "ACT18_BREAK_PROJECTION" => break_projection ? "1" : nil)
+    output, error, status = ChildProcesses.capture('retry_cli', arguments: args,
+      environment: environment, endpoint: retry_broker.endpoint, seconds: 15)
     [status.exitstatus, output, error]
+  end
+
+  # One finite 60s authority covers the multi-command retry/reset case under
+  # full guard/coverage overhead; the default 20s and 2s request deadline remain
+  # unchanged. No renewal, retry or accepted runtime budget is introduced.
+  def retry_broker
+    @retry_broker ||= MemoryGit::Broker.new(world: @retry_world, directory: @authority_root, case_id: 'retry-public', lease: 60)
+  end
+
+  # Exact test-owned boundaries; public CLI argv and lifecycle stay production.
+  def retry_environment
+    { 'TMPDIR' => @authority_root, 'PATH' => "#{@fixture}:#{ENV.fetch('PATH')}", 'AGENT_CODING_TOOL_DATA_DIR' => @data,
+      'ACT_RETRY_ROOT' => @fixture, 'ACT_RETRY_HARD_RESET' => @hard_reset_fixture ? '1' : nil }
   end
 
   # Requires a successful public command and returns output for contract checks.
@@ -231,8 +215,12 @@ class AttemptRecoveryTest < Minitest::Test
   # after inspection; the five-second select bound survives parent failure.
   def independent_worker
     reader, writer = IO.pipe
-    process = Process.spawn(RbConfig.ruby, "-e", "STDIN.read(1) if IO.select([STDIN], nil, nil, 5)",
-                            in: reader, out: File::NULL, err: File::NULL)
+    approval = ChildProcesses.permit('retry_probe')
+    process = File.open(File::NULL, 'w') do |null|
+      NoGitExecution.with_permit(approval) do
+        Process.spawn(approval.environment, *approval.argv, in: reader, out: null, err: null)
+      end
+    end
     reader.close
     [process, writer]
   end
@@ -652,7 +640,8 @@ class AttemptRecoveryTest < Minitest::Test
   # identity. Explicit closeout and fresh prepare are still separate handoffs.
   def test_child_start_failure_is_preserved_and_can_retry
     fixture do
-      assert_equal 127, cli("launch", "T", "--codex", child_start_fault: true).first
+      code, output, error = cli("launch", "T", "--codex", child_start_fault: true)
+      assert_equal 127, code, "#{output}\n#{error}"
       first = reports.first
       assert_equal "child_start_failed", first.fetch("status")
       assert_retry_failure_report(first)
@@ -870,38 +859,8 @@ class AttemptRecoveryTest < Minitest::Test
   # Extends only declared external host/fault boundaries in disposable fixtures.
   # Reset ownership, archive, state and native Git remain production code.
   def hard_reset_fixture(readers: 0)
-    fixture(readers: readers) do
-      File.open(@preload, "a") do |file|
-        file.write <<~'RUBY'
-          module ResetFaultBoundary
-            def initialize(**options)
-              super(**options.merge(fault: ->(phase, _receipt) {
-                raise IOError, "injected #{phase}" if phase == ENV["ACT28_RESET_FAULT"]
-              }))
-            end
-            def retire_evidence!(*arguments)
-              return if ENV["ACT28_BREAK_RETIREMENT"] == "1"
-              super
-            end
-          end
-          AgentCodingTool::TaskReset.prepend(ResetFaultBoundary)
-          if ENV["ACT28_LEGACY_LAYOUT"] == "1"
-            module ResetLegacyWorktrees
-              def initialize(**options)
-                super(**options.merge(attempt_paths: false, invocation_id: nil))
-              end
-            end
-            module ResetLegacyReport
-              def save_report
-                @report.delete("worktree_layout")
-                super
-              end
-            end
-            AgentCodingTool::WorktreeManager.prepend(ResetLegacyWorktrees)
-            AgentCodingTool::Launcher.prepend(ResetLegacyReport)
-          end
-        RUBY
-      end
+    fixture(readers: readers, native_reset: true) do
+      @hard_reset_fixture = true
       yield
     end
   end
@@ -910,15 +869,22 @@ class AttemptRecoveryTest < Minitest::Test
   # Captures binary streams/status separately; a bounded wait owns only this
   # newly spawned fixture child. No production process is signaled.
   def hard_reset_cli(*arguments, answer: "yes\n", interactive: true, fault: nil, break_retirement: false)
-    environment = { "PATH" => "#{@fixture}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data,
-      "RUBYOPT" => "#{ENV['RUBYOPT']} -r#{@preload}", "ACT28_RESET_FAULT" => fault,
-      "ACT28_BREAK_RETIREMENT" => break_retirement ? "1" : nil }
-    command = [RbConfig.ruby, "-I#{File.join(Dir.pwd, 'lib')}", File.join(Dir.pwd, "bin", "agent-coding-tool"), *arguments]
-    return Open3.capture3(environment, *command, stdin_data: answer == :eof ? "" : answer, binmode: true).then { |out, err, status| [status.exitstatus, out, err] } unless interactive
+    environment = retry_environment.merge('ACT28_RESET_FAULT' => fault,
+      'ACT28_BREAK_RETIREMENT' => break_retirement ? '1' : nil)
+    approval = ChildProcesses.permit('retry_cli', arguments: arguments, environment: environment,
+      endpoint: retry_broker.endpoint, options: { pgroup: true })
+    unless interactive
+      return NoGitExecution.with_permit(approval) do
+        Open3.capture3(approval.environment, *approval.argv, stdin_data: answer == :eof ? '' : answer,
+          binmode: true, **approval.options).then { |out, err, status| [status.exitstatus, out, err] }
+      end
+    end
     PTY.open do |master, slave|
       Tempfile.create("act28-out-") do |output|
         Tempfile.create("act28-err-") do |error|
-          child = Process.spawn(environment, *command, in: slave, out: output, err: error, pgroup: true)
+          child = NoGitExecution.with_permit(approval) do
+            Process.spawn(approval.environment, *approval.argv, in: slave, out: output, err: error, **approval.options)
+          end
           master.write(answer == :eof ? "\x04" : answer)
           status = Timeout.timeout(20) { Process.wait2(child).last }
           [status.exitstatus, File.binread(output.path), File.binread(error.path)]
@@ -949,8 +915,17 @@ class AttemptRecoveryTest < Minitest::Test
   def with_reset_handler(**options)
     previous_path = ENV.fetch("PATH")
     ENV["PATH"] = "#{@fixture}:#{previous_path}"
+    capture = Object.new
+    checkouts = @retry_checkouts
+    capture.define_singleton_method(:capture3) do |*argv, **fields|
+      paths = checkouts.values.flat_map { |checkout| checkout.repository.worktrees.keys }
+      raise MemoryGit::Mismatch, 'undeclared warm reset lsof' unless argv.take(4) == %w[lsof -n -P +D] &&
+        argv.length == 5 && paths.include?(argv.last) && fields.empty?
+      ChildProcesses.capture('status', arguments: ['1'])
+    end
+    liveness = AgentCodingTool::RetryLiveness.new(capture: capture)
     AgentCodingTool::RetryLiveness.stub(:host_identity, { "fixture_boot" => "deterministic external identity" }) do
-      yield AgentCodingTool::TaskReset.new(data_root: @data, **options)
+      yield AgentCodingTool::TaskReset.new(data_root: @data, liveness: liveness, **options)
     end
   ensure
     ENV["PATH"] = previous_path
@@ -1008,7 +983,7 @@ class AttemptRecoveryTest < Minitest::Test
     history = JSON.parse(succeeds("worktrees", "T"))
     assert_equal 1, history.fetch("attempts").length
     assert_equal archive, history.fetch("resets").fetch(0).fetch("archive")
-    assert_includes succeeds("status", "T"), archive
+    assert_includes succeeds("status", "T", "--full"), archive
     assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-1", directory: File.join(@fixture, "writer"))
   end
 
@@ -1084,8 +1059,8 @@ class AttemptRecoveryTest < Minitest::Test
       File.symlink(external, File.join(workspace, "external-link"))
       base_blob = git("rev-parse", "HEAD:file.txt", directory: workspace)
       staged_blob = git("rev-parse", ":added.bin", directory: workspace)
-      _out, error, status = Open3.capture3("git", "update-index", "--index-info", chdir: workspace,
-        stdin_data: "100644 #{base_blob} 1\tconflict.bin\n100644 #{staged_blob} 2\tconflict.bin\n100644 #{base_blob} 3\tconflict.bin\n")
+      _out, error, status = @retry_world.call(["git", "update-index", "--index-info"], cwd: workspace,
+        input: "100644 #{base_blob} 1\tconflict.bin\n100644 #{staged_blob} 2\tconflict.bin\n100644 #{base_blob} 3\tconflict.bin\n")
       assert status.success?, error
       File.binwrite(File.join(workspace, "conflict.bin"), "unmerged working bytes\0\xff".b)
       source_head = git("rev-parse", "HEAD", directory: workspace)
@@ -1133,7 +1108,7 @@ class AttemptRecoveryTest < Minitest::Test
         refute_equal "complete", receipt.fetch("phase")
         assert_equal 2, cli("prepare", "T").first
         assert_equal 2, cli("launch", "T", "--codex").first
-        assert_includes succeeds("status", "T"), "unfinished hard reset"
+        assert_includes succeeds("status", "T", "--full"), "unfinished hard reset"
         hard_reset_succeeds("reset", "--hard", "T")
         assert_equal [receipt.fetch("archive")], reset_receipts.map { |record| record.fetch("archive") }
         assert_equal "complete", reset_receipts.fetch(0).fetch("phase")
@@ -1385,7 +1360,7 @@ class AttemptRecoveryTest < Minitest::Test
       task["depends_on"] = []
       task.fetch("repositories").fetch("writer")["path"] = File.join(@fixture, "missing-repository")
       File.write(task_path, YAML.dump(task))
-      output = succeeds("status", "T")
+      output = succeeds("status", "T", "--full")
       assert_includes output, "T: BLOCKED"
       assert_includes output, "configuration: writer: repository path does not exist"
     end

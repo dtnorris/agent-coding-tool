@@ -9,12 +9,13 @@ require "tmpdir"
 require "open3"
 require_relative "feedback_runtime"
 require_relative "feedback_coverage"
+require_relative "support/source_identity"
 
 # One invocation's coverage, runtime reference and independent hang deadline.
 # Policy is operator-owned. Qualification collects evidence but always fails the
 # acceptance gate; it cannot manufacture accepted percentages or runtime limits.
 module TestFeedback
-  RELEVANT_ENV = %w[SEED RUBYOPT BUNDLE_GEMFILE TMPDIR LANG LC_ALL TZ
+  RELEVANT_ENV = %w[PATH SEED RUBYOPT BUNDLE_GEMFILE TMPDIR LANG LC_ALL TZ
                     AGENT_CODING_TOOL_DATA_DIR ACT_GIT_CONTRACT_TMPDIR].freeze
   REQUIRED_LAYERS = %w[ordinary git_contract native_default native_integration].freeze
 
@@ -28,7 +29,7 @@ module TestFeedback
   # Returns exact bytes' hashes for production, harness, selections and locked
   # dependencies. Discovery is repeated at completion to reject added files.
   def self.source_files(root)
-    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + %w[bin/agent-coding-tool Rakefile Gemfile Gemfile.lock]).sort
+    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + %w[bin/agent-coding-tool test/support/bin/rake Rakefile Gemfile Gemfile.lock]).sort
     paths.to_h { |path| [path, Digest::SHA256.file(File.join(root, path)).hexdigest] }
   end
 
@@ -49,13 +50,12 @@ module TestFeedback
     raise "feedback: invalid separate hang deadline" unless seconds.is_a?(Numeric) && seconds.finite? && seconds.positive?
 
     directory = Dir.mktmpdir("act-feedback-")
-    head, error, status = Open3.capture3("git", "rev-parse", "HEAD", chdir: root)
-    raise "feedback: source HEAD unavailable: #{error}" unless status.success?
-    git_version, error, status = Open3.capture3("git", "--version", chdir: root)
-    raise "feedback: Git version unavailable: #{error}" unless status.success?
     hashes = source_files(root)
+    identity = SourceIdentity.capture(root: root, paths: hashes.keys)
+    raise "feedback: source HEAD unavailable: #{identity['reason']}" unless identity['head']
     @context = { "schema" => "act-test-feedback/v1", "invocation" => SecureRandom.uuid,
-      "root" => File.realpath(root), "directory" => directory, "head" => head.strip, "git_version" => git_version.strip,
+      "root" => File.realpath(root), "directory" => directory, "head" => identity.fetch("head"), "git_version" => identity.fetch("git_version"),
+      "source_identity" => identity,
       "source_sha256" => Digest::SHA256.hexdigest(JSON.generate(hashes)), "source_files" => hashes,
       "sources" => FeedbackCoverage.sources(root), "layout" => FeedbackCoverage.layout(root),
       "policy_path" => policy_path, "policy_sha256" => File.file?(policy_path) ? Digest::SHA256.file(policy_path).hexdigest : nil,

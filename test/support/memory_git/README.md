@@ -201,3 +201,80 @@ implementation or compatibility with a live Git version. Zero-Git removes live
 implementation conformance; neither component success nor unchanged production
 source proves all-suite coverage/runtime acceptance. Host checkpoint registration,
 gated validation and operator acceptance remain separate from worker export.
+
+## Shared fixtures and cold interpreters (TST-37)
+
+`test_helper` loads the zero-Git guard before fixture/product setup. It no longer
+discovers Git with xcrun or builds native seed repositories. `TestHelpers.git_seed`
+returns an immutable `Template`, **not** a directory/hash. Use
+`with_memory_world(root) { |world| ... }` and
+`memory_repository(world, path:, remote:, template:)` for fresh ordinary/remote
+stores. `world.copy` and `world.configure` replace filesystem copy/config setup;
+physical attack mutations still use actual files. Legacy leaf calls that fetch
+seed directories, run Git directly, or expect fabricated/native modeled statuses
+must migrate with TST-38–41. They have no compatibility fallback to Git.
+
+`MemoryGit::Session::Transport.new(world)` is the explicit public-CLI composition
+boundary. It routes only the two declared default immutable skill reads to their
+separate read-only source; other commands reach the case world unchanged. Explicit
+nondefault source fixtures belong in the mutable world. `Session.with(world)`
+supplies the same default for legacy constructors inside one serial case scope.
+It refuses replacing another active world and restores the prior scope on failure.
+`Session.with_capture` nests declared non-Git capability observations without
+capturing an original native method. It is not a parallel test context API.
+
+Launcher, manual overlap, apply, retry and recovery helpers use these builders and
+the common `CommandResult`. Launcher preflight responses stay in-process; its
+worker spawner adapts the declared external executable to an exact approved Ruby
+script while production retains reservation, pipes, signals, status and reports.
+The `mutable_remote:` launcher keyword remains accepted; every memory fixture now
+has independent upstream authority. `RecoveryObservations.status(code)` is reserved
+for assertions requiring an actual reaped PID; ordinary modeled observations use
+exit facts without a child. GitContract's capture3 replay accepts either genuine
+native status or `CommandResult`; boolean-only records cannot supply termination
+facts. `Replay#call` additionally matches environment, stdin, timeout and options
+exactly and returns the shared result protocol.
+
+Only a necessary process-contract world starts `Broker.new(world:, directory:,
+case_id:, lease: 20, seconds: 2)`. The existing parent Ruby interpreter owns its
+mutable state; one leased server thread serializes individual commands. There is
+no fork copy, per-Git child or separate broker executable. Construct builders and
+fault schedules before starting it. Once started, parent and child commands use
+the broker/client; do not mutate retained model objects concurrently. Whole ACT
+workflows are not locked, so ordinary filesystem locks/races remain observable.
+The caller supplies an existing canonical, private, UID-owned directory whose
+socket path fits the host's Unix socket limit. It must stay within the authorized
+fixture boundary; there is no alternate transport or shared-directory fallback.
+
+`broker.endpoint` carries the fresh case capability. `Client.new(endpoint)` sends
+version, case, token and unique request ID with each command. Frames have a 4 MiB
+limit, strict data-only JSON/base64 values and binary String encoding preservation.
+Connect, frame IO and dispatch have deadlines; the owner also has a finite lease.
+Duplicate IDs, stale/wrong capability, reset, unknown operations and malformed
+envelopes refuse. A failed client is poisoned: mutations are never retried after
+ambiguous completion. Inspect retained files, request records and broker events.
+`close` stops only its own thread/socket, checks faults and leaves candidate files
+intact; it will not unlink a replaced socket. New cases construct fresh worlds
+and tokens instead of resetting a running authority.
+
+`ChildProcesses.permit/capture` accepts only named, hash-pinned scripts. It binds
+argv/env/cwd/options and propagates reviewed Bundler, zero-Git and active coverage
+preloads. An explicit `endpoint:` additionally preloads the client before ACT;
+`cold_cli` then loads the actual `bin/agent-coding-tool`. Supply a broker endpoint
+for worker journeys that call ACT; independent non-Git children need only their
+declared process bootstrap. Clearing/replacing guard or coverage settings cannot
+borrow the permit. No arbitrary inline Ruby, shell launcher or Git shim is allowed.
+
+`verify_adapters.rb --seed 3701` is an independent fixed shared-adapter component
+gate. `verify_shared.rb --seed 3701` is the complete fixed TST-37 component gate,
+including continuous cold public CLI/remote/candidate, omitted/stale handoffs,
+protocol refusals, timeout, unrelated sentinel survival, locks, signals and active
+child coverage. Neither filters/skips cases nor establishes full-suite acceptance.
+Set fresh `MEMORY_SHARED_EVIDENCE`, `MEMORY_SHARED_AUDIT`, `MEMORY_SHARED_SOURCE`
+paths to retain results, internal audit/startup timings and source/index hashes.
+`shared_case_map.json` maps additive checks to retained prior purposes; all original
+family inventories remain unchanged. Report sandbox socket failures as blocked,
+not successful protocol tests. Independent OS process auditing remains unavailable.
+TST-43 integrates the runner/coverage census; TST-45 owns complete integration,
+coverage retention and runtime acceptance. The existing native-Git baseline is
+not rerun or replaced by these component timings.

@@ -1,77 +1,55 @@
 # frozen_string_literal: true
 
 require_relative "git_contract/observations"
+require_relative "support/child_processes"
 
-# Manual-overlap decisions retain native Git, sandbox validation and execution.
+# Manual-overlap decisions share memory Git and retain bounded real writer processes.
 # Only four fixed external Codex capability/authentication reads are replayed.
 module ManualOverlapSupport
   PREFLIGHT = [["--version"], ["exec", "--help"], ["login", "--help"], ["login", "status"]].freeze
-  WORKER = <<~'CHILD'
-    path, lease = ARGV
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + Float(lease)
-    File.write(path, "external work")
-    STDOUT.puts("ready")
-    STDOUT.flush
-    loop do
-      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      exit 75 unless remaining.positive?
-      if IO.select([STDIN], nil, nil, [remaining, 0.025].min)
-        exit(STDIN.read(1) == "R" ? 0 : 76)
-      end
-      File.write(path, "external work")
-    end
-  CHILD
-
-  # Records actual fake-CLI responses once per interpreter, including genuine
-  # statuses. Exact argv/environment remain inputs; no status child or production
-  # validator is substituted. Native failures raise rather than populate cache.
+  # Declares exact capability/auth responses without executing a fake CLI.
+  # Each invocation owns its observations; no mutable or process-status cache.
   def manual_preflight_observations
     environment = %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
     executable = File.realpath(@fake)
-    key = [environment, executable]
-    cache = ManualOverlapSupport.instance_variable_get(:@preflight)
-    unless cache
-      cache = {}
-      ManualOverlapSupport.instance_variable_set(:@preflight, cache)
-    end
-    cache[key] ||= PREFLIGHT.map do |arguments|
-      argv = [environment, executable, *arguments]
-      result = Open3.capture3(*argv, unsetenv_others: true)
-      raise "manual-overlap native preflight failed: #{arguments.inspect}" unless result.last.success?
-      GitContract::Observation.new(argv: argv, cwd: nil, result: result)
+    responses = [[@fake_version, "", 0], [@fake_help, "", 0],
+                 ["status Show login status", "", 0], ["", @fake_auth, @fake_auth.empty? ? 1 : 0]]
+    PREFLIGHT.zip(responses).map do |arguments, (stdout, stderr, code)|
+      result = AgentCodingTool::CommandResult.new(stdout: stdout, stderr: stderr, exitstatus: code)
+      GitContract::Observation.new(argv: [environment, executable, *arguments], cwd: nil, result: result.to_ary)
     end
   end
 
-  # Replays four exact native observations in order, checking the environment
-  # clearing option Replay does not model. Sandbox/Git calls stay native. Missing,
+  # Replays four exact declared observations in order, checking the environment
+  # clearing option Replay does not model. Other calls use declared adapters. Missing,
   # duplicate or changed reads fail, including after an expected launch refusal.
   def with_manual_preflight(expected: true, native_capture: nil)
     replay = GitContract::Replay.new(expected ? manual_preflight_observations : [])
-    original = native_capture || Open3.method(:capture3)
+    external = native_capture || method(:unit_capture)
     executable = File.realpath(@fake)
     capture = lambda do |*argv, **options|
       if argv[1] == executable && !argv.include?("sandbox")
         raise GitContract::UnexpectedObservation, "manual-overlap preflight options changed" unless options == { unsetenv_others: true }
         replay.capture3(*argv)
       else
-        original.call(*argv, **options)
+        external.call(*argv, **options)
       end
     end
-    Open3.stub(:capture3, capture) { yield }
+    MemoryGit::Session.with_capture(capture) { yield }
   ensure
     replay&.verify!
   end
 
-  # Runs the complete production launch path: native worktree ownership, probe,
+  # Runs the complete production launch path: memory worktree ownership, probe,
   # reservation, process and durable reports. Returns its exit code; production
   # exceptions and observation mismatches propagate without coercion.
   def overlap_launch(instance: nil, preflight: true, native_capture: nil, **options)
-    raise "manual-overlap requires native fixtures" unless @real_git && @real_process
+    raise "manual-overlap requires memory Git and process fixtures" unless @real_git && @real_process
     instance ||= launcher(real_sandbox_probe: true)
     with_manual_preflight(expected: preflight, native_capture: native_capture) { instance.launch(@target, **options) }
   end
 
-  # Prepares a distinct target in one native manual-worker world. Failed attempt
+  # Prepares a distinct target in one memory manual-worker world. Failed attempt
   # evidence stays intact; another matrix row needs no product reset or recovery.
   def prepare_overlap_target(id, readers: {})
     @target = id
@@ -94,8 +72,13 @@ module ManualOverlapSupport
     release_read, release_write = IO.pipe
     ready_read, ready_write = IO.pipe
     worker = { reaped: false }
-    worker[:pid] = Process.spawn(RbConfig.ruby, "-e", WORKER, path, lease.to_s,
-                                 in: release_read, out: ready_write, err: File::NULL, pgroup: true)
+    null = File.open(File::NULL, "w")
+    approval = ChildProcesses.permit("manual_worker", arguments: [path, lease.to_s], options: { pgroup: true })
+    worker[:pid] = NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv, **approval.options,
+        in: release_read, out: ready_write, err: null)
+    end
+    null.close
     release_read.close
     ready_write.close
     assert_equal "ready\n", Timeout.timeout(5) { ready_read.gets }
@@ -123,7 +106,7 @@ module ManualOverlapSupport
         end
       end
     ensure
-      [release_read, release_write, ready_read, ready_write].compact.each { |pipe| pipe.close unless pipe.closed? }
+      [release_read, release_write, ready_read, ready_write, null].compact.each { |pipe| pipe.close unless pipe.closed? }
     end
   end
 

@@ -1,0 +1,72 @@
+{
+  "scope": "Additive shared-adapter compatibility proof. Existing case identities and all family behavior obligations remain with their owners; this map does not consolidate or claim to execute those families.",
+  "cases": [
+    {
+      "prior_cases": [
+        "LauncherTest#test_stale_input_and_changed_remote_authority_fail_closed",
+        "CodingSkillTest#test_branch_movement_and_dirty_source_do_not_change_prepare_or_cold_launch"
+      ],
+      "purpose": "Authoritative mutable cold visibility; exact binary framing; no per-command processes; stale/missing/duplicate/unknown handoffs refuse; bounded ownership/cleanup; genuine child bytes/status/coverage.",
+      "new_cases": [
+        "SharedWorldVerifier#test_in_process_commands_have_no_broker_or_process_startup",
+        "SharedWorldVerifier#test_cold_public_cli_shares_remote_candidate_and_durable_state",
+        "SharedWorldVerifier#test_omitted_handoff_and_stale_snapshot_are_detected",
+        "SharedWorldVerifier#test_binary_wire_results_and_strict_envelopes",
+        "SharedWorldVerifier#test_stale_wrong_case_duplicate_unknown_and_malformed_requests_refuse",
+        "SharedWorldVerifier#test_timeout_death_cleanup_and_case_isolation",
+        "SharedWorldVerifier#test_unrelated_sentinel_locks_and_signal_status_survive_cleanup",
+        "SharedWorldVerifier#test_descendant_guard_cannot_be_stripped_or_replaced",
+        "SharedWorldVerifier#test_coverage_preload_and_active_child_evidence_are_preserved"
+      ],
+      "negative_controls": "See each named case: omitted handoff/effect, stale token/state, wrong request identity, unknown commands, dropped bootstrap or missing active coverage evidence."
+    },
+    {
+      "prior_cases": [
+        "LauncherTest#test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout",
+        "ManualParallelLaunchTest#test_manual_worker_missed_release_expires_and_is_reaped",
+        "LauncherTest#test_process_failure_and_invalid_final_preserve_real_exit_and_reservation"
+      ],
+      "purpose": "Direct independent memory setup; production prepare/worktree identity; finite preflight with missing-observation control; real writer ready/release/liveness.",
+      "new_cases": [
+        "SharedLauncherAdapterVerifier#test_launcher_and_manual_preflight_adapter_contract",
+        "SharedLauncherAdapterVerifier#test_manual_worker_ready_release_and_lease",
+        "SharedLauncherAdapterVerifier#test_launcher_real_worker_boundary_and_reaped_status"
+      ],
+      "negative_controls": "See each named case: omitted handoff/effect, stale token/state, wrong request identity, unknown commands, dropped bootstrap or missing active coverage evidence."
+    },
+    {
+      "prior_cases": [
+        "ApplyHandoffGitIntegrationTest#test_public_cli_new_task_sibling_validation_and_target_commit"
+      ],
+      "purpose": "Independent file/mode/index/ignore/config/copy state; exact shared result transport; unknown/omitted command control.",
+      "new_cases": [
+        "SharedApplyAdapterVerifier#test_apply_fixture_dirty_state_copy_and_config_adapters",
+        "SharedApplyAdapterVerifier#test_apply_observation_protocol_and_missing_handoff"
+      ],
+      "negative_controls": "See each named case: omitted handoff/effect, stale token/state, wrong request identity, unknown commands, dropped bootstrap or missing active coverage evidence."
+    },
+    {
+      "prior_cases": [
+        "AttemptRecoveryTest#test_child_start_failure_is_preserved_and_can_retry"
+      ],
+      "purpose": "Production worktree/report schema; genuinely reaped PID; no subprocess for modeled observations; exit/signal/exception fidelity.",
+      "new_cases": [
+        "SharedRecoveryAdapterVerifier#test_retry_fixture_and_genuine_reaped_pid",
+        "SharedRecoveryAdapterVerifier#test_replay_result_bytes_exit_signal_and_exception_adaptation"
+      ],
+      "negative_controls": "See each named case: omitted handoff/effect, stale token/state, wrong request identity, unknown commands, dropped bootstrap or missing active coverage evidence."
+    },
+    {
+      "prior_cases": [
+        "PublisherTest#test_default_selects_lifecycle_state_and_prompts_only",
+        "CodingSkillTest#test_complete_skill_once_with_identity_and_only_offline_git_reads"
+      ],
+      "purpose": "Hash-checked immutable sources and finite publisher/skill responses; strict missing/extra request accounting.",
+      "new_cases": [
+        "SharedSourceAdapterVerifier#test_skill_snapshot_and_finite_source_observations",
+        "SharedSourceAdapterVerifier#test_publisher_observation_result_and_consumption"
+      ],
+      "negative_controls": "See each named case: omitted handoff/effect, stale token/state, wrong request identity, unknown commands, dropped bootstrap or missing active coverage evidence."
+    }
+  ]
+}

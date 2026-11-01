@@ -1,52 +1,36 @@
 # frozen_string_literal: true
 
+require_relative "support/no_git_execution"
+require_relative "support/memory_git/session"
 require "fileutils"
 require "minitest/autorun"
 require "tmpdir"
 require "agent_coding_tool"
 
 module TestHelpers
-  # Returns PATH with Apple's selected native Git ahead of its developer-tool
-  # dispatcher, only when PATH currently selects /usr/bin/git on Darwin.
-  # Other Git installations retain precedence. Resolution failures raise; Git
-  # commands, results and ownership checks are never simulated or cached.
-  def self.fixture_command_path
-    path = ENV.fetch("PATH")
-    selected = path.split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "git") }
-                   .find { |candidate| File.file?(candidate) && File.executable?(candidate) }
-    return path unless RbConfig::CONFIG.fetch("host_os").match?(/darwin/) && selected &&
-      File.realpath(selected) == "/usr/bin/git"
-
-    output, error, status = Open3.capture3("/usr/bin/xcrun", "--find", "git")
-    native = output.strip
-    raise "fixture Git resolution failed: #{error}" unless status.success? && native.start_with?("/") &&
-      File.file?(native) && File.executable?(native) && File.realpath(native) != "/usr/bin/git"
-
-    "#{File.dirname(File.realpath(native))}#{File::PATH_SEPARATOR}#{path}"
+  # Immutable seed only. Consumers construct fresh authority with memory_repository;
+  # shell-style copying of a seed directory is deliberately no longer supported.
+  def self.git_seed
+    @git_seed ||= MemoryGit::Template.files({ "file.txt" => "base\n" })
   end
 
-  def self.git_seed
-    return @git_seed if @git_seed
+  # Yields one fresh case world. Files and required faults are checked/cleaned by
+  # the caller's fixture lifetime; no process or broker starts on this path.
+  def with_memory_world(root)
+    world = MemoryGit::PatchWorld.new(root: root)
+    MemoryGit::Session.with(world) { yield world }
+  ensure
+    world&.verify!
+  end
 
-    directory = Dir.mktmpdir("act-git-seed-")
-    ordinary = File.join(directory, "ordinary")
-    remote = File.join(directory, "remote.git")
-    run = lambda do |*args, chdir: nil|
-      _out, err, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
-      raise "Git seed failed: #{err}" unless status.success?
-    end
-    run.call("init", "--initial-branch=main", ordinary)
-    run.call("config", "user.email", "fixture@example.test", chdir: ordinary)
-    run.call("config", "user.name", "Fixture", chdir: ordinary)
-    File.write(File.join(ordinary, "file.txt"), "base\n")
-    run.call("add", "file.txt", chdir: ordinary)
-    run.call("commit", "-m", "base", chdir: ordinary)
-    run.call("clone", "--bare", ordinary, remote)
-    run.call("remote", "add", "origin", remote, chdir: ordinary)
-    base, err, status = Open3.capture3("git", "rev-parse", "HEAD", chdir: ordinary)
-    raise "Git seed failed: #{err}" unless status.success?
-    Minitest.after_run { FileUtils.remove_entry(directory) }
-    @git_seed = { root: directory, base: base.strip }.freeze
+  # Builds independent ordinary/remote authority directly from an immutable seed.
+  # Returns [checkout, remote]; unknown/colliding paths fail rather than copy Git.
+  def memory_repository(world, path:, remote:, template: TestHelpers.git_seed)
+    checkout = world.repository(path: path, template: template)
+    upstream = world.remote(url: remote, from: checkout)
+    FileUtils.mkdir_p(remote) if remote.start_with?(world.root + "/")
+    world.connect(checkout, upstream)
+    [checkout, upstream]
   end
 
   FakeInspector = Struct.new(:heads, :local_dirty, :remote_urls, keyword_init: true) do
@@ -117,7 +101,4 @@ module TestHelpers
   end
 end
 
-# Native suites and their cold CLI children use the same real Git executable.
-# Ordinary feedback cannot execute dependencies, even during helper startup.
-ENV["PATH"] = TestHelpers.fixture_command_path unless ENV["ACT_ORDINARY_SUITE"] == "1"
 require_relative "coding_skill_support"

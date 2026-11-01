@@ -17,7 +17,7 @@ module PublisherObservations
   # B validates the tuple and raises ArgumentError for an invalid observation.
   def git_observation(arguments, stdout = "", stderr: "", success: true)
     GitContract::Observation.new(argv: ["git", *arguments], cwd: @root,
-      result: [stdout.b, stderr.b, success])
+      result: [stdout.b, stderr.b, AgentCodingTool::CommandResult.new(stdout: stdout.b, stderr: stderr.b, exitstatus: success ? 0 : 1)])
   end
 
   # Returns checkout identity observations for the fixture's top-level path.

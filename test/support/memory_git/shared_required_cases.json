@@ -1,0 +1,20 @@
+[
+  "SharedApplyAdapterVerifier#test_apply_fixture_dirty_state_copy_and_config_adapters",
+  "SharedApplyAdapterVerifier#test_apply_observation_protocol_and_missing_handoff",
+  "SharedLauncherAdapterVerifier#test_launcher_and_manual_preflight_adapter_contract",
+  "SharedLauncherAdapterVerifier#test_launcher_real_worker_boundary_and_reaped_status",
+  "SharedLauncherAdapterVerifier#test_manual_worker_ready_release_and_lease",
+  "SharedRecoveryAdapterVerifier#test_replay_result_bytes_exit_signal_and_exception_adaptation",
+  "SharedRecoveryAdapterVerifier#test_retry_fixture_and_genuine_reaped_pid",
+  "SharedSourceAdapterVerifier#test_publisher_observation_result_and_consumption",
+  "SharedSourceAdapterVerifier#test_skill_snapshot_and_finite_source_observations",
+  "SharedWorldVerifier#test_binary_wire_results_and_strict_envelopes",
+  "SharedWorldVerifier#test_cold_public_cli_shares_remote_candidate_and_durable_state",
+  "SharedWorldVerifier#test_coverage_preload_and_active_child_evidence_are_preserved",
+  "SharedWorldVerifier#test_descendant_guard_cannot_be_stripped_or_replaced",
+  "SharedWorldVerifier#test_in_process_commands_have_no_broker_or_process_startup",
+  "SharedWorldVerifier#test_omitted_handoff_and_stale_snapshot_are_detected",
+  "SharedWorldVerifier#test_stale_wrong_case_duplicate_unknown_and_malformed_requests_refuse",
+  "SharedWorldVerifier#test_timeout_death_cleanup_and_case_isolation",
+  "SharedWorldVerifier#test_unrelated_sentinel_locks_and_signal_status_survive_cleanup"
+]

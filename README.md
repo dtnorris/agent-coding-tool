@@ -1363,7 +1363,11 @@ start, reset or reprepare the task. The private attempt directory receives a
 mandatory exception receipt before launch, a separate child-result receipt, and
 a mandatory final receipt. Nonzero/signal/spawn results remain failures; receipt
 failure is also nonzero and reports the actual child result separately. A final
-receipt failure leaves any durable child-result receipt available for inspection.
+receipt failure leaves any durable child-result receipt available for inspection,
+including its bounded stdout/stderr capture metadata and exact command outcome.
+Shared evidence selects that command receipt when the final receipt is absent;
+its unchanged post-check and candidate status remain unverified. Explicit refresh
+can select a later final receipt without changing an existing selection.
 Read-only verification leaves stale observations in fresh gate evidence instead
 of rewriting lifecycle checkpoint status. Candidate tampering, changed source/
 workspace identity, active/unknown managed writers and external activity still
@@ -1684,14 +1688,15 @@ an existing first-run handle never rolls forward. At most 16 selections are kept
 
 Bytes are base64, with whole-source and chunk SHA-256, total size, next offset
 and complete/truncated/pending/missing status. Empty files are complete bytes.
-Files over 4 MiB refuse; task/attempt/session/provenance drift, changed sources,
+Fixed v1 grants refuse files over 4 MiB; task/attempt/session/provenance drift, changed sources,
 symlinks, traversal and nonregular files refuse before release. Transcript means
 the approved ACT `stdout.jsonl`, never unmanaged Codex rollout discovery.
 Checkpoint/candidate evidence comes from an existing launch-bound checkpoint;
 each matching finished gate is exposed as `validation:gate-UUID.finished.json`.
 Gate receipts report recorded command/candidate outcomes, not independent
-revalidation. ACT gate v1 does not capture raw output: `validation_output` stays
-missing. Reading runs no validation and cannot manufacture missing checkpoint
+revalidation. Historical uncaptured receipts remain uncaptured. Fixed v1 grants
+leave `validation_output` missing; task-sharing v2 below exposes newly captured
+invocation output. Reading runs no validation and cannot manufacture missing checkpoint
 evidence from worker claims or arbitrary worker paths.
 
 The permanent private admission ledger stores bounded identities, paths and
@@ -1729,6 +1734,133 @@ The native public-entry case fakes only worker/checkpoint production, exercises
 real stdio/CLI handoffs and compares returned bytes to independent file oracles.
 Actual-host two-run retrieval, account boundary and hosted teardown remain
 separate owner acceptance gates, with original run history retained in place.
+
+### Foreground task sharing
+
+`act share` opts into version-two task sharing; existing `evidence` v1 grants
+keep their fixed scope. After reviewing the existing endpoint/account and the
+**whole personal Work workspace audience**, perform one explicit local setup:
+
+```sh
+act share setup --env-file /Users/davidnorris/code/agent-coding-tool/.env \
+  --client /CANONICAL/tunnel-client --runtime-dir /EXISTING/PRIVATE/runtime \
+  --account ACCOUNT --workspace 'PERSONAL WORK WORKSPACE' --endpoint tunnel_ID/main
+```
+
+Use the installed client's actual canonical executable and an existing owned
+0700 runtime directory. Setup records those local facts in the private sibling
+`<data-directory>-sharing`; it does not create a hosted endpoint, edit saved
+connection settings, read an old grant as consent or copy the `.env`. The same
+credential precedence and child-only delivery described above apply. Setup is
+exclusive: review/remove incorrect local setup separately rather than silently
+replacing an audience. ACT refuses missing facts and unknown ownership.
+
+In terminal one, keep `act share tunnel --min 30` foregrounded. Omitting `--min`
+gives 60 minutes. Startup exposes **zero tasks** and prints audience/readiness
+separately from retrieval. In terminal two, `act share TASK` grants that
+registered task for 30 minutes; `act share TASK --min N` explicitly renews its
+lease. Both commands accept decimal integers 1..60. Invalid durations refuse
+before mutation. Sharing requires the same owner/data root and a ready tunnel;
+it does not execute a task or grant publication authority. Multiple tasks may
+be shared without restarting the tunnel or refreshing the tool catalog.
+
+`act share status`, `act share revoke TASK` and `act share stop` are supported
+from another terminal; Ctrl-C also stops the foreground tunnel. Scope edits
+serialize with reads. Effective task expiry is the earlier of its requested
+deadline and tunnel expiry; renewal changes neither tunnel lifetime nor its
+8192-request, 128 MiB wire and 64 MiB decoded cumulative budgets. Reconnects and
+adapter restarts replenish nothing. Revocation/expiry prevents subsequent
+chunk release, including existing handles. Previously delivered bytes **cannot
+be recalled**. A new tunnel has a fresh identity and starts with no task shares;
+explicitly re-share before retrieving durable artifacts again. A failed startup
+reservation can be closed with `act share stop` after its controller exits.
+
+Managers use `read_run_evidence` with `operation: discover` to inventory shared
+task IDs, then `discover` or explicit `refresh` with `task_id` to obtain context
+and exact attempt/invocation/session identities. Run pages contain at most 16
+entries; repeat with the returned `next_offset` as `offset`. Pending runs without a managed session identity are marked
+pending. Select one exact run with those four fields; then use its returned
+handle/revision for manifest/read chunks as described above. Refresh discovers
+new runs/artifacts; an old selection never silently advances to another attempt.
+Version-two manifests also page 16 artifacts at a time: request `manifest` with
+its handle/revision and returned `next_offset` as `offset` for subsequent pages.
+Version-two managed transcripts use a separate bounded streaming path: up to
+64 MiB per source, JSON records up to 4 MiB, and reads up to 16 KiB. Approval
+checks the managed session and full-source digest. Each read scans and hashes
+the entire selected source before releasing its chunk, using bounded memory;
+changes anywhere in the source refuse the old selection. This trades extra
+local I/O for immutable reads without keeping transcript bodies in admission
+state. The existing cumulative request/wire/decoded budgets still apply.
+Transcripts beyond either scan/record limit are explicitly `missing` with a
+limit reason in the manifest; other approved artifacts remain available.
+Other file limits and fixed v1 approvals are unchanged.
+
+Within the selected run, v2 follows the published checkpoint `previous_record`
+chain (at most 64 records). Manifests expose `checkpoint:RECORD.json` and
+`candidate:ARTIFACT.patch`; each validation receipt names its exact checkpoint
+approval, and its streams/results remain tied to that receipt. Failed A and
+passing B stay discoverable after B is recorded. The existing `checkpoint` and
+`candidate` names pin the newest matching record at selection time; existing
+handles retain their original bytes and never follow `current.json` again.
+An explicit new selection discovers newly published history. Missing/corrupt
+links, cycles, ambiguous checkpoint directories and mismatched receipt/candidate
+bindings refuse; filenames alone do not establish a run binding.
+Discovery context describes the current registered task/preparation; the
+launch-bound `prompt` and `launch_input` artifacts preserve what that exact
+worker consumed, including its original task rules and pinned guidance.
+Changing pending sources require a new selection. No global-latest selector,
+filesystem path, command or lifecycle operation is accepted by the tool.
+
+The foreground prints bounded `ACT_SHARE` lines for actual evidence-tool
+requests, including refusals: UTC time, operation, validated identities when
+available, artifact kind, delivered decoded bytes, actual wire bytes and result.
+No bodies, private paths, credentials or claimed agent identity are logged.
+Logging/storage/backpressure failures close admission and remain separate from
+successful evidence delivery. Native owned cleanup and hosted shutdown still
+need their own observations; a local READY line is not Work acceptance.
+
+Normal headless workers use the envelope's `checkpoint export` command with
+`--repository NAME`, optionally `--focused PATH` for bounded worker-owned
+focused-check evidence beside the patch. Export creates the patch, companion
+`.apply.json` and `.export.json` package. These remain worker claims. After the
+worker exits, the launcher validates and copies a valid package from its exact
+recorded fixture into durable private run evidence. Missing/refused registration
+is explicit and does not change the worker's exit status. To register later,
+the host may use this supported bounded command with identities from that run:
+
+```sh
+act evidence register --task TASK --attempt N --invocation INVOCATION \
+  --codex-session SESSION --package /RECORDED/FIXTURE/TASK.patch.export.json --sha256 PACKAGE_SHA256
+```
+
+Only named, bounded regular owned files from that launch-recorded fixture are
+copied; digests, task, workspace, repository and baseline must match. There is
+no recursive import, Downloads scan, filename-inferred run binding or command
+execution during reads. Copying claims is separate from host checkpoint
+record/verify and acceptance. It cannot fabricate uncaptured historical logs.
+
+Host validation uses `checkpoint gate`, including bounded intentional failures
+in disposable tasks. Each exact invocation retains its receipt and capped
+binary stdout/stderr; optional supported observation JSON remains discoverable.
+Version-two manifests name these as `validation:gate-UUID.finished.json`,
+`validation_output:gate-UUID.stdout`/`.stderr`, and available
+`validation_result:gate-UUID.observation.json`. Started invocations and live
+streams are pending; loss/truncation remains explicit. Registered worker
+candidate/apply/focused evidence uses immutable `worker:ID:KIND` names. Durable
+files live outside worktrees and admissions, so tunnel expiry/restart cannot
+delete them. Managers read available evidence first and identify the precise
+missing acceptance fact; optional detail is not a reason to request log uploads.
+
+The offline composed journey uses a fake external worker/transport with real
+CLI, preservation, capture, registration, scopes and reader logic. Declared
+fake-client native tests isolate only their synthetic endpoint's host inventory;
+real occupied-endpoint/unknown-owner checks remain enabled. Final qualification
+still belongs to David: with an approved real tunnel active, share a disposable
+task, run the required checkpoint-gated full offline validation, and have Work
+retrieve a passing and an intentional failing invocation with independent
+hash/status checks and visible activity. Record exact commands, native/hosted
+cleanup, setup versus per-run interventions and remaining missing facts. Do not
+stop the real tunnel to make the test suite pass or publish solely for retrieval.
 
 ## Implementation checkpoints
 
@@ -1805,9 +1937,13 @@ and patch hash to an individual invocation. They retain exact top-level argv,
 workspace argument, actual cwd when execution is reached, timestamps, and only
 the gate process's `TMPDIR`, `TMP`, `TEMP`, `SEED` and `TESTOPTS` settings
 (null means unset). Environment inheritance and command execution are unchanged:
-ACT still calls `system(*command, chdir: workspace)`, without interception,
-redirection, shell instrumentation or additional environment overrides.
-Stdout/stderr remain visible and complete output is explicitly **not captured**.
+ACT calls the same `system` argv/cwd with inherited environment and no shell
+instrumentation or extra environment overrides. Two binary pipes preserve
+console visibility while retaining up to 4 MiB per stream in exclusive private
+files beside the invocation receipt. Counts, hashes, observed byte totals,
+capture/persistence errors, console-delivery errors and truncation are separate
+from command and candidate outcomes. Empty output is complete. Capture cleanup
+has a bounded drain window for inherited pipes; incomplete bytes remain explicit.
 Descendant commands, shell assignments and framework-effective settings are
 not inferred from argv or the gate's environment.
 

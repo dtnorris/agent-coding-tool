@@ -15,6 +15,14 @@ when 'binary'
   STDOUT.binmode.write("\x00\xff".b)
   STDERR.binmode.write("\xfe\x00".b)
   exit 7
+when 'share'
+  STDOUT.binmode.write("out\x00\xff".b)
+  STDERR.binmode.write("err\x80".b)
+  if arguments[1]
+    File.write(arguments[1], JSON.generate(schema_version: 'agent-coding-tool-gate-observation/v1',
+      summary: { tests: 1, failures: 0 }), perm: 0o600)
+  end
+  exit Integer(arguments.fetch(0))
 when 'invalid'
   File.write(arguments.fetch(0), '{"secret":"secret-canary"}', mode: 'wx', perm: 0o600)
 when 'observation'

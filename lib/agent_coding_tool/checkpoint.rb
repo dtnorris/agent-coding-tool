@@ -8,6 +8,7 @@ require "shellwords"
 require "tempfile"
 require "tmpdir"
 require "time"
+require_relative "gate_capture"
 
 module AgentCodingTool
   module CheckpointPolicy
@@ -40,7 +41,8 @@ module AgentCodingTool
     # Returns checked artifact identity and shell-safe operator commands; invalid,
     # empty, changing or inapplicable candidates raise. This is not a checkpoint,
     # a prepared-authority/freshness check, or evidence that tests passed.
-    def export(id, workspace:, base_sha:, artifact:, remote: "origin")
+    def export(id, workspace:, base_sha:, artifact:, remote: "origin", repository: nil, focused: nil)
+      raise InvalidState, "checkpoint: focused evidence requires an explicit repository" if focused && !repository
       raise InvalidTask, "checkpoint: unsafe task ID" unless id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       raise InvalidState, "checkpoint: exact baseline SHA required" unless base_sha.match?(/\A[0-9a-f]{40}\z/)
       base = { "pushed_sha" => base_sha, "remote" => remote,
@@ -60,7 +62,8 @@ module AgentCodingTool
       raise InvalidState, "checkpoint: implementation changed during export" unless latest == bytes && latest_inventory == inventory
       prefix = ["env", "AGENT_CODING_TOOL_DATA_DIR=#{@data_root}", "act", "checkpoint"]
       target = [id, "--workspace", workspace]
-      { "status" => "canonical_format_checked", "task_id" => id, "workspace" => workspace,
+      package = export_package(id, repository, workspace, base, artifact, bytes, inventory, focused) if repository
+      { "status" => "canonical_format_checked", "task_id" => id, "workspace" => workspace, "package" => package,
         "base_sha" => base_sha, "artifact" => artifact, "sha256" => Digest::SHA256.hexdigest(bytes),
         "bytes" => bytes.bytesize, "changed_files" => inventory, "host_checkpoint" => "pending",
         "worker_checks" => "not attested; report actual focused commands and results separately",
@@ -179,8 +182,8 @@ module AgentCodingTool
         "workspace_checked" => !!workspace }
     end
 
-    # Runs the unchanged inherited-environment system call between candidate
-    # checks, returning its exit code or propagating the original failure.
+    # Runs native inherited-environment argv with bounded binary capture between
+    # candidate checks, returning its exit code or propagating the original failure.
     # Optional requested settings are declarations, never command overrides.
     # A fresh private observation file may report supported facts; receipts are
     # best effort and persistence failures warn without replacing primary errors.
@@ -227,7 +230,8 @@ module AgentCodingTool
         "settings" => INVOCATION_SETTINGS.to_h { |key| [key, ENV[key]] },
         "requested" => { "source" => "operator_declaration", "seed" => requested[:seed], "selection" => requested[:selection] },
         "observed" => { "status" => "not_observed", "seed" => nil, "selection" => nil, "summary" => nil },
-        "output" => { "status" => "not_captured" },
+        "output" => { "status" => "pending", "limit_per_stream" => GateCapture::LIMIT,
+          "streams" => %w[stdout stderr].to_h { |stream| [stream, { "file" => "gate-#{token}.#{stream}", "status" => "pending" }] } },
         "started_at" => Time.now.utc.iso8601(6), "finished_at" => nil,
         "pre_check" => "not_checked", "post_check" => "not_checked",
         "receipt_phase" => "started", "command_outcome" => { "status" => "incomplete_or_unknown" }, "candidate_validation" => "unknown"
@@ -262,13 +266,16 @@ module AgentCodingTool
         end
         phase = "command"
         receipt["command_outcome"] = { "status" => "incomplete_or_unknown" }
-        success = system(*command, chdir: workspace)
+        prior_status = $?
+        capture = GateCapture.new(directory, token, out: $stdout, err: $stderr)
+        success = capture.run { |redirections| system(*command, chdir: workspace, **redirections) }
         status = $?
         exit_code = status.exitstatus if status
         receipt["command_outcome"] = {
           "status" => success.nil? ? "failed_to_start" : status&.signaled? ? "signal" : status&.exited? ? "exited" : "incomplete_or_unknown",
           "success" => success, "exit_code" => exit_code, "signal" => status&.termsig
         }
+        receipt["output"] = capture.result
         if force
           receipt["receipt_phase"] = "command_finished"
           persist_gate(directory, "gate-#{token}.command.json", receipt, required: true)
@@ -284,11 +291,16 @@ module AgentCodingTool
       rescue Exception => error # Also retain evidence for Interrupt; never swallow it.
         receipt[phase] = "failed" if %w[pre_check post_check].include?(phase)
         receipt["command_outcome"]["status"] = "failed_to_start" if phase == "command" && error.is_a?(SystemCallError)
+        if phase == "command" && error.is_a?(SignalException) && $? && !$?.equal?(prior_status)
+          receipt["command_outcome"] = { "status" => $?.signaled? ? "signal" : "exited",
+            "success" => $?.success?, "exit_code" => $?.exitstatus, "signal" => $?.termsig }
+        end
         receipt["exception_class"] = error.class.name
         receipt["failure_phase"] = phase
         receipt["candidate_validation"] = "failed"
         raise
       ensure
+        receipt["output"] = capture.result if capture
         receipt["observed"] = gate_observations(observations, id, state) if observations && receipt["command_outcome"]["status"] != "not_run"
         receipt["receipt_phase"] = "finished"
         receipt["finished_at"] = Time.now.utc.iso8601(6)
@@ -378,6 +390,37 @@ module AgentCodingTool
           raise InvalidState, "checkpoint: active or unknown writer; force admits lifecycle only"
         end
       end
+    end
+
+    # Writes a companion apply proposal and bounded worker evidence package.
+    # Explicit repository identity is supplied by the launch envelope, never
+    # inferred from a filename. Focused evidence remains a worker claim; host
+    # registration validates the launch binding before copying into durable runs.
+    def export_package(id, repository, workspace, base, artifact, bytes, inventory, focused)
+      raise InvalidState, "checkpoint: unsafe repository" unless repository.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      apply_path = "#{artifact}.apply.json"
+      manifest = { "schema" => ApplyHandoff::SCHEMA, "target" => repository,
+        "repositories" => { repository => { "path" => repository, "baseline" => base.fetch("pushed_sha"), "remote_url" => base.fetch("remote_url") } },
+        "patch" => { "file" => File.basename(artifact), "sha256" => Digest::SHA256.hexdigest(bytes) },
+        "paths" => inventory.map { |row| row.fetch("path") },
+        "validation" => [{ "action" => "git_diff_check", "repository" => repository, "cwd" => ".", "env" => {} }],
+        "commit_message" => "#{id}: update #{repository}" }
+      write_once!(apply_path, JSON.pretty_generate(manifest) + "\n")
+      files = { "candidate" => artifact, "apply" => apply_path }
+      if focused
+        raise InvalidState, "checkpoint: focused evidence outside export directory" unless File.dirname(File.expand_path(focused)) == File.dirname(artifact)
+        files["focused"] = File.expand_path(focused)
+      end
+      files = files.to_h do |kind, path|
+        raw = RunEvidenceStore.bytes(path, root: File.dirname(artifact))
+        [kind, { "file" => File.basename(path), "sha256" => Digest::SHA256.hexdigest(raw), "bytes" => raw.bytesize }]
+      end
+      package = { "schema" => "agent-coding-tool-worker-evidence/v1", "task_id" => id, "workspace" => workspace,
+        "repository" => repository, "base_sha" => base.fetch("pushed_sha"), "files" => files }
+      path = "#{artifact}.export.json"
+      write_once!(path, JSON.pretty_generate(package) + "\n")
+      { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest, "apply" => apply_path,
+        "registration" => "host evidence register with exact run identities; worker evidence is not acceptance" }
     end
 
     # Ensures both checks used this invocation's checkpoint, including its record

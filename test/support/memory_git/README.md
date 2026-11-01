@@ -278,3 +278,41 @@ not successful protocol tests. Independent OS process auditing remains unavailab
 TST-43 integrates the runner/coverage census; TST-45 owns complete integration,
 coverage retention and runtime acceptance. The existing native-Git baseline is
 not rerun or replaced by these component timings.
+
+The launcher fixture keeps its temporary files inside its case world, including
+command-local excludes and the private sandbox configuration home. Probe cwd and
+TMPDIR come from the current durable handoff; changed environments and unowned
+paths are refused. Cold launchers use the same leased broker as their parent. Registered sibling
+host birth identities cross the reviewed child environment; a cold overlap query
+rechecks those identities against the kernel before returning parent/group facts.
+In-process launches need no broker. Cold readers that inspect repository state
+receive the same leased authority as their parent.
+The short `al-` case-directory prefix leaves room for `w.sock` under the
+reconstructed worker's longer TMPDIR; every path remains inside the case world.
+
+On Darwin, the launcher adapter answers only the exact production
+`ps -o ppid= -o pgid= -p PID` query, without process creation, using the existing
+`FeedbackRuntime.identity` libproc observer. Spawned fixture hosts/workers are
+registered by kernel PID/parent/group/birth; queries require that live identity
+or its direct child. Handoff reports never supply observed parent/group values.
+Unknown argv/options, foreign or reused identities raise; unavailable observations
+return failure. Production retains its parent/group and process/group liveness
+checks. The retained fixture-permissions case checks these positive and negative
+paths, including a real two-generation permitted Ruby family. This qualifies the
+observer only; the full cold parallel-launch journey still requires host sockets.
+
+`state_reader`, `planning_consumer`, `external_race`, `launcher_cli` and
+`evidence_cli` are fixed, hash-pinned Ruby scripts at the existing permit seam.
+They retain actual processes, locks, streams and exit statuses. The interactive
+pipe helper releases its consumed permit before yielding, so another reviewed
+child can run while the first is alive. Each spawn still needs its own permit.
+The external-activity race uses fresh interpreters rather than inherited forks.
+
+These child adapters do not authorize native Git. `TunnelProcesses` separately
+binds the production owner fork, inventory and client launch to exact reviewed
+source bytes and call sites; the sharing journey uses that same boundary.
+The fixture-only inventory adapter isolates the declared synthetic endpoint from
+a real host tunnel, while real ownership and occupied-endpoint refusals remain
+covered separately. Socket denial blocks the broker and tunnel journeys and must
+remain visible, without a transport fallback or skip. Memory-world checks do not
+replace native Git or live Mac-to-Work acceptance.

@@ -74,6 +74,8 @@ Dir.mktmpdir('worker-fixture-') do |directory|
 end
 File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
 File.write('worker-change.txt', 'worker')
+puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
+STDOUT.flush
 if mode.start_with?('journey-drift-')
   # Keep ACT-31's real ready/release barrier and post-drift binary candidate.
   File.write(File.join(root, 'worker-ready'), Dir.pwd)
@@ -100,8 +102,7 @@ if mode.start_with?('journey-')
   File.write(path, JSON.generate(result))
   exit(mode == 'journey-drift-remote' ? 7 : 0)
 end
-puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
-puts 'progress'
+puts JSON.generate(type: 'item.completed', text: 'progress')
 STDOUT.flush
 warn 'stderr progress'
 sleep 30 if mode == 'sleep'

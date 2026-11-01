@@ -484,7 +484,7 @@ module AgentCodingTool
       end
     end
 
-    # Renders explicit details or a broad dashboard from one effective snapshot.
+    # Renders minimal rows by default, or existing details with --full, from one snapshot.
     # argv accepts presentation/completion flags or one family selector; invalid combinations
     # raise Error/OptionParser::ParseError before status resolution. Family and
     # compression filters run after global NEXT selection and never change state.
@@ -500,9 +500,14 @@ module AgentCodingTool
         opts.on("--active", "show no completed tasks") { options[:active] = true }
         opts.on("--icebox", "show only intentionally deferred tasks") { options[:icebox] = true }
         opts.on("--min", "show one width-bounded row per displayed task") { options[:minimal] = true }
+        opts.on("--full", "show expanded details, warnings and summaries") { options[:full] = true }
       end
       parser.require_exact = true
       parser.parse!(argv)
+      if options[:minimal] && options[:full]
+        raise Error, "status --min and --full are mutually exclusive"
+      end
+      options[:minimal] = !options[:full]
       if options[:all] && options[:active]
         raise Error, "status --all and --active are mutually exclusive"
       end
@@ -511,7 +516,7 @@ module AgentCodingTool
 
       id = argv.shift
       unless argv.empty? && !(id && (options.key?(:family) || options[:icebox]))
-        raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox]"
+        raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox] [--min | --full]"
       end
       if options.key?(:family) && !coordinator.tasks.any? { |task| task_family(task.fetch("id")) == options[:family] }
         raise Error, "unknown task family: #{options[:family]}"
@@ -1103,9 +1108,9 @@ module AgentCodingTool
                    "#{source.fetch('repository')}: #{source.fetch('prepared_sha')[0, 8]} -> " \
                      "#{source.fetch('observed_sha')[0, 8]} (#{source.fetch('branch')} changed)"
                  else
-                   "inspect act stat #{item.fetch('id')}"
+                   "inspect act stat #{item.fetch('id')} --full"
                  end
-      movement = "#{sources.length} changed; act stat #{item.fetch('id')}; #{movement}" if sources.length > 1
+      movement = "#{sources.length} changed; act stat #{item.fetch('id')} --full; #{movement}" if sources.length > 1
       @out.puts compact_detail_line("source", movement)
       isolation = if item.dig("execution_evidence", "isolation") == "last_verified_at_launch" &&
                      !item.dig("state", "write_collision_override", "launch", "unverified_manual_conflicts")
@@ -1282,7 +1287,7 @@ module AgentCodingTool
             detail.call("candidate #{source.fetch('repository')}", "base #{source.fetch('prepared_sha')}; observed #{source.fetch('observed_sha')}")
           end
         end
-        detail.call("integration", compact ? "not approved; inspect act status #{item.fetch('id')}" : handoff.fetch("next_action"))
+        detail.call("integration", compact ? "not approved; inspect act status #{item.fetch('id')} --full" : handoff.fetch("next_action"))
       end
       if (overlap = item.dig("state", "write_overlap"))
         others = overlap.fetch("conflicts").map { |row| "#{row.fetch('task_id')} (#{row.fetch('status')})" }.join(", ")
@@ -1661,13 +1666,15 @@ module AgentCodingTool
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
                               baseline drift/unrelated untracked files warn; later changes refuse
-          status [TASK] [--all | --active] [--min]
-          status --fam FAMILY [--all | --active] [--min]
+          status [TASK] [--all | --active] [--min | --full]
+          status --fam FAMILY [--all | --active] [--min | --full]
                               show the complete READY family; global NEXT only
-          status --icebox [--fam FAMILY] [--all | --active] [--min]
+          status --icebox [--fam FAMILY] [--all | --active] [--min | --full]
                               show only deferred work; --all/--fam include Icebox last
-          --min               one bounded row per displayed task; no details or summaries
-                              omit --min for full warnings; selection and global NEXT unchanged
+          --min               default: one bounded row per task; no details or summaries
+          --full              expanded warnings, reasons, next steps and summaries
+                              status TASK --full shows complete per-task diagnostics
+                              --min/--full are exclusive; selection and global NEXT unchanged
           icebox TASK [--reason TEXT]
                               defer unstarted READY work; identical reason is a no-op
           unicebox TASK       explicitly restore normal eligibility computation

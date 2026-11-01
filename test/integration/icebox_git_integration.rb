@@ -22,11 +22,11 @@ class IceboxGitIntegrationTest < Minitest::Test
 
       cli!("icebox", "TST-A", "--reason", "Revisit after profiling")
       state = @store.load("TST-A")
-      details = cli!("status", "TST-A")
+      details = cli!("status", "TST-A", "--full")
       assert_includes details, "TST-A: ICEBOX"
       assert_includes details, "Revisit after profiling"
       assert_includes details, "act unicebox TST-A"
-      assert_includes cli!("status", "--icebox"), "TST-A: ICEBOX"
+      assert_includes cli!("status", "--icebox", "--full"), "TST-A: ICEBOX"
       document = JSON.parse(cli!("next", "--json"))
       assert_equal "agent-coding-tool-next/v0.1", document.fetch("schema_version")
       deferred = document.dig("facts", "tasks").find { |row| row.fetch("id") == "TST-A" }
@@ -52,13 +52,14 @@ class IceboxGitIntegrationTest < Minitest::Test
         refute File.exist?("#{@data}-runs/TST-A")
         refute File.exist?(File.join(@root, "worker-pid"))
       end
-      dashboard = cli!("status")
+      dashboard = cli!("status", "--full")
       refute_match(/^TST-A:/, dashboard)
       assert_equal "1 Icebox task from families (TST)\n", dashboard.lines.last
       assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
       minimal = cli!("status", "--min")
+      assert_equal minimal, cli!("status")
       assert_equal dashboard.lines.grep(/\ATST-[A-C]:/), minimal.lines
-      all = cli!("status", "--all")
+      all = cli!("status", "--all", "--full")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
       # Report reality while deliberately deferred: every public projection
@@ -66,14 +67,15 @@ class IceboxGitIntegrationTest < Minitest::Test
       report = JSON.parse(cli!("external", "report", "TST-A", "--reporter", "operator",
                                "--kind", "fake-codex", "--scope-complete"))
       observation = report.fetch("active").fetch("observation_id")
-      %w[status next].each do |command|
-        view = cli!(command)
+      [%w[status --full], %w[next]].each do |command|
+        view = cli!(*command)
         assert_includes view, "EXTERNAL WORK REPORTED"
         assert_includes view, "unauthorized by ACT"
         assert_includes view, "liveness unknown"
       end
-      assert_includes cli!("status"), "TST-A: ICEBOX"
+      assert_includes cli!("status", "--full"), "TST-A: ICEBOX"
       minimal = cli!("status", "--icebox", "--min")
+      assert_equal minimal, cli!("status", "--icebox")
       assert_equal "TST-A: ICEBOX [external reported] [external conflict] — Task\n".b, minimal
       assert_includes cli!("next"), "TST-A (ICEBOX)"
       assert_includes cli!("next"), "act unicebox TST-A"
@@ -85,7 +87,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       refute_includes reported.dig("recommendations", "starts").map { |row| row["id"] }, "TST-A"
       cli!("external", "end", "TST-A", observation, "--disposition", "ended")
       assert_equal state, @store.load("TST-A")
-      refute_match(/^TST-A:/, cli!("status"))
+      refute_match(/^TST-A:/, cli!("status", "--full"))
 
       cli!("unicebox", "TST-A")
       assert_equal "READY", JSON.parse(cli!("next", "--json")).dig("facts", "tasks").find { |row| row["id"] == "TST-A" }.fetch("status")

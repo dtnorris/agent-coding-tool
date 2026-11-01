@@ -421,6 +421,13 @@
       "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls",
       "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch",
       "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch"
+    ],
+    "test/lifecycle_force_test.rb": [
+      "LifecycleForceTest#test_public_metadata_overrides_preserve_bytes_and_report_all_policy_facts",
+      "LifecycleForceTest#test_missing_preparation_damaged_reset_and_non_overridable_errors",
+      "LifecycleForceTest#test_audit_and_state_publication_failures_remain_truthful",
+      "LifecycleForceTest#test_stale_scope_and_unobserved_completion_are_explicit",
+      "LifecycleForceTest#test_system_alias_preserves_canonical_audit_and_rejects_other_symlinks"
     ]
   },
   "integration": {
@@ -481,7 +488,10 @@
       "CheckpointTest#test_exemption_and_old_task_default",
       "CheckpointTest#test_nested_metadata_public_checkpoint_round_trip",
       "CheckpointTest#test_checkpoint_preserves_tracked_metadata_and_rejects_unsafe_types",
-      "CheckpointTest#test_legacy_checkpoint_metadata_remains_bound_to_recorded_bytes"
+      "CheckpointTest#test_legacy_checkpoint_metadata_remains_bound_to_recorded_bytes",
+      "CheckpointTest#test_forced_gate_public_journey_preserves_attempt_and_lifecycle_bytes",
+      "CheckpointTest#test_forced_gate_failures_preserve_bytes_results_and_required_audit",
+      "CheckpointTest#test_force_metadata_does_not_retire_live_fixture_or_sibling"
     ],
     "test/integration/delivery_manager_git_integration.rb": [
       "DeliveryManagerTest#test_validates_exact_bytes_then_commits_pushes_once_and_opens_draft",

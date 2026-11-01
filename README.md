@@ -1214,6 +1214,72 @@ judgment; launch does not provide an automatic recovery switch. An already
 attempted preparation cannot be silently reused. Manual lifecycle commands
 remain human assertions, not process locks.
 
+### Audited administrative overrides
+
+`prepare`, `start`, `record`, `received`, `finish`, soft `reset`, `icebox` and
+`unicebox` accept an explicit invocation-local `--force` and optional
+`--reason TEXT`. Administrative flags may appear before or after TASK. `received`
+declares `candidate_complete`; `finish` declares `complete`, using the same
+recording path. Existing summary, next-action, artifact and repeatable test
+options retain their meanings. There is no extra confirmation, persistent force
+setting, implicit retry or propagation to launch/workers/delivery.
+
+```sh
+act prepare TASK --force --reason 'Replace the prior administrative outcome'
+act start --force TASK
+act record TASK needs_judgment --force --summary 'Review preserved candidate' --next 'Operator review'
+act received TASK --force --artifact /path/to/candidate.patch
+act finish TASK --force --summary 'Operator declaration; validation remains separate'
+act icebox TASK --force
+act unicebox --force TASK
+act reset TASK --force
+act checkpoint gate TASK --force --workspace /path/to/preserved/workspace -- bundle exec rake test:all
+```
+
+| Entry path | Ordinary policy / forced declaration |
+| --- | --- |
+| Shared lifecycle reservation/history | Both require target identity and the exclusive physical reservation lock. Force reports retained history/admission blockers and leaves resources/reservations intact. |
+| Prepare | Ordinary dependency, Icebox, outcome, retry/history and saved-pin restrictions remain. Force replaces preparation with an actual fresh snapshot and rendered prompt; source and skill material must be available. |
+| Start | Ordinary preparation, freshness, dependency, outcome, started, Icebox, external-activity and history checks remain. Force declares a new attempt from structured preparation despite policy blockers, removing the old result/checkpoint pointer. Old proof remains historical in preserved state/evidence. |
+| Record / received / finish | Ordinary Icebox and preparation restrictions remain. Force records the requested outcome without remote access for optional completion observations, explicitly marking these unobserved. Neither form verifies operator-supplied test strings. |
+| Soft reset | Ordinary Icebox retention remains. Force preserves raw state before discarding active lifecycle/deferral pointers, including malformed YAML with independently qualified task identity. It retires nothing. |
+| Icebox / unicebox | Ordinary unstarted READY admission and reason idempotency remain. Force permits deferral/restoration with retained execution visible separately. |
+| Checkpoint gate | Ordinary in-flight admission remains. Force admits an existing preserved checkpoint after an outcome; verification, ownership, active-writer refusal and candidate binding remain mandatory. |
+
+Unknown tasks/outcomes, malformed arguments, ambiguous identities, unsafe paths,
+busy physical locks and required I/O failures are errors. `--force` does not
+implement `reset --hard`; that combination is unsupported here. Launch, cleanup,
+delivery, integration and Git publication retain their separate safeguards and
+authority. COMPLETE and IN_FLIGHT declarations establish neither passing tests,
+live workers nor permission to remove resources. Status exposes the declaration
+and retains separate lifecycle/resource eligibility facts.
+
+Each declaration preserves exact original bytes and a SHA-256 under the private
+`<data-root>-runs/.lifecycle-overrides/TASK/UUID/` directory before replacement. `intent.yml`
+contains the requested transition, original attempt when known, optional reason,
+observed/overridden/unavailable rules and recovery locator; `result.yml` reports
+publication. These records survive reset/reprepare without embedding prior audit
+histories. Preserve the directory and inspect its hashes before any operator
+recovery; copying original bytes back is a separate operator action, not an
+automatic rollback. A missing result after interruption is not success: compare
+current lifecycle bytes with the intent's original/requested hashes to distinguish
+unchanged, published and uncertain outcomes. Directory-sync failures retain
+explicit durability uncertainty. Atomic replacement is not a transaction or a
+demonstrated power-loss guarantee.
+
+Forced checkpoint gates keep lifecycle bytes and the original attempt/source/
+checkpoint binding unchanged, including on stale-candidate failures. They do not
+start, reset or reprepare the task. The private attempt directory receives a
+mandatory exception receipt before launch, a separate child-result receipt, and
+a mandatory final receipt. Nonzero/signal/spawn results remain failures; receipt
+failure is also nonzero and reports the actual child result separately. A final
+receipt failure leaves any durable child-result receipt available for inspection.
+Read-only verification leaves stale observations in fresh gate evidence instead
+of rewriting lifecycle checkpoint status. Candidate tampering, changed source/
+workspace identity, active/unknown managed writers and external activity still
+refuse. Runtime, coverage and allowed-command policies are unchanged. Admission
+never forces a passing receipt, acceptance or publication.
+
 ## Canonical worker coding guidelines
 
 Every generated worker prompt includes the complete, unchanged canonical

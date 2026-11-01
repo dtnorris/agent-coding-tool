@@ -72,11 +72,17 @@ module AgentCodingTool
         "remaining" => "host record/verify, required gated tests, freshness, integration, acceptance and publication; no authority granted" }
     end
 
-    def record(id, workspace:, artifact: nil)
+    def record(id, workspace:, artifact: nil, reservation_lock: nil)
+      ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       task, state, name, base = context!(id, require_in_flight: true)
       raise InvalidState, "#{id}: checkpoint exempt" unless CheckpointPolicy.required?(task)
       workspace = workspace!(workspace, base)
       launch = launch_binding!(id, state, name, base, workspace)
+      unless reservation_lock
+        return ReservationLock.synchronize(@data_root) do |lock|
+          record(id, workspace: workspace, artifact: artifact, reservation_lock: lock)
+        end
+      end
       expected, inventory = implementation(workspace, base.fetch("pushed_sha"))
       raise InvalidState, "checkpoint: empty implementation" if inventory.empty? || expected.empty?
       if artifact
@@ -129,7 +135,8 @@ module AgentCodingTool
 
     # Verifies current or explicitly selected closed-attempt evidence against its
     # original base. Historical verification is read-only and accepts no workspace.
-    def verify(id, workspace: nil, attempt: nil)
+    def verify(id, workspace: nil, attempt: nil, read_only: false, reservation_lock: nil)
+      ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       raise InvalidState, "checkpoint: historical verification accepts no workspace" if attempt && workspace
       historical = AttemptRecovery.new(data_root: @data_root, transport: @transport).closed_state(id, attempt) if attempt
       task, state, name, base = context!(id, historical: historical)
@@ -143,6 +150,11 @@ module AgentCodingTool
       bytes = checked_file!(path)
       raise InvalidState, "checkpoint: checksum/length mismatch" unless
         bytes.bytesize == record.fetch("bytes") && Digest::SHA256.hexdigest(bytes) == record.fetch("sha256")
+      if workspace && !read_only && !reservation_lock
+        return ReservationLock.synchronize(@data_root) do |lock|
+          verify(id, workspace: workspace, read_only: false, reservation_lock: lock)
+        end
+      end
       if workspace
         workspace = workspace!(workspace, base)
         launch_binding!(id, state, name, base, workspace)
@@ -150,7 +162,7 @@ module AgentCodingTool
         unless actual == bytes && inventory == record.fetch("changed_files")
           state["checkpoint"] = { "attempt" => attempt(state), "status" => "stale",
                                   "record_path" => File.join(directory, "current.json") }
-          save_state!(id, state)
+          save_state!(id, state) unless read_only
           raise InvalidState, "checkpoint: stale implementation; refresh before validation or handoff"
         end
       end
@@ -159,7 +171,7 @@ module AgentCodingTool
         state["checkpoint"] = { "attempt" => attempt(state), "status" => "verified",
                                 "record_path" => File.join(directory, "current.json"),
                                 "verified_at" => record.fetch("verified_at") }
-        save_state!(id, state)
+        save_state!(id, state) unless read_only
       end
       { "status" => "verified", "record" => record, "path" => path,
         "workspace_checked" => !!workspace }
@@ -170,11 +182,26 @@ module AgentCodingTool
     # Optional requested settings are declarations, never command overrides.
     # A fresh private observation file may report supported facts; receipts are
     # best effort and persistence failures warn without replacing primary errors.
-    def gate(id, workspace:, command:, requested: {}, observations: nil)
+    def gate(id, workspace:, command:, requested: {}, observations: nil, force: false, reason: nil, reservation_lock: nil)
+      ReservationLock.synchronize(@data_root, held: reservation_lock) { nil } if reservation_lock
       raise InvalidState, "checkpoint: validation command required" if command.empty?
-      _task, state, name, base = context!(id, require_in_flight: true)
-      directory = gate_directory(id, state, workspace)
-      record = directory && current_record(directory, id, state, name, base, optional: true)
+      raise InvalidState, "checkpoint: --reason requires --force" if reason && !force
+      if force && !reservation_lock
+        return ReservationLock.synchronize(@data_root) do |lock|
+          gate(id, workspace: workspace, command: command, requested: requested, observations: observations,
+            force: true, reason: reason, reservation_lock: lock)
+        end
+      end
+      _task, state, name, base = context!(id, require_in_flight: !force)
+      raise InvalidState, "checkpoint: task state identity mismatch" if force && state["id"] != id
+      original_state = File.binread(@states.state_path(id)) if force
+      if force
+        ExternalActivity.new(data_root: @data_root, task_store: @tasks, state_store: @states,
+          repo_inspector: RepoInspector.new(Config.load(File.join(@data_root, "config.yml")), transport: @transport)).assert_clear!(id)
+        preserved_writers_clear!(id)
+      end
+      directory = force ? directory!(id, state, create: false) : gate_directory(id, state, workspace)
+      record = directory && current_record(directory, id, state, name, base, optional: !force)
       token = SecureRandom.uuid
       receipt = {
         "schema_version" => GATE_SCHEMA, "invocation_id" => token,
@@ -190,11 +217,16 @@ module AgentCodingTool
         "pre_check" => "not_checked", "post_check" => "not_checked",
         "receipt_phase" => "started", "command_outcome" => { "status" => "incomplete_or_unknown" }, "candidate_validation" => "unknown"
       }
-      persist_gate(directory, "gate-#{token}.started.json", receipt)
+      if force
+        receipt["lifecycle_exception"] = { "consent" => "invocation_local_force", "reason" => reason,
+          "outcome" => state.dig("result", "outcome"), "started_at" => state["started_at"],
+          "state_sha256" => Digest::SHA256.hexdigest(original_state), "rule" => "requires_in_flight" }
+      end
+      persist_gate(directory, "gate-#{token}.started.json", receipt, required: force)
       receipt["command_outcome"] = { "status" => "not_run" }
       phase = "pre_check"
       begin
-        before = verify(id, workspace: workspace)
+        before = verify(id, workspace: workspace, read_only: force)
         # Receipt setup is optional; verification still supplies the binding when
         # storage setup failed, and the post-check must match that exact record.
         record = before["record"] unless directory
@@ -203,6 +235,16 @@ module AgentCodingTool
         phase = "observation_input"
         observation_path!(observations, directory) if observations
         receipt["cwd"] = File.realpath(workspace)
+        if force
+          launch = launch_binding!(id, state, name, base, receipt.fetch("cwd"))
+          if launch
+            manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
+              record_path: launch.fetch("worktrees_path"), transport: @transport)
+            unless RetryLiveness.new.check(launch, manager.inspect!) == :clear
+              raise InvalidState, "checkpoint: active or unknown writer; force admits lifecycle only"
+            end
+          end
+        end
         phase = "command"
         receipt["command_outcome"] = { "status" => "incomplete_or_unknown" }
         success = system(*command, chdir: workspace)
@@ -212,14 +254,18 @@ module AgentCodingTool
           "status" => success.nil? ? "failed_to_start" : status&.signaled? ? "signal" : status&.exited? ? "exited" : "incomplete_or_unknown",
           "success" => success, "exit_code" => exit_code, "signal" => status&.termsig
         }
+        if force
+          receipt["receipt_phase"] = "command_finished"
+          persist_gate(directory, "gate-#{token}.command.json", receipt, required: true)
+        end
         phase = "post_check"
-        after = verify(id, workspace: workspace)
+        after = verify(id, workspace: workspace, read_only: force)
         verify_gate_binding!(after, record)
         receipt["post_check"] = "verified"
         receipt["candidate_validation"] = success ? (record ? "passed" : "not_applicable") : "failed"
         phase = "complete"
-        raise InvalidState, "checkpoint: validation command failed (#{exit_code || 'unavailable'})" unless success
-        exit_code
+        raise InvalidState, "checkpoint: validation command failed (#{exit_code || 'unavailable'})" unless success || force
+        exit_code || (status&.signaled? ? 128 + status.termsig : 127)
       rescue Exception => error # Also retain evidence for Interrupt; never swallow it.
         receipt[phase] = "failed" if %w[pre_check post_check].include?(phase)
         receipt["command_outcome"]["status"] = "failed_to_start" if phase == "command" && error.is_a?(SystemCallError)
@@ -231,7 +277,12 @@ module AgentCodingTool
         receipt["observed"] = gate_observations(observations, id, state) if observations && receipt["command_outcome"]["status"] != "not_run"
         receipt["receipt_phase"] = "finished"
         receipt["finished_at"] = Time.now.utc.iso8601(6)
-        persist_gate(directory, "gate-#{token}.finished.json", receipt)
+        if force && File.binread(@states.state_path(id)) != original_state
+          receipt["lifecycle_bytes"] = "changed_during_validation"
+          persist_gate(directory, "gate-#{token}.finished.json", receipt, required: true)
+          raise InvalidState, "checkpoint: lifecycle bytes changed during validation; inspect receipt"
+        end
+        persist_gate(directory, "gate-#{token}.finished.json", receipt, required: force)
       end
     end
 
@@ -265,6 +316,24 @@ module AgentCodingTool
     end
 
     private
+
+    # Qualifies retained managed ownership and inactivity for forced validation.
+    # Manual attempts have no managed report; external reports are checked by the
+    # caller. Unknown, active or damaged managed evidence raises without mutation.
+    def preserved_writers_clear!(id)
+      path = File.join(@root, id)
+      return unless File.exist?(path) || File.symlink?(path)
+      rows = AttemptRecovery.new(data_root: @data_root, transport: @transport).inspect(id)
+      rows.each do |row|
+        unless row.fetch("blockers").empty? && row["inventory"]
+          raise InvalidState, "checkpoint: managed writer ownership unverified"
+        end
+        report = JSON.parse(checked_file!(File.join(row.fetch("run_dir"), "handoff.json")))
+        unless RetryLiveness.new.check(report, row.fetch("inventory")) == :clear
+          raise InvalidState, "checkpoint: active or unknown writer; force admits lifecycle only"
+        end
+      end
+    end
 
     # Ensures both checks used this invocation's checkpoint, including its record
     # identity. Exempt checks have no candidate; pointer replacement raises.
@@ -327,7 +396,7 @@ module AgentCodingTool
     # Writes immutable invocation evidence through the checkpoint's existing
     # sync boundary, rechecking private ancestry. Returns a path on success;
     # failures report crash-durability uncertainty without masking gate errors.
-    def persist_gate(directory, filename, receipt)
+    def persist_gate(directory, filename, receipt, required: false)
       return unless directory
       _task, state, = context!(receipt.fetch("task_id"))
       raise InvalidState, "checkpoint: attempt changed during validation" unless
@@ -338,6 +407,9 @@ module AgentCodingTool
       path
     rescue StandardError, NotImplementedError => error
       @err.puts "Checkpoint gate receipt write failed (#{error.class}); crash durability unconfirmed; inspect private evidence before retrying"
+      if required
+        raise InvalidState, "checkpoint: required receipt failed (#{error.class}); child result: #{receipt.fetch('command_outcome').inspect}; audit durability unconfirmed"
+      end
       nil
     end
 

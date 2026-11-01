@@ -233,7 +233,7 @@ module AgentCodingTool
     def icebox_command(argv, restore: false)
       options = {}
       parser = OptionParser.new do |opts|
-        opts.on("--reason TEXT", "optional reason for intentional deferral") { |value| options[:reason] = value } unless restore
+        lifecycle_force_options(opts, options)
       end
       parser.require_exact = true
       parser.parse!(argv)
@@ -241,10 +241,12 @@ module AgentCodingTool
       raise Error, "usage: agent-coding-tool #{restore ? 'unicebox TASK' : 'icebox TASK [--reason TEXT]'}" unless id && argv.empty?
 
       if restore
-        coordinator.unicebox(id)
+        state = coordinator.unicebox(id, **options)
+        display_override(state) if options[:force]
         @out.puts "Restored #{id}; eligibility will be recomputed from lifecycle and dependencies"
       else
-        coordinator.icebox(id, **options)
+        state = coordinator.icebox(id, **options)
+        display_override(state) if options[:force]
         @out.puts "Deferred #{id}: ICEBOX; restore with act unicebox #{id}"
       end
     end
@@ -284,12 +286,14 @@ module AgentCodingTool
         opts.on("--requested-seed NUMBER", Integer) { |value| options[:seed] = value }
         opts.on("--requested-selection TEXT") { |value| options[:selection] = value }
         opts.on("--observations PATH") { |value| options[:observations] = value }
+        opts.on("--force") { options[:force] = true }
+        opts.on("--reason TEXT") { |value| options[:reason] = value }
       end
       parser.order!(argv)
       if action != "export" && options.keys.any? { |key| %i[base remote].include?(key) }
         raise Error, "checkpoint: base and remote are export-only options"
       end
-      if action != "gate" && options.keys.any? { |key| %i[seed selection observations].include?(key) }
+      if action != "gate" && options.keys.any? { |key| %i[seed selection observations force reason].include?(key) }
         raise Error, "checkpoint: requested settings and observations are gate-only options"
       end
       checkpoint = Checkpoint.new(data_root: @data_root, err: @err, transport: @transport)
@@ -310,14 +314,15 @@ module AgentCodingTool
                when "gate"
                  raise Error, "checkpoint gate requires --workspace PATH -- COMMAND" unless options[:workspace] && argv.any? && !options[:artifact] && !options[:destination] && !options[:attempt]
                  checkpoint.gate(id, workspace: options.fetch(:workspace), command: argv,
-                                 requested: options.slice(:seed, :selection), observations: options[:observations])
+                                 requested: options.slice(:seed, :selection), observations: options[:observations],
+                                 **options.slice(:force, :reason))
                when "recover"
                  raise Error, "checkpoint recover requires --destination and --confirm-disconnected" unless
                    options[:destination] && options[:confirm_disconnected] && argv.empty? && !options[:workspace] && !options[:artifact]
                  checkpoint.recover(id, destination: options.fetch(:destination), confirm_disconnected: true, attempt: options[:attempt])
                end
       @out.puts JSON.pretty_generate(result)
-      0
+      action == "gate" && result.is_a?(Integer) ? result : 0
     end
 
     # Prints independent historical inventories or delegates existing cleanup.
@@ -1205,6 +1210,10 @@ module AgentCodingTool
     # Prints full task details, including designation/restoration and lifecycle
     # evidence. Missing fields and output errors propagate; no state is changed.
     def display_explicit_details(item)
+      if item["administrative_override"]
+        puts_full_detail("operator declaration", item.fetch("administrative_override").fetch("audit_path"))
+        puts_full_detail("resource eligibility", item.fetch("resource_eligibility"))
+      end
       display_stale_source(item)
       display_external_activity(item)
       display_icebox_details(item) if item.fetch("status") == "ICEBOX"
@@ -1458,15 +1467,18 @@ module AgentCodingTool
     # or a busy lock raise before preparation changes.
     def prepare_command(argv)
       retry_result = false
+      options = {}
       parser = OptionParser.new do |opts|
+        lifecycle_force_options(opts, options)
         opts.on("--retry", "discard the recorded non-complete outcome and prepare a new attempt") { retry_result = true }
       end
       parser.parse!(argv)
       id = argv.shift
       raise Error, "usage: agent-coding-tool prepare TASK [--retry]" unless id && argv.empty?
 
-      prepared = coordinator.prepare(id, retry_result: retry_result)
+      prepared = coordinator.prepare(id, retry_result: retry_result, **options)
       state = prepared.fetch("state")
+      display_override(state) if options[:force]
       @out.puts "Prepared #{id} against authoritative pushed heads:"
       state.fetch("snapshot").each do |name, repo|
         local = repo.fetch("local_head") == repo.fetch("pushed_sha") ? "local matches" : "local differs"
@@ -1508,7 +1520,9 @@ module AgentCodingTool
     # observations. Invalid arguments, unsafe evidence or refusal raise Error.
     def start_command(argv)
       allow_write_collision = false
+      options = {}
       parser = OptionParser.new do |opts|
+        lifecycle_force_options(opts, options)
         opts.on("--allow-write-collision", "legacy manual assertion (isolation remains unverified)") do
           allow_write_collision = true
         end
@@ -1519,7 +1533,8 @@ module AgentCodingTool
         raise Error, "usage: agent-coding-tool start TASK [--allow-write-collision]"
       end
 
-      state = coordinator.start(id, allow_write_collision: allow_write_collision)
+      state = coordinator.start(id, allow_write_collision: allow_write_collision, **options)
+      display_override(state) if options[:force]
       if (overlap = state["write_overlap"])
         overlap.fetch("conflicts").each do |row|
           @out.puts "WARNING: #{id} overlaps #{row.fetch('task_id')} (#{row.fetch('status')}) on " \
@@ -1561,6 +1576,7 @@ module AgentCodingTool
     def record_result(argv, outcome: nil, usage:, success: nil)
       options = { tests: [] }
       parser = OptionParser.new do |opts|
+        lifecycle_force_options(opts, options)
         opts.on("--summary TEXT", "short explicit result summary") { |value| options[:summary] = value }
         opts.on("--next TEXT", "explicit operator next action for a retryable outcome") do |value|
           options[:next_action] = value
@@ -1575,22 +1591,49 @@ module AgentCodingTool
         raise Error, "usage: #{usage}"
       end
 
-      coordinator.record(id, outcome: outcome, **options)
+      state = coordinator.record(id, outcome: outcome, **options)
+      display_override(state) if options[:force]
       @out.puts(success ? success.call(id, outcome) : "Recorded #{id}: #{outcome}")
     end
 
     # Resets ordinary runtime state or explains the deferred no-op. Invalid
     # arguments/state/locks raise Error; output identifies retained scheduling.
     def reset_command(argv)
+      options = {}
+      parser = OptionParser.new { |opts| lifecycle_force_options(opts, options) }
+      parser.require_exact = true
+      parser.parse!(argv)
       id = argv.shift
       raise Error, "usage: agent-coding-tool reset TASK" unless id && argv.empty?
 
-      state = coordinator.reset(id)
+      state = coordinator.reset(id, **options)
+      display_override(state) if options[:force]
       if state.is_a?(Hash) && state.key?("icebox")
         @out.puts "#{id}: ICEBOX and runtime state retained; use act unicebox #{id} before resetting"
       else
         @out.puts "Reset #{id} runtime state"
       end
+    end
+
+    # Adds only invocation-local metadata override consent and its optional reason.
+    # OptionParser rejects malformed values; these flags are never worker inputs.
+    def lifecycle_force_options(parser, options)
+      parser.require_exact = true
+      parser.on("--force", "audit an operator lifecycle declaration") { options[:force] = true }
+      parser.on("--reason TEXT", "optional override/deferral reason") { |value| options[:reason] = value }
+    end
+
+    # Prints durable override facts only after successful publication. Returns
+    # nil for ordinary state; unreadable audit/output errors remain failures.
+    def display_override(state)
+      return unless state.is_a?(Hash) && state["administrative_override"]
+      path = state.fetch("administrative_override").fetch("audit_path")
+      audit = StateStore.new(File.dirname(path)).load("result")
+      @out.puts "Operator declaration: #{audit.fetch('write_status')}; audit/recovery: #{path}"
+      audit.fetch("observations").each do |fact|
+        @out.puts "  #{fact.fetch('rule')}: #{fact.fetch('status')}#{fact['detail'] ? "; #{fact['detail']}" : ''}"
+      end
+      @out.puts "Verification, resource retirement, execution and publication require their own checks/authority."
     end
 
     # Prints command usage and explicit planning designation to the output stream;
@@ -1645,7 +1688,7 @@ module AgentCodingTool
                               canonical-format-check candidate; no host state writes or test attestation
           checkpoint record TASK --workspace PATH [--artifact PATH]
           checkpoint verify TASK [--workspace PATH | --attempt NUMBER]
-          checkpoint gate TASK --workspace PATH -- COMMAND [ARGS...]
+          checkpoint gate TASK [--force] [--reason TEXT] --workspace PATH -- COMMAND [ARGS...]
                               records private invocation receipts; optional gate flags:
                               --requested-seed NUMBER --requested-selection TEXT
                               --observations PATH (fresh private command-report JSON)
@@ -1663,7 +1706,7 @@ module AgentCodingTool
                               landed task is complete on authoritative pushed state
           record TASK OUTCOME [--summary TEXT] [--next TEXT] [--artifact PATH] [--test RESULT]
                               generic/manual outcome primitive
-          reset TASK
+          reset TASK [--force] [--reason TEXT]
           publish [TASK | --all] [--dry-run]
                               explicitly commit and push ACTD changes
 
@@ -1679,6 +1722,16 @@ module AgentCodingTool
           --fam is exact and exclusive with TASK; --all and --active conflict.
           The recent COMPLETE window is global, before family filtering.
           Default/--active hide Icebox rows except open external reports, then count all.
+          Administrative prepare/start/record/received/finish/reset/icebox/unicebox
+          accept --force before or after TASK, with optional --reason TEXT.
+          Force is an audited operator declaration, not verification, worker
+          liveness, resource retirement, delivery or publication authority.
+          Exact original bytes and intent/result are preserved in private
+          <data-root>-runs/.lifecycle-overrides/TASK/UUID; inspect hashes after interruption.
+          Force gate preserves lifecycle bytes and checkpoint attempt, requires
+          verification and durable receipts, and retains child failure results.
+          --force is not --hard; destructive reset combinations are unsupported.
+
           Icebox is scheduling, not an outcome; it never receives a start recommendation.
           Only unstarted READY may enter. Prepare/start/launch/record refuse it;
           reset retains it. All writers share the private launch reservation lock.

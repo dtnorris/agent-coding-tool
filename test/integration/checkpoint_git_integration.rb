@@ -10,6 +10,194 @@ class CheckpointTest < Minitest::Test
   include TestHelpers
   include RecoveryObservations
 
+  # Uses the real public CLI and local bare remote for the preserved-attempt
+  # journey; cold verification proves no process-local lifecycle workaround.
+  def test_forced_gate_public_journey_preserves_attempt_and_lifecycle_bytes
+    fixture do |root, data, ordinary, workspace, _base|
+      task_path = File.join(data, "tasks", "T.yml")
+      task = YAML.safe_load_file(task_path)
+      task.fetch("repositories").fetch("repo")["path"] = ordinary
+      File.write(task_path, YAML.dump(task))
+      File.write(File.join(data, "config.yml"), YAML.dump("repo_root" => root))
+      state_path = File.join(data, "state", "T.yml")
+      File.unlink(state_path)
+      out, err = StringIO.new, StringIO.new
+      cli = AgentCodingTool::CLI.new(root: root, data_root: data, out: out, err: err)
+      assert_equal 0, cli.run(%w[prepare T]), err.string
+      assert_equal 0, cli.run(%w[start T]), err.string
+      assert_equal 0, cli.run(["checkpoint", "record", "T", "--workspace", workspace]), err.string
+      assert_equal 0, cli.run(["checkpoint", "verify", "T", "--workspace", workspace]), err.string
+      original = YAML.safe_load_file(state_path)
+      attempt = original.dig("checkpoint", "attempt")
+      checkpoint_dir = File.dirname(original.dig("checkpoint", "record_path"))
+      original_evidence = Dir.glob(File.join(checkpoint_dir, "*")).to_h { |path| [path, File.binread(path)] }
+      assert_equal 0, cli.run(%w[record T needs_judgment --summary review]), err.string
+      lifecycle = File.binread(state_path)
+      marker = File.join(root, "validated")
+      arguments = ["checkpoint", "gate", "T", "--workspace", workspace, "--", RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'checked')", marker]
+      assert_equal 2, cli.run(arguments.dup), err.string
+      refute File.exist?(marker)
+      arguments.insert(3, "--force")
+      assert_equal 0, cli.run(arguments.dup), err.string
+      assert_equal "checked", File.read(marker)
+      assert_equal lifecycle, File.binread(state_path)
+      receipt = JSON.parse(File.binread(Dir.glob(File.join(checkpoint_dir, "gate-*.finished.json")).fetch(0)))
+      assert_equal attempt, receipt.fetch("attempt")
+      assert_equal "invocation_local_force", receipt.dig("lifecycle_exception", "consent")
+      assert_equal "passed", receipt.fetch("candidate_validation")
+      original_evidence.each { |path, bytes| assert_equal bytes, File.binread(path) }
+      cold_out, cold_err, cold_status = Open3.capture3({ "AGENT_CODING_TOOL_DATA_DIR" => data },
+        RbConfig.ruby, File.expand_path("../../bin/agent-coding-tool", __dir__),
+        "checkpoint", "verify", "T", "--workspace", workspace)
+      assert cold_status.success?, cold_err
+      assert_equal "verified", JSON.parse(cold_out).fetch("status")
+      %w[failed blocked candidate_complete complete].each do |outcome|
+        assert_equal 0, cli.run(["record", "T", outcome]), err.string
+        bytes = File.binread(state_path)
+        assert_equal 0, cli.run(arguments.dup), err.string
+        assert_equal bytes, File.binread(state_path)
+        assert_equal attempt, YAML.safe_load_file(state_path).dig("checkpoint", "attempt")
+      end
+      assert_equal 0, cli.run(%w[start T --force]), err.string
+      new_state = YAML.safe_load_file(state_path)
+      refute new_state.key?("checkpoint")
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: err)
+      assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T", workspace: workspace) }
+      original_evidence.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    end
+  end
+
+  # Negative gate controls retain lifecycle bytes and exact process outcomes.
+  # Receipt failures are mandatory failures even after successful child execution.
+  def test_forced_gate_failures_preserve_bytes_results_and_required_audit
+    fixture do |root, data, _ordinary, workspace, _base|
+      diagnostics = StringIO.new
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
+      evidence = checkpoint.record("T", workspace: workspace)
+      state_path = File.join(data, "state", "T.yml")
+      state = YAML.safe_load_file(state_path)
+      state.delete("started_at")
+      state["result"] = { "outcome" => "needs_judgment" }
+      AgentCodingTool::StateStore.new(File.dirname(state_path)).write("T", state)
+      lifecycle = File.binread(state_path)
+      directory = File.dirname(evidence.fetch("path"))
+      AgentCodingTool::ReservationLock.synchronize(data) do
+        assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        end
+        assert_raises(AgentCodingTool::InvalidState) { checkpoint.verify("T", workspace: workspace) }
+      end
+      pointer = File.join(directory, "current.json")
+      File.rename(pointer, "#{pointer}.saved")
+      begin
+        assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        end
+      ensure
+        File.rename("#{pointer}.saved", pointer)
+      end
+      assert_equal lifecycle, File.binread(state_path)
+      [[9, [RbConfig.ruby, "-e", "exit 9"]],
+       [128 + Signal.list.fetch("TERM"), [RbConfig.ruby, "-e", "Process.kill('TERM', Process.pid)"]],
+       [127, [File.join(root, "missing-command")]]].each do |expected, command|
+        assert_equal expected, checkpoint.gate("T", workspace: workspace, command: command, force: true)
+        assert_equal lifecycle, File.binread(state_path)
+      end
+      results = Dir.glob(File.join(directory, "gate-*.finished.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert_equal %w[exited failed_to_start signal], results.map { |receipt| receipt.dig("command_outcome", "status") }.sort
+      assert results.all? { |receipt| receipt.fetch("candidate_validation") == "failed" }
+      writer = checkpoint.method(:write_once!)
+      marker = File.join(root, "child-ran")
+      failure = lambda do |path, bytes|
+        raise IOError, "injected receipt failure" if path.end_with?(".started.json")
+        writer.call(path, bytes)
+      end
+      checkpoint.stub(:write_once!, failure) do
+        assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "File.write(ARGV[0], 'ran')", marker], force: true)
+        end
+      end
+      refute File.exist?(marker)
+      failure = lambda do |path, bytes|
+        raise IOError, "injected final receipt failure" if path.end_with?(".finished.json")
+        writer.call(path, bytes)
+      end
+      checkpoint.stub(:write_once!, failure) do
+        error = assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 7"], force: true)
+        end
+        assert_match(/"exit_code"\s*=>\s*7/, error.message)
+      end
+      commands = Dir.glob(File.join(directory, "gate-*.command.json")).map { |path| JSON.parse(File.binread(path)) }
+      assert commands.any? { |receipt| receipt.dig("command_outcome", "exit_code") == 7 }
+      File.write(File.join(workspace, "changed.txt"), "tampered\n")
+      assert_raises(AgentCodingTool::InvalidState) do
+        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+      end
+      assert_equal lifecycle, File.binread(state_path)
+      assert_equal "verified", YAML.safe_load_file(state_path).dig("checkpoint", "status")
+      # A successful child that changes candidate bytes fails the post-check;
+      # the stale observation belongs to fresh receipts, not lifecycle state.
+      File.write(File.join(workspace, "changed.txt"), "updated\n")
+      assert_raises(AgentCodingTool::InvalidState) do
+        checkpoint.gate("T", workspace: workspace,
+          command: [RbConfig.ruby, "-e", "File.write('changed.txt', 'changed by command')"], force: true)
+      end
+      assert_equal lifecycle, File.binread(state_path)
+      File.write(File.join(workspace, "changed.txt"), "updated\n")
+      state["id"] = "foreign"
+      File.write(state_path, YAML.dump(state))
+      assert_raises(AgentCodingTool::InvalidState) do
+        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+      end
+      File.binwrite(state_path, lifecycle)
+      File.binwrite(evidence.fetch("path"), "tampered artifact")
+      assert_raises(AgentCodingTool::InvalidState) do
+        checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+      end
+      assert_equal lifecycle, File.binread(state_path)
+    end
+  end
+
+  # A real owned fixture process and sibling state survive metadata declarations.
+  # External activity continues to block validation/execution after forced COMPLETE.
+  def test_force_metadata_does_not_retire_live_fixture_or_sibling
+    fixture do |root, data, _ordinary, workspace, _base|
+      write_task(data, id: "S")
+      states = AgentCodingTool::StateStore.new(File.join(data, "state"))
+      states.write("S", { "id" => "S", "custom" => "sibling" })
+      sibling = File.binread(states.state_path("S"))
+      checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: StringIO.new)
+      checkpoint.record("T", workspace: workspace)
+      coordinator = coordinator_for(data, "repo" => "a" * 40)
+      reader, writer = IO.pipe
+      pid = Process.spawn(RbConfig.ruby, "-e", "STDOUT.sync = true; puts 'ready'; sleep 20", out: writer, err: File::NULL)
+      writer.close
+      begin
+        assert IO.select([reader], nil, nil, 5), "fixture worker did not start"
+        assert_equal "ready\n", reader.gets
+        activity = coordinator.external_activity.report("T", reporter: "fixture", kind: "worker", identifier: "fixture-#{pid}")
+        original_activity = coordinator.external_activity.show("T")
+        coordinator.record("T", outcome: "complete", force: true)
+        assert_equal "COMPLETE", coordinator.status("T").fetch("status")
+        assert_raises(AgentCodingTool::InvalidState) do
+          checkpoint.gate("T", workspace: workspace, command: [RbConfig.ruby, "-e", "exit 0"], force: true)
+        end
+        assert_equal 1, Process.kill(0, pid)
+        assert_equal original_activity, coordinator.external_activity.show("T")
+        coordinator.reset("T", force: true)
+        assert_equal original_activity, coordinator.external_activity.show("T")
+        assert_equal sibling, File.binread(states.state_path("S"))
+        assert_equal 1, Process.kill(0, pid)
+        assert activity.fetch("active")
+      ensure
+        reader.close
+        Process.kill("TERM", pid)
+        Process.waitpid(pid)
+      end
+    end
+  end
+
   def self.seed
     return @seed if @seed
 

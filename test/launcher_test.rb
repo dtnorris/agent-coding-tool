@@ -302,6 +302,9 @@ class LauncherTest < Minitest::Test
       FileUtils.mkdir_p(checkpoint, mode: 0o700)
       File.write(File.join(checkpoint, "current.json"), '{"preserved":true}')
       before = File.binread(File.join(checkpoint, "current.json"))
+      audit = File.join("#{@data}-runs", AgentCodingTool::LifecycleOverride::NAMESPACE, "T", "declaration")
+      FileUtils.mkdir_p(audit, mode: 0o700)
+      File.binwrite(File.join(audit, "original.yml"), "raw\xff".b)
       other_run = File.join("#{@data}-runs", "OTHER", "earlier")
       FileUtils.mkdir_p(other_run)
       File.write(File.join(other_run, "handoff.json"), JSON.generate(
@@ -312,6 +315,7 @@ class LauncherTest < Minitest::Test
       assert_equal 0, launcher.launch("T")
       assert_equal "exited", report.fetch("status")
       assert_equal before, File.binread(File.join(checkpoint, "current.json"))
+      assert_equal "raw\xff".b, File.binread(File.join(audit, "original.yml"))
     end
   end
 
@@ -383,11 +387,11 @@ class LauncherTest < Minitest::Test
   end
 
   def test_replaced_or_nonprivate_checkpoint_namespace_fails_closed
-    [:symlink, :file, :nonprivate].each do |replacement|
+    %w[checkpoints .lifecycle-overrides].product([:symlink, :file, :nonprivate]).each do |namespace, replacement|
       fixture do
         root = "#{@data}-runs"
         FileUtils.mkdir_p(root, mode: 0o700)
-        checkpoint = File.join(root, "checkpoints")
+        checkpoint = File.join(root, namespace)
         case replacement
         when :symlink then File.symlink(@ordinary, checkpoint)
         when :file then File.write(checkpoint, "foreign")
@@ -395,7 +399,7 @@ class LauncherTest < Minitest::Test
           Dir.mkdir(checkpoint, 0o700)
           File.chmod(0o755, checkpoint)
         end
-        assert_preflight_failure(/foreign checkpoint evidence/)
+        assert_preflight_failure(/foreign (?:checkpoint|lifecycle override) evidence/)
       end
     end
   end

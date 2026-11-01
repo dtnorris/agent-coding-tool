@@ -46,7 +46,7 @@ module AgentCodingTool
                  workspace: workspace, base: base, contract: contract.fetch("repositories").fetch(name) }]
       end
       manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                    record_path: File.join(run_dir, "worktrees.json"))
+                                    record_path: File.join(run_dir, "worktrees.json"), transport: @transport)
       overrides = writers.to_h do |name|
         info = records.fetch(name)
         head = git!(info.fetch(:workspace), "rev-parse", "HEAD").strip

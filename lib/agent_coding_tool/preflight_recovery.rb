@@ -9,10 +9,11 @@ module AgentCodingTool
   # Only a terminal launch failure before ACT's start reservation can be abandoned.
   # The run directory and feature branches remain as historical evidence.
   class PreflightRecovery
-    def initialize(data_root:, liveness: nil, after_removal: nil)
+    def initialize(data_root:, liveness: nil, after_removal: nil, transport: NativeCommandTransport.new)
       @data_root = File.realpath(data_root)
       @liveness = liveness || method(:clear_liveness?)
       @after_removal = after_removal
+      @transport = transport
     end
 
     # Returns a verified pre-worker abandonment plan without mutation. Both path
@@ -82,7 +83,7 @@ module AgentCodingTool
       raise InvalidState, "abandon-preflight: missing explicit recovery marker" if
         report["status"] == "preflight_abandoned" && !report["preflight_abandoned_at"]
       manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                    record_path: record_path)
+                                    record_path: record_path, transport: @transport)
       inventory = manager.inspect!
       entries = inventory.fetch("entries")
       raise InvalidState, "abandon-preflight: repository set changed" unless
@@ -125,7 +126,7 @@ module AgentCodingTool
         raise InvalidState, "abandon-preflight: launcher active" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
         result = preflight(id)
         manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                      record_path: result.fetch("record_path"))
+                                      record_path: result.fetch("record_path"), transport: @transport)
         result.fetch("entries").each do |entry|
           next if entry["state"] == "removed"
           manager.remove_entry!(entry.fetch("name"))

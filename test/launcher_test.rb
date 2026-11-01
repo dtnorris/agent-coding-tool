@@ -80,6 +80,35 @@ class LauncherTest < Minitest::Test
 
   def test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory
     fixture do
+      # Exercise the actual runner/native-transport/fixture composition before
+      # the launch journey. Only empty defaults are equivalent at this seam.
+      workspace = File.join(@root, 'worktrees', 'T', 'repo')
+      transport = AgentCodingTool::NativeCommandTransport.new
+      response = transport.call(%w[git rev-parse HEAD], cwd: workspace)
+      assert_equal [@base, '', 0, nil, true],
+        [response.stdout, response.stderr, response.exitstatus, response.termsig, response.success?]
+      assert_equal [@base, '', true], AgentCodingTool::CommandRunner.new.capture('git', 'rev-parse', 'HEAD', chdir: workspace)
+      assert_equal @base, unit_capture('git', 'rev-parse', 'HEAD', chdir: workspace).first
+      [
+        { cwd: workspace, input: 'unexpected' },
+        { cwd: workspace, env: { 'GIT_DIR' => '/foreign' } },
+        { cwd: workspace, unsetenv_others: true },
+        { cwd: workspace, binmode: true },
+        { cwd: @ordinary }
+      ].each do |fields|
+        assert_raises(RuntimeError) { transport.call(%w[git rev-parse HEAD], **fields) }
+      end
+      assert_raises(RuntimeError) { transport.call(%w[git status], cwd: workspace) }
+      assert_raises(RuntimeError) do
+        transport.call(%w[git rev-parse --path-format=absolute --git-common-dir], cwd: @ordinary, binmode: true)
+      end
+      # A changed Git envelope must not weaken the separate preflight allowlist.
+      assert_raises(RuntimeError) do
+        unit_capture({ 'OPENAI_API_KEY' => 'forbidden' }, File.realpath(@fake), '--version', unsetenv_others: true)
+      end
+      assert_raises(RuntimeError) { unit_capture({}, File.realpath(@fake), '--version') }
+      assert_equal [0, nil, true], [Status.new(true).exitstatus, Status.new(true).termsig, Status.new(true).success?]
+      assert_equal [1, nil, false], [Status.new(false).exitstatus, Status.new(false).termsig, Status.new(false).success?]
       task_path = File.join(@data, "tasks", "T.yml")
       task = YAML.safe_load_file(task_path)
       task['worker_recommendation'] = { 'model' => 'Human UI Model', 'thinking' => 'ultra' }

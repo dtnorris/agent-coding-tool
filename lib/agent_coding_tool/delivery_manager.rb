@@ -14,10 +14,11 @@ module AgentCodingTool
     SCHEMA = "agent-coding-tool-delivery/v1"
     SHA = /\A[0-9a-f]{40}\z/
 
-    def initialize(data_root:, coordinator:, provider: nil, guard: nil)
+    def initialize(data_root:, coordinator:, provider: nil, guard: nil, transport: NativeCommandTransport.new)
       @data_root = File.realpath(data_root)
       @coordinator = coordinator
-      @provider = provider || GitHubDeliveryProvider.new
+      @transport = transport
+      @provider = provider || GitHubDeliveryProvider.new(transport: transport)
       @guard = guard || ExternalPublicationGuard.new
     end
 
@@ -35,7 +36,7 @@ module AgentCodingTool
       raise InvalidState, "delivery: foreign run" unless File.dirname(run_dir) == expected_parent
       @run_dir = run_dir
       @overlap_identity = nil
-      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
+      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__), transport: @transport)
       verifier.send(:safe_root!)
       ReservationLock.synchronize(@data_root, held: reservation_lock) do |lock|
         @reservation_lock = lock
@@ -62,7 +63,7 @@ module AgentCodingTool
         report.fetch("preparation").fetch(name).fetch("pushed_sha") }
       return {} if advanced.empty?
       multi = writers.length > 1
-      verifier = multi ? MultiDeliveryManager.new(data_root: @data_root, coordinator: @coordinator) : self
+      verifier = multi ? MultiDeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport) : self
       contract, contract_sha = multi ? verifier.send(:multi_contract!, id, writers) : contract!(id)
       verifier.verify_candidate_cross_checks!(id, report, run_dir, contract, contract_sha) if multi
       advanced.to_h do |name|
@@ -95,7 +96,7 @@ module AgentCodingTool
     # set during trusted tests. Returns identities; no lifecycle writes occur.
     def verify_overlap!(id)
       return unless @run_dir
-      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__))
+      verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__), transport: @transport)
       identity = verifier.verify_delivery_overlap!(id, @run_dir)
       if @overlap_identity && @overlap_identity != identity
         raise InvalidState, "delivery: write reservations changed during validation"
@@ -153,7 +154,7 @@ module AgentCodingTool
       verify_worker_artifacts!(report, run_dir)
       if report.fetch("writable_repositories", [report["writable_repository"]]).length > 1
         return MultiDeliveryManager.new(data_root: @data_root, coordinator: @coordinator,
-                                        provider: @provider, guard: @guard).deliver_multi_locked(id, run_dir, report, reservation_lock: @reservation_lock)
+                                        provider: @provider, guard: @guard, transport: @transport).deliver_multi_locked(id, run_dir, report, reservation_lock: @reservation_lock)
       end
       contract, contract_sha = contract!(id)
       name = report.fetch("writable_repository")
@@ -165,7 +166,7 @@ module AgentCodingTool
         task.fetch("repositories").select { |_n, spec| spec.fetch("access") == "write" }.keys == [name]
       inventory_path = File.join(run_dir, "worktrees.json")
       manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root,
-                                    record_path: inventory_path)
+                                    record_path: inventory_path, transport: @transport)
       delivery_path = File.join(run_dir, "delivery.json")
       raise InvalidState, "delivery: symlinked evidence" if File.symlink?(delivery_path)
       existing = File.file?(delivery_path) ? JSON.parse(File.binread(delivery_path)) : nil
@@ -438,7 +439,7 @@ module AgentCodingTool
       details.fetch("manifest").each do |path, entry|
         if entry["deleted"]
           raise InvalidState, "delivery: deletion absent from commit" unless
-            !Open3.capture3("git", "cat-file", "-e", "HEAD:#{path}", chdir: workspace).last.success?
+            !@transport.call(["git", "cat-file", "-e", "HEAD:#{path}"], cwd: workspace).success?
           next
         end
         bytes = git!(workspace, "show", "HEAD:#{path}")
@@ -476,7 +477,7 @@ module AgentCodingTool
     end
 
     def git!(cwd, *args)
-      out, err, status = Open3.capture3("git", *args, chdir: cwd)
+      out, err, status = @transport.call(["git", *args], cwd: cwd)
       raise RepositoryError, "delivery: Git #{args.first} failed: #{err.strip}" unless status.success?
       out
     end
@@ -490,6 +491,12 @@ module AgentCodingTool
 
   # The live provider runs only on the operator's host with explicit gh auth.
   class GitHubDeliveryProvider
+    # Binds the Git command boundary; provider API requests remain native gh calls.
+    # Construction performs no execution; transport errors arise at push time.
+    def initialize(transport: NativeCommandTransport.new)
+      @transport = transport
+    end
+
     def branch(remote_url, branch)
       repository = repository!(remote_url)
       data = request("GET", "repos/#{repository}/git/ref/heads/#{branch}", missing: true)
@@ -499,9 +506,9 @@ module AgentCodingTool
     def push(workspace, remote, branch, commit)
       # Empty lease means the branch must still be absent. A concurrent
       # creator cannot be overwritten even when its commit is an ancestor.
-      _out, err, status = Open3.capture3("git", "-c", "core.hooksPath=/dev/null", "push",
+      _out, err, status = @transport.call(["git", "-c", "core.hooksPath=/dev/null", "push",
                                          "--force-with-lease=refs/heads/#{branch}:",
-                                         remote, "#{commit}:refs/heads/#{branch}", chdir: workspace)
+                                         remote, "#{commit}:refs/heads/#{branch}"], cwd: workspace)
       raise RepositoryError, "delivery: push failed: #{err.strip}" unless status.success?
     end
 

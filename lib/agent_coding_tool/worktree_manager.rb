@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "json"
-require "open3"
 require "fileutils"
 require "tempfile"
 
@@ -31,12 +30,13 @@ module AgentCodingTool
     # Selects legacy or attempt paths and an optional host inventory witness.
     # The witness must persist before any native addition; failures preserve the
     # inventory and prevent mutation. No filesystem work occurs on initialization.
-    def initialize(root:, record_path:, attempt_paths: false, invocation_id: nil, inventory_written: nil)
+    def initialize(root:, record_path:, attempt_paths: false, invocation_id: nil, inventory_written: nil, transport: NativeCommandTransport.new)
       @root = canonical_system_path(root)
       @record_path = canonical_system_path(record_path)
       @attempt_paths = attempt_paths
       @invocation_id = invocation_id
       @inventory_written = inventory_written
+      @transport = transport
     end
 
     # Checks only sources consumed by imminent worktree creation, without writes
@@ -336,9 +336,7 @@ module AgentCodingTool
     end
 
     def git(path, *args, allow_failure: false, env: {})
-      command = ["git", *args]
-      command.unshift(env) unless env.empty?
-      stdout, stderr, status = Open3.capture3(*command, chdir: path)
+      stdout, stderr, status = @transport.call(["git", *args], cwd: path, env: env)
       [args.include?("-z") ? stdout : stdout.strip, stderr.strip, status.success?]
     end
 

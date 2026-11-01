@@ -66,6 +66,10 @@ module LauncherSupport
 
   Status = Struct.new(:success) do
     def success? = success
+    # These finite fixtures model normal exits only. The production transport
+    # consumes exit/signal facts, not just the legacy boolean success reader.
+    def exitstatus = success ? 0 : 1
+    def termsig = nil
   end
 
   # Reuse the executable, not worker state. Each child resolves its own fixture
@@ -253,6 +257,15 @@ module LauncherSupport
     if command[0].is_a?(Hash) && command[1, 2] == ['git', '--no-replace-objects']
       raise GitContract::UnexpectedObservation, 'ordinary skill read escaped its finite runner' if ENV['ACT_ORDINARY_SUITE'] == '1'
       return @skill_capture.call(*command, **options)
+    end
+    # NativeCommandTransport makes the empty inherited environment and stdin
+    # explicit. Normalize only those defaults; overrides, input and extra
+    # options must still fail rather than be mistaken for Codex preflight.
+    command.shift if command.first == {} && command[1] == 'git'
+    if command.first == 'git'
+      raise 'unexpected Git stdin' unless options.fetch(:stdin_data, '') == ''
+      options = options.reject { |key, _value| key == :stdin_data }
+      raise 'unexpected Git options' unless options.keys == [:chdir]
     end
     if command.first.is_a?(Hash)
       env = command.shift

@@ -1,24 +1,32 @@
 # frozen_string_literal: true
 
-require "open3"
+require_relative "command_transport"
 require "thread"
 
 module AgentCodingTool
+  # Compatibility adapter for callers consuming raw streams and boolean success.
   class CommandRunner
-    def capture(*command, chdir: nil)
-      options = {}
-      options[:chdir] = chdir if chdir
-      stdout, stderr, status = Open3.capture3(*command, **options)
-      [stdout, stderr, status.success?]
+    # Binds the shared command transport; construction performs no execution.
+    def initialize(transport: NativeCommandTransport.new)
+      @transport = transport
+    end
+
+    # Normalizes legacy leading env/chdir/stdin options into the transport request.
+    # Returns raw streams and true/false/nil success; transport exceptions propagate.
+    def capture(*command, chdir: nil, stdin_data: "", timeout: nil, **options)
+      environment = command.first.is_a?(Hash) ? command.shift : {}
+      stdout, stderr, result = @transport.call(command, cwd: chdir, env: environment,
+        input: stdin_data, timeout: timeout, **options)
+      [stdout, stderr, result.success?]
     end
   end
 
   class RepoInspector
     DEFAULT_REMOTE_CONCURRENCY = 4
 
-    def initialize(config, runner: CommandRunner.new, remote_concurrency: DEFAULT_REMOTE_CONCURRENCY)
+    def initialize(config, runner: nil, transport: NativeCommandTransport.new, remote_concurrency: DEFAULT_REMOTE_CONCURRENCY)
       @config = config
-      @runner = runner
+      @runner = runner || CommandRunner.new(transport: transport)
       @remote_concurrency = Integer(remote_concurrency)
       raise ArgumentError, "remote concurrency must be positive" unless @remote_concurrency.positive?
     rescue ArgumentError, TypeError

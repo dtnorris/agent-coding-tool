@@ -13,11 +13,12 @@ module AgentCodingTool
     STATUSES = %w[exited invalid_final interrupted child_start_failed preflight_failed].freeze
 
     # Uses private ACT evidence and optional deterministic liveness/fault seams.
-    def initialize(data_root:, liveness: RetryLiveness.new, before_write: nil, after_write: nil)
+    def initialize(data_root:, liveness: RetryLiveness.new, before_write: nil, after_write: nil, transport: NativeCommandTransport.new)
       @data = File.realpath(data_root)
       @root = "#{@data}-runs"
       @config = Config.load(File.join(@data, "config.yml"))
       @liveness, @before_write, @after_write = liveness, before_write, after_write
+      @transport = transport
     end
 
     # Returns independent historical rows, retaining valid inventories when a
@@ -138,7 +139,7 @@ module AgentCodingTool
         report = read_json(File.join(directory, "handoff.json"))
         next unless report.fetch("attempt") < before_attempt
         record = File.join(directory, "worktrees.json")
-        WorktreeManager.new(root: @config.worktree_root, record_path: record)
+        WorktreeManager.new(root: @config.worktree_root, record_path: record, transport: @transport)
                        .inspect!(allow_partial: report["status"] == "preflight_failed") if File.file?(record)
       end.flat_map { |inventory| inventory.fetch("entries") }
                  .filter_map { |entry| entry.fetch("path") if File.directory?(entry.fetch("path")) }
@@ -164,7 +165,7 @@ module AgentCodingTool
              original.is_a?(Hash) && original["started_at"] && checkpoint["attempt"] == expected
         raise InvalidState, "close-attempt: stale checkpoint or original execution identity unavailable"
       end
-      evidence = Checkpoint.new(data_root: @data).verify(id, attempt: attempt)
+      evidence = Checkpoint.new(data_root: @data, transport: @transport).verify(id, attempt: attempt)
       unless evidence["status"] == "verified" && evidence.fetch("record")["launch_invocation"] == report.fetch("invocation_id")
         raise InvalidState, "close-attempt: checkpoint belongs to another invocation"
       end
@@ -176,7 +177,7 @@ module AgentCodingTool
       inventory.fetch("entries").each do |entry|
         next unless File.directory?(entry.fetch("path"))
         output = IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) do |*args|
-          bytes, error, status = Open3.capture3("git", *args, chdir: entry.fetch("path"))
+          bytes, error, status = @transport.call(["git", *args], cwd: entry.fetch("path"))
           raise InvalidState, "close-attempt: unreadable worktree #{entry['path']}: #{error}" unless status.success?
           bytes
         end
@@ -224,7 +225,7 @@ module AgentCodingTool
         raise InvalidState, "history: original execution snapshot changed"
       end
       if File.exist?(record) || File.symlink?(record)
-        inventory = WorktreeManager.new(root: @config.worktree_root, record_path: record)
+        inventory = WorktreeManager.new(root: @config.worktree_root, record_path: record, transport: @transport)
                                    .inspect!(allow_partial: report["status"] == "preflight_failed")
         unless inventory.values_at("task_id", "attempt") == report.values_at("task_id", "attempt") &&
                (!inventory["invocation_id"] || inventory["invocation_id"] == report["invocation_id"]) &&
@@ -330,14 +331,14 @@ module AgentCodingTool
       previous_inventories = nil
       report.fetch("preparation").each do |name, prepared|
         path = File.join(root, id, *(report["worktree_layout"] == "attempt" ? ["attempt-#{report.fetch('attempt')}"] : []), name)
-        manager = WorktreeManager.new(root: root, record_path: report.fetch("worktrees_path"))
+        manager = WorktreeManager.new(root: root, record_path: report.fetch("worktrees_path"), transport: @transport)
         manager.send(:parent_identity!, prepared, name)
         manager.send(:safe_path!, path)
         parent = prepared.fetch("path")
         branch = "refs/heads/act/#{id}/attempt-#{report.fetch('attempt')}"
-        _output, _error, status = Open3.capture3("git", "show-ref", "--verify", "--quiet", branch, chdir: parent)
+        _output, _error, status = @transport.call(["git", "show-ref", "--verify", "--quiet", branch], cwd: parent)
         raise InvalidState, "history: unaccounted attempt branch; missing ownership after mutation" unless status.exitstatus == 1
-        registry, error, status = Open3.capture3("git", "worktree", "list", "--porcelain", "-z", chdir: parent)
+        registry, error, status = @transport.call(["git", "worktree", "list", "--porcelain", "-z"], cwd: parent)
         raise InvalidState, "history: unreadable registry: #{error}" unless status.success?
         if File.exist?(path) || File.symlink?(path) || registry.split("\0").include?("worktree #{path}")
           # Validate each complete earlier inventory once in this inspection,
@@ -346,7 +347,7 @@ module AgentCodingTool
           previous_inventories ||= directories(id).filter_map do |directory|
             record = File.join(directory, "worktrees.json")
             next unless File.file?(record) && !File.symlink?(record)
-            inventory = WorktreeManager.new(root: root, record_path: record).inspect!
+            inventory = WorktreeManager.new(root: root, record_path: record, transport: @transport).inspect!
             next unless inventory["task_id"] == id && inventory["attempt"] < report.fetch("attempt")
             inventory
           end

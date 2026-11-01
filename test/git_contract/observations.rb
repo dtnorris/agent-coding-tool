@@ -10,21 +10,25 @@ module GitContract
 
   # Immutable command input and raw output, or an exceptional execution outcome.
   class Observation
-    attr_reader :argv, :cwd, :stdout, :stderr, :status, :exception
+    attr_reader :argv, :cwd, :stdin_data, :stdout, :stderr, :status, :exception
 
     # Accepts exact argv (including a leading environment hash), cwd and a
-    # capture3/capture tuple or an exception. Environment strings are copied.
+    # capture3/capture tuple or an exception. Environment/stdin strings are copied;
+    # an omitted environment and an empty leading environment hash are equivalent.
     # Raises ArgumentError for an ambiguous or incompatible outcome.
-    def initialize(argv:, cwd:, result: nil, exception: nil)
+    def initialize(argv:, cwd:, stdin_data: "", result: nil, exception: nil)
+      raise ArgumentError, "observation stdin must be a String" unless stdin_data.is_a?(String)
       unless (result.nil? != exception.nil?) &&
              (result.nil? || (result.size == 3 && result[0].is_a?(String) &&
               result[1].is_a?(String) && (result[2] == true || result[2] == false || result[2].is_a?(Process::Status))))
         raise ArgumentError, "provide a capture3 result or an exception"
       end
+      argv = argv.drop(1) if argv.first == {}
       @argv = argv.map do |argument|
         argument.is_a?(Hash) ? argument.to_h { |key, value| [key.dup.freeze, value&.dup&.freeze] }.freeze : argument.dup.freeze
       end.freeze
       @cwd = cwd&.dup&.freeze
+      @stdin_data = stdin_data.dup.freeze
       @stdout, @stderr, @status = result
       @stdout = @stdout&.dup&.freeze
       @stderr = @stderr&.dup&.freeze
@@ -61,16 +65,16 @@ module GitContract
       @mutex = Mutex.new
     end
 
-    # Matches exact argv/cwd and returns raw capture3 output or raises its
+    # Matches exact argv/cwd/stdin and returns raw capture3 output or raises its
     # exception. Unexpected, duplicate, or out-of-order requests fail loudly.
-    def capture3(*argv, chdir: nil)
-      take(argv, chdir).capture3
+    def capture3(*argv, chdir: nil, stdin_data: "")
+      take(argv, chdir, stdin_data).capture3
     end
 
     # Implements CommandRunner's boolean-success boundary, preserving exceptions
-    # and byte strings. Accepts exact argv and optional cwd.
-    def capture(*argv, chdir: nil)
-      take(argv, chdir).capture
+    # and byte strings. Accepts exact argv, optional cwd and binary stdin.
+    def capture(*argv, chdir: nil, stdin_data: "")
+      take(argv, chdir, stdin_data).capture
     end
 
     # Returns true after complete consumption; raises for missing observations.
@@ -85,11 +89,12 @@ module GitContract
 
     # Consumes one exact request atomically; returns its Observation or raises
     # UnexpectedObservation without consuming an unmatched expectation.
-    def take(argv, cwd)
+    def take(argv, cwd, stdin_data)
+      argv = argv.drop(1) if argv.first == {}
       @mutex.synchronize do
-        index = @ordered ? 0 : @remaining.index { |item| item.argv == argv && item.cwd == cwd }
+        index = @ordered ? 0 : @remaining.index { |item| item.argv == argv && item.cwd == cwd && item.stdin_data == stdin_data }
         expected = index && @remaining[index]
-        unless expected && expected.argv == argv && expected.cwd == cwd
+        unless expected && expected.argv == argv && expected.cwd == cwd && expected.stdin_data == stdin_data
           raise UnexpectedObservation, "unexpected argv=#{argv.inspect} cwd=#{cwd.inspect}; remaining=#{@remaining.map { |item| [item.argv, item.cwd] }.inspect}"
         end
         @remaining.delete_at(index)
@@ -114,14 +119,17 @@ module GitContract
     end
 
     # Runs exact argv/cwd in a new owned process group. Returns raw bytes and a
-    # real status, records spawn exceptions, and raises on deadline expiration.
-    def capture3(*argv, chdir: nil)
+    # real status, records exact binary stdin/spawn exceptions, and raises on
+    # deadline expiration, including a child that refuses to consume its stdin.
+    def capture3(*argv, chdir: nil, stdin_data: "")
+      raise ArgumentError, "native stdin must be a String" unless stdin_data.is_a?(String)
+      stdin_data = stdin_data.dup.freeze
       options = { pgroup: true }
       options[:chdir] = chdir if chdir
       command = argv.dup
       environment = @environment.merge(command.first.is_a?(Hash) ? command.shift : {})
       result = Open3.popen3(environment, *command, **options) do |input, output, error, waiter|
-        input.close
+        input.binmode
         output.binmode
         error.binmode
         readers = [output, error].map { |pipe| Thread.new { pipe.read } }
@@ -149,6 +157,13 @@ module GitContract
           end
         end
         begin
+          begin
+            input.write(stdin_data)
+          rescue Errno::EPIPE
+            # A rejecting child still owns its diagnostic and exit status.
+          ensure
+            input.close
+          end
           values = readers.map(&:value)
           status = waiter.value
           raise IOError, "fixture command exceeded #{@seconds}s: #{argv.inspect}" if expired
@@ -160,18 +175,18 @@ module GitContract
           readers.each(&:join)
         end
       end
-      observation = Observation.new(argv: argv, cwd: chdir, result: result)
+      observation = Observation.new(argv: argv, cwd: chdir, stdin_data: stdin_data, result: result)
       @mutex.synchronize { @observations << observation }
       result
     rescue SystemCallError => exception
-      @mutex.synchronize { @observations << Observation.new(argv: argv, cwd: chdir, exception: exception) }
+      @mutex.synchronize { @observations << Observation.new(argv: argv, cwd: chdir, stdin_data: stdin_data, exception: exception) }
       raise
     end
 
     # Implements the capture boundary; accepts exact argv/cwd and
-    # preserves raw stdout/stderr and exceptional execution behavior.
-    def capture(*argv, chdir: nil)
-      stdout, stderr, status = capture3(*argv, chdir: chdir)
+    # preserves binary stdin/stdout/stderr and exceptional execution behavior.
+    def capture(*argv, chdir: nil, stdin_data: "")
+      stdout, stderr, status = capture3(*argv, chdir: chdir, stdin_data: stdin_data)
       [stdout, stderr, status.success?]
     end
   end

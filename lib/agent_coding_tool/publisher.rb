@@ -15,11 +15,11 @@ module AgentCodingTool
     STATE = /\Astate\/[^\/]+\.yml\z/
     PROMPT = /\Astate\/prompts\/[^\/]+\.txt\z/
 
-    def initialize(data_root:, config:, task_store:, runner: CommandRunner.new)
+    def initialize(data_root:, config:, task_store:, runner: nil, transport: NativeCommandTransport.new)
       @root = File.expand_path(data_root)
       @config = config
       @task_store = task_store
-      @runner = runner
+      @runner = runner || CommandRunner.new(transport: transport)
     end
 
     def publish(mode:, task_id: nil, dry_run: false)

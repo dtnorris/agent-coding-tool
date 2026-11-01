@@ -292,6 +292,106 @@ class NoGitExecutionVerifier < Minitest::Test
     assert_includes failure.message, "/aliased/source/common"
     assert_equal audit_before, NoGitExecution.audit
   end
+
+  # Builds a fixed absent-leaf permit with the same reviewed bootstrap as the
+  # approved Ruby children. Invalid paths/options and bootstrap drift propagate.
+  def missing_permit(directory, **options)
+    bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
+    NoGitExecution::MissingExecutablePermit.new(directory: directory,
+      preloads: { bundler => Digest::SHA256.file(bundler).hexdigest }, **options)
+  end
+
+  # Existing executables and live/dangling symlinks refuse both at construction
+  # and after approval. No native entry may occur in any rejected probe.
+  def test_missing_executable_refuses_files_and_symlinks
+    Dir.mktmpdir("zero-git-absent-") do |directory|
+      directory = File.realpath(directory)
+      executable = File.join(directory, "no-git-missing-executable")
+      before = NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+      [:executable, :symlink, :dangling].each do |kind|
+        approval = missing_permit(directory)
+        if kind == :executable
+          FileUtils.cp(RbConfig.ruby, executable)
+          File.chmod(0o700, executable)
+          assert File.executable?(executable)
+        else
+          File.symlink(kind == :symlink ? RbConfig.ruby : File.join(directory, "absent-target"), executable)
+        end
+        assert_raises(NoGitExecution::ProhibitedExecution) do
+          missing_permit(directory)
+        end
+        assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) }
+        refute approval.used?
+        assert_equal before, NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+        File.unlink(executable)
+      end
+    end
+  end
+
+  # Changed argv/environment/cwd/options, cached native methods and other threads
+  # cannot borrow approval. All mismatches must fail before native C entry.
+  def test_missing_executable_binds_request
+    Dir.mktmpdir("zero-git-absent-") do |directory|
+      directory = File.realpath(directory)
+      approval = missing_permit(directory)
+      before = NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+      [[RbConfig.ruby, "--version"], ["git", "--version"], approval.argv + ["changed"]].each do |argv|
+        assert_raises(NoGitExecution::ProhibitedExecution) do
+          NoGitExecution.with_permit(approval) { Process.spawn(approval.environment, *argv) }
+        end
+      end
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        NoGitExecution.with_permit(approval) { Process.spawn(approval.environment.merge("RUBYOPT" => nil), *approval.argv) }
+      end
+      assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval, pgroup: true) }
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        NoGitExecution.with_permit(approval) { ORIGINAL_ZERO_GIT_SPAWN.call(approval.environment, *approval.argv) }
+      end
+      Dir.chdir(directory) { assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) } }
+      Thread.new { assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) } }.value
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        missing_permit(directory, options: { chdir: directory })
+      end
+      refute approval.used?
+      assert_equal before, NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+    end
+  end
+
+  # The real failed spawn consumes approval. Reuse must fail before another C
+  # entry even while the executable remains absent; native errors are not faked.
+  def test_missing_executable_single_use
+    Dir.mktmpdir("zero-git-absent-") do |directory|
+      approval = missing_permit(File.realpath(directory))
+      before = NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+      assert_raises(Errno::ENOENT) { capture(approval) }
+      assert approval.used?
+      assert_equal before + 1, NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+      assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) }
+      assert_equal before + 1, NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+    end
+  end
+
+  # Directory replacement, shared permissions and directory aliases cannot
+  # redirect an absent-leaf approval. No command permission or fallback is added.
+  def test_missing_executable_directory_drift
+    Dir.mktmpdir("zero-git-absent-") do |root|
+      directory = File.join(File.realpath(root), "private")
+      Dir.mkdir(directory, 0o700)
+      approval = missing_permit(directory)
+      File.rename(directory, directory + "-original")
+      Dir.mkdir(directory, 0o700)
+      assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) }
+      File.chmod(0o755, directory)
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        missing_permit(directory)
+      end
+      File.symlink(directory + "-original", File.join(root, "alias"))
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        missing_permit(File.join(root, "alias"))
+      end
+      refute approval.used?
+    end
+  end
 end
 
 # Source layouts are hand-authored filesystem fixtures; Git never initializes them.

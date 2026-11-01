@@ -113,6 +113,47 @@ module NoGitExecution
     end
   end
 
+  # One native ENOENT probe, never a command allowlist. Only a fixed absent leaf
+  # in a canonical private directory is eligible; the existing Permit still binds
+  # argv, environment, cwd, options, thread, source identities and single use.
+  class MissingExecutablePermit < Permit
+    # Takes a private directory, reviewed preloads and optional pgroup: true. Refuses
+    # existing leaves (including dangling symlinks), directory drift or other
+    # options. Native spawn errors remain native; no executable fallback exists.
+    def initialize(directory:, preloads: {}, options: {})
+      NoGitExecution.refuse!("missing executable options") unless options.empty? || options == { pgroup: true }
+      NoGitExecution.refuse!("missing executable directory") unless directory.is_a?(String) &&
+        File.realpath(directory) == directory
+      @directory = directory.dup.freeze
+      @directory_identity = File.stat(@directory).then { |stat| [stat.dev, stat.ino] }
+      @executable = File.join(@directory, "no-git-missing-executable").freeze
+      absent!
+      super(script: GUARD, sha256: Digest::SHA256.file(GUARD).hexdigest, preloads: preloads, options: options)
+      # Two argv entries force direct execution even when the path contains spaces.
+      @argv = [@executable, "--missing-executable-probe".freeze].freeze
+    end
+
+    # Rechecks absence immediately before the inherited exact-envelope check.
+    # Replacement files, symlinks and directory identities fail before native entry.
+    def consume!(command, options)
+      absent!
+      super
+    end
+
+    private
+
+    # Returns true only for an absent leaf in the original private directory.
+    # Filesystem failures propagate; this Ruby check is not an OS race sandbox.
+    def absent!
+      stat = File.stat(@directory)
+      NoGitExecution.refuse!("missing executable directory drift") unless File.realpath(@directory) == @directory &&
+        stat.directory? && stat.uid == Process.uid && (stat.mode & 0o077).zero? &&
+        [stat.dev, stat.ino] == @directory_identity
+      NoGitExecution.refuse!("missing executable exists") if File.exist?(@executable) || File.symlink?(@executable)
+      true
+    end
+  end
+
   # Installs a one-shot, thread-local permit around the caller's real transport.
   # Returns the transport's original result; missing consumption raises and all
   # exceptions propagate. Nested permits are forbidden.

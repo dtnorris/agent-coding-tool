@@ -30,8 +30,8 @@ class ApplyHandoffContract < Minitest::Test
     result
   end
 
-  # Calls the real owned native pipe implementation, recording exact requests
-  # and native results. Marks partition requests at actual confirmation reads.
+  # Calls the shared native transport, recording exact requests and CommandResult
+  # values. Marks partition requests at actual confirmation reads.
   # Returns result, records, marks and initial snapshots; native failures fail.
   def native_run(answers)
     # Match the public CLI driver's removal of only its synthetic skill preload;
@@ -41,13 +41,13 @@ class ApplyHandoffContract < Minitest::Test
     ENV["RUBYOPT"] = Shellwords.join(Shellwords.split(previous_rubyopt.to_s).reject { |option| option == skill_preload })
     records, marks = [], []
     input = ApplyHandoffObservations::Input.new(answers) { marks << records.length }
-    native = nil
+    out, err = StringIO.new("".b), StringIO.new("".b)
+    native_transport = AgentCodingTool::NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     transport = lambda do |argv, **options|
-      result = native.send(:capture_process, argv, **options)
+      result = native_transport.call(argv, **options)
       records << { argv: argv, **options, result: result }
       result
     end
-    out, err = StringIO.new("".b), StringIO.new("".b)
     native = AgentCodingTool::ApplyHandoff.new(config: apply_config, input: input, out: out, err: err, transport: transport)
     code = native.run(@json)
     assert_equal 0, code, out.string + err.string
@@ -110,10 +110,17 @@ class ApplyHandoffContract < Minitest::Test
     altered = records.map do |record|
       next record unless record.fetch(:argv) == argv && record.fetch(:cwd) == cwd
       found = true
-      record.merge(result: [replacement, *record.fetch(:result).drop(1)])
+      record.merge(result: with_stdout(record.fetch(:result), replacement))
     end
     assert found, "missing native request #{argv.inspect}"
     altered
+  end
+
+  # Replaces only stdout in a recorded result, preserving stderr and independent
+  # exit/signal facts. Invalid raw bytes/status raise at CommandResult construction.
+  def with_stdout(result, stdout)
+    AgentCodingTool::CommandResult.new(stdout: stdout, stderr: result.stderr,
+      exitstatus: result.exitstatus, termsig: result.termsig)
   end
 
   # Records real application/sibling validation/local commit once, verifies its
@@ -155,7 +162,7 @@ class ApplyHandoffContract < Minitest::Test
       assert_equal initial_files[0], file_state(@a).reject { |path, _value| path == "tasks/NEW.yml" }
       assert_equal initial_files[1], file_state(@b)
       restore_world
-      listing = records.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first.split("\0")
+      listing = records.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout.split("\0")
       untracked, indexed = listing.partition { |entry| entry.start_with?("? ") }
       assert_equal git(@a, "ls-files", "--stage", "-z").b, indexed.map { |entry| entry.delete_prefix("H ") + "\0" }.join
       assert_equal git(@a, "ls-files", "-z", "--cached").b.split("\0"), indexed.map { |entry| entry.split("\t", 2).last }
@@ -199,10 +206,10 @@ class ApplyHandoffContract < Minitest::Test
         unless untracked
           [@a, @b].each { |repo| File.unlink(File.join(repo, "local.bin")) }
           selected = records.map do |record|
-            output = record.fetch(:result).first
+            output = record.fetch(:result).stdout
             output = output.split("\0").reject { |path| ["local.bin", "? local.bin"].include?(path) }.map { |path| "#{path}\0" }.join if record.fetch(:argv).include?("--others")
             output = output.lines.reject { |line| line == "?? local.bin\n" }.join if record.fetch(:argv)[1] == "status"
-            record.merge(result: [output, *record.fetch(:result).drop(1)])
+            record.merge(result: with_stdout(record.fetch(:result), output))
           end
         end
         @manifest["commit_message"] = "Register NEW task"
@@ -294,7 +301,7 @@ class ApplyHandoffContract < Minitest::Test
           if %i[head sibling_head].include?(mutation)
             inspection = changed_output(inspection, %w[git rev-parse HEAD], mutation == :head ? @a : @b, "#{'c' * 40}\n")
           elsif mutation == :index
-            native_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+            native_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
             inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @a, native_index.sub("100644", "100755"))
           end
           answers = Array.new(phase - 1, "y") + [lambda do
@@ -322,7 +329,7 @@ class ApplyHandoffContract < Minitest::Test
           restore_world
           inspection = snapshot
           if mutation == :addition
-            native_listing = inspection.find { |record| record.fetch(:cwd) == repo && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+            native_listing = inspection.find { |record| record.fetch(:cwd) == repo && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
             inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], repo, native_listing + "? unexpected.bin\0")
           end
           local = File.join(repo, "local.bin")
@@ -355,10 +362,10 @@ class ApplyHandoffContract < Minitest::Test
         inspection = after_step
         execution = validation_prefix
         if mutation == :addition
-          native_listing = inspection.find { |record| record.fetch(:cwd) == @b && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).first
+          native_listing = inspection.find { |record| record.fetch(:cwd) == @b && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
           inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @b, native_listing + "? unexpected.bin\0")
         elsif mutation == :failing_source
-          execution = validation_prefix[0...-1] + [validation_prefix.last.merge(result: ["".b, "".b, 23])]
+          execution = validation_prefix[0...-1] + [validation_prefix.last.merge(result: AgentCodingTool::CommandResult.new(stdout: "".b, stderr: "".b, exitstatus: 23))]
         end
         code, stdout, stderr = observed_run(preview + application + execution + inspection + applied_report, %w[y y]) do
           case mutation
@@ -390,9 +397,10 @@ class ApplyHandoffContract < Minitest::Test
   # refuse before even the injected boundary; restored positive requests pass.
   def test_strict_transport_and_ambient_git_refusal
     record = { argv: %w[git apply], cwd: "/fixture", env: { "GIT_TERMINAL_PROMPT" => "0", "GIT_PAGER" => "cat" },
-               input: "patch\x00\xff".b, result: ["out\x00\xff".b, "err\x00\xfe".b, 23] }
-    arguments = record.slice(:cwd, :env, :input)
-    [arguments.merge(cwd: "/wrong"), arguments.merge(env: {}), arguments.merge(input: "wrong")].each do |options|
+               input: "patch\x00\xff".b, pgroup: true,
+               result: AgentCodingTool::CommandResult.new(stdout: "out\x00\xff".b, stderr: "err\x00\xfe".b, exitstatus: 23) }
+    arguments = record.slice(:cwd, :env, :input, :pgroup)
+    [arguments.merge(cwd: "/wrong"), arguments.merge(env: {}), arguments.merge(input: "wrong"), arguments.merge(pgroup: false)].each do |options|
       replay = ApplyHandoffObservations::Transport.new([record])
       assert_raises(GitContract::UnexpectedObservation) { replay.call(record.fetch(:argv), **options) }
     end
@@ -416,7 +424,9 @@ class ApplyHandoffContract < Minitest::Test
     end
     positive = ApplyHandoffObservations::Transport.new([record])
     handoff = AgentCodingTool::ApplyHandoff.new(config: nil, transport: positive)
-    assert_equal record.fetch(:result), handoff.send(:execute, record.fetch(:argv), cwd: "/fixture", input: record.fetch(:input))
+    result = record.fetch(:result)
+    assert_equal [result.stdout, result.stderr, result.shell_status],
+      handoff.send(:execute, record.fetch(:argv), cwd: "/fixture", input: record.fetch(:input))
     assert positive.verify!
   end
 end

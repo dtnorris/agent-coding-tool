@@ -46,8 +46,8 @@ module AgentCodingTool
     DISPLAY_TOKEN = /#{ANSI_SEQUENCE}|\X/
     NEXT_JSON_VERSION = "agent-coding-tool-next/v0.1"
 
-    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil)
-      new(root: root, out: out, err: err, data_root: data_root).run(argv)
+    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil, transport: nil)
+      new(root: root, out: out, err: err, data_root: data_root, transport: transport).run(argv)
     end
 
     def self.default_data_root(root, env: ENV)
@@ -57,12 +57,13 @@ module AgentCodingTool
       File.expand_path("../#{File.basename(root)}-data", root)
     end
 
-    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil)
+    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil)
       @root = root
       @out = out
       @err = err
       @data_root = data_root || self.class.default_data_root(root)
       @terminal_width = terminal_width
+      @transport = transport || NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     end
 
     def run(argv)
@@ -180,7 +181,7 @@ module AgentCodingTool
     # returns the handler status. Invalid CLI arguments raise without mutation.
     def apply_command(argv)
       raise Error, "usage: agent-coding-tool apply FILE.json" unless argv.length == 1 && !argv.first.start_with?("-")
-      ApplyHandoff.new(config: Config.load(File.join(@data_root, "config.yml")), out: @out, err: @err).run(argv.first)
+      ApplyHandoff.new(config: Config.load(File.join(@data_root, "config.yml")), out: @out, err: @err, transport: @transport).run(argv.first)
     end
 
     # Public explicit observation commands. Show is read-only; report/end acquire
@@ -255,7 +256,7 @@ module AgentCodingTool
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
       dirs = IncidentalMetadata.children(root).map { |entry| File.join(root, entry) }.select { |path| File.directory?(path) }
       raise InvalidState, "#{id}: ambiguous run evidence" unless dirs.length == 1
-      result = DeliveryManager.new(data_root: @data_root, coordinator: coordinator).deliver(id, run_dir: dirs.first)
+      result = DeliveryManager.new(data_root: @data_root, coordinator: coordinator, transport: @transport).deliver(id, run_dir: dirs.first)
       urls = result["prs"] ? result.fetch("prs").values.map { |pr| pr.fetch("url") } :
                                [result.fetch("pr").fetch("url")]
       @out.puts "Draft PR#{result["prs"] ? "s" : ""}: #{urls.join(', ')} (CANDIDATE)"
@@ -291,7 +292,7 @@ module AgentCodingTool
       if action != "gate" && options.keys.any? { |key| %i[seed selection observations].include?(key) }
         raise Error, "checkpoint: requested settings and observations are gate-only options"
       end
-      checkpoint = Checkpoint.new(data_root: @data_root, err: @err)
+      checkpoint = Checkpoint.new(data_root: @data_root, err: @err, transport: @transport)
       result = case action
                when "export"
                  unless argv.empty? && options[:workspace] && options[:artifact] && options[:base] &&
@@ -330,7 +331,7 @@ module AgentCodingTool
       end
       if cleanup
         dry_run = argv == ["--dry-run"]
-        handler = CleanupManager.new(data_root: @data_root)
+        handler = CleanupManager.new(data_root: @data_root, transport: @transport)
         result = dry_run ? handler.preflight(id) : handler.remove(id)
         @out.puts JSON.pretty_generate(result.merge("dry_run" => dry_run,
                                                      "attempts" => [result.fetch("attempts")]))
@@ -338,14 +339,14 @@ module AgentCodingTool
       end
       root = File.join("#{@data_root}-runs", id)
       raise InvalidState, "#{id}: no run evidence" unless File.directory?(root) && !File.symlink?(root)
-      history = AttemptRecovery.new(data_root: @data_root).inspect(id)
+      history = AttemptRecovery.new(data_root: @data_root, transport: @transport).inspect(id)
       records = IncidentalMetadata.children(root).sort.map do |attempt|
         directory = File.join(root, attempt)
         historical = history.find { |row| row["run_dir"] == directory }
         raise InvalidState, "#{id}: partial/foreign run evidence" if File.symlink?(directory) || !File.directory?(directory)
         path = File.join(directory, "worktrees.json")
         next historical unless File.file?(path) && !File.symlink?(path)
-        manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root, record_path: path)
+        manager = WorktreeManager.new(root: Config.load(File.join(@data_root, "config.yml")).worktree_root, record_path: path, transport: @transport)
         delivery_path = File.join(directory, "delivery.json")
         overrides = {}
         if File.exist?(delivery_path) || File.symlink?(delivery_path)
@@ -388,7 +389,7 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool abandon-preflight TASK [--dry-run]" unless
         id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && [[], ["--dry-run"]].include?(argv)
-      recovery = PreflightRecovery.new(data_root: @data_root)
+      recovery = PreflightRecovery.new(data_root: @data_root, transport: @transport)
       result = argv == ["--dry-run"] ? recovery.preflight(id) : recovery.abandon(id)
       @out.puts JSON.pretty_generate(result)
       0
@@ -400,7 +401,7 @@ module AgentCodingTool
       id = argv.shift
       raise Error, "usage: agent-coding-tool close-attempt TASK [--dry-run]" unless
         id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) && [[], ["--dry-run"]].include?(argv)
-      recovery = AttemptRecovery.new(data_root: @data_root)
+      recovery = AttemptRecovery.new(data_root: @data_root, transport: @transport)
       @out.puts JSON.pretty_generate(argv == ["--dry-run"] ? recovery.preflight(id) : recovery.close(id))
       0
     end
@@ -417,7 +418,7 @@ module AgentCodingTool
       unless options.delete(:codex) && argv.length == 1
         raise Error, "usage: agent-coding-tool launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]"
       end
-      Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err)
+      Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err, transport: @transport)
               .launch(argv.first, **options)
     rescue Psych::Exception, TypeError, ArgumentError, KeyError => e
       raise InvalidTask, "launch: malformed configuration/task data: #{e.message}"
@@ -437,7 +438,7 @@ module AgentCodingTool
       task_id = argv.first
       config = Config.load(File.join(@data_root, "config.yml"))
       publisher = Publisher.new(data_root: @data_root, config: config,
-                                task_store: TaskStore.new(File.join(@data_root, "tasks")))
+                                task_store: TaskStore.new(File.join(@data_root, "tasks")), transport: @transport)
       result = publisher.publish(mode: all ? :all : task_id ? :task : :default,
                                  task_id: task_id, dry_run: !!dry_run)
       @out.puts(dry_run ? "DRY RUN (no changes made)" : "ACTD publication")
@@ -471,9 +472,9 @@ module AgentCodingTool
         Coordinator.new(
           task_store: TaskStore.new(File.join(@data_root, "tasks")),
           state_store: StateStore.new(File.join(@data_root, "state")),
-          repo_inspector: RepoInspector.new(config),
-          prompt_renderer: PromptRenderer.new,
-          prompt_root: File.join(@data_root, "state", "prompts")
+          repo_inspector: RepoInspector.new(config, transport: @transport),
+          prompt_renderer: PromptRenderer.new(transport: @transport),
+          prompt_root: File.join(@data_root, "state", "prompts"), transport: @transport
         )
       end
     end

@@ -187,3 +187,46 @@ test_helper and reconciles its own fixed case manifest and independent reporter.
 Set ZERO_GIT_EVIDENCE and ZERO_GIT_AUDIT to fresh external paths for raw evidence.
 Neither command discharges full acceptance. Preserve the complete candidate using
 ACT checkpoint export; operator record/verify and gated acceptance remain separate.
+
+## Shared production command boundary (TST-34)
+
+`NativeCommandTransport#call(argv, cwd: nil, env: {}, input: "", timeout: nil,
+**options)` is the production default. The request contains direct argv, environment
+changes (including nil deletions), cwd, raw stdin, an optional positive finite timeout
+in seconds and Open3 execution options. Grouped/timed calls drain binary pipes and
+kill/reap their child on timeout or interrupt; other calls retain capture3's stream
+encoding and option behavior. A timeout raises `Timeout::Error`; spawn errors remain
+exceptions. ApplyHandoff retains grouped execution and interrupt output replay.
+
+`CommandResult` contains raw String `stdout`/`stderr` and exactly one `exitstatus`
+or `termsig`. `exited?`, `signaled?` and `success?` preserve native distinctions:
+signal success is nil. `to_ary` yields `[stdout, stderr, result]` for raw consumers;
+`shell_status` converts a signal to 128+signal only for workflow/CLI reporting.
+The native transport adapts genuine status once. Doubles return this value object,
+never Process::Status or a boolean/integer standing in for status.
+
+Inject `transport:` at CLI composition or a service constructor; it is forwarded
+through nested discovery, worktree, delivery, checkpoint and recovery services.
+There is no product environment switch. Existing `runner:` injection remains a
+compatibility adapter with raw streams and boolean/nil success. CommandRunner
+normalizes leading env hashes, chdir and stdin_data to the shared request. The
+ApplyHandoff transport now uses the same result and accepts `pgroup: true`; its
+former private `capture_process` implementation belongs to the native transport.
+TST-37 owns migration of shared observation/fixture adapters to this protocol;
+TST-38–41 retain family behavior, and TST-43/45 own harness registration. Existing
+legacy Process::Status adapters cannot consume CommandResult until migrated.
+
+`ruby test/support/verify_command_transport.rb --seed 3403` is an additional guarded
+component verifier, with its own fixed case inventory and independent reporter.
+It does not load test_helper or the legacy Rake entrypoint. Set
+COMMAND_TRANSPORT_EVIDENCE and COMMAND_TRANSPORT_AUDIT to fresh external paths.
+The reviewed native-effect census also checks constructor forwarding; changing a
+native call requires renewed review of its command producer. Generic validator,
+worker, gh and liveness process contracts remain separate from Git injection.
+An actual missing-executable spawn check uses a separate `MissingExecutablePermit`:
+one fixed absent leaf in a canonical private directory, rechecked immediately
+before the existing exact-envelope, single-use check. It cannot authorize an
+existing executable or symlink, changed request or reuse. The verifier observes
+the native ENOENT object on capture3, grouped and timed paths; injected exceptions
+and missing-cwd probes remain separate. The companion guard patch requires
+its owner's review; no exception to zero-Git or full acceptance is implied.

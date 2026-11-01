@@ -3,9 +3,9 @@
 require "stringio"
 require_relative "git_contract/observations"
 
-# Apply-only adaptation of finite GitContract observations to the integer-code
-# process boundary. Stdin is part of the exact request, never an interpreted Git
-# command. Codes come from native captures; no Process::Status is manufactured.
+# Apply-only adaptation of finite GitContract observations to CommandResult.
+# Stdin and process grouping are exact request fields, never interpreted Git
+# commands. Native exit/signal facts are retained; no status is manufactured.
 module ApplyHandoffObservations
   # Supplies invocation-local terminal responses at the real confirmation calls.
   class Input
@@ -34,29 +34,33 @@ module ApplyHandoffObservations
     end
   end
 
-  # Replays exact environment/argv/stdin/cwd through the existing strict matcher.
+  # Replays exact environment/argv/stdin/cwd/pgroup through the strict matcher.
   # A callback supplies only the reviewed fixture file effect at an exact request.
   class Transport
-    # Takes finite native record hashes, with optional per-request file effects.
+    # Takes finite CommandResult records, with optional per-request file effects.
     # Invalid observations raise; no native fallback is available.
     def initialize(records, &effect)
       @records = records
       @position = 0
       @effect = effect
       @replay = GitContract::Replay.new(records.map do |record|
-        GitContract::Observation.new(argv: [record.fetch(:env), *record.fetch(:argv), record.fetch(:input)],
-          cwd: record.fetch(:cwd), result: [*record.fetch(:result).first(2), record.fetch(:result).last.zero?])
+        result = record.fetch(:result)
+        raise ArgumentError, "apply observation requires CommandResult" unless result.is_a?(AgentCodingTool::CommandResult)
+        GitContract::Observation.new(argv: [record.fetch(:env), *record.fetch(:argv), record.fetch(:input),
+          { "pgroup" => record.fetch(:pgroup) }], cwd: record.fetch(:cwd),
+          result: [result.stdout, result.stderr, result.success? == true])
       end)
     end
 
-    # Returns raw streams and the recorded native integer exit code. Wrong,
-    # duplicate, reordered or extra requests raise UnexpectedObservation.
-    def call(argv, cwd:, env:, input:)
-      stdout, stderr, _success = @replay.capture(env, *argv, input, chdir: cwd)
+    # Returns the original CommandResult after exact matching; the legacy
+    # matcher's boolean is not a result adapter. Wrong, duplicate, reordered or
+    # extra requests raise UnexpectedObservation before any fixture effect.
+    def call(argv, cwd:, env:, input:, pgroup:)
+      @replay.capture(env, *argv, input, { "pgroup" => pgroup }, chdir: cwd)
       record = @records.fetch(@position)
       @position += 1
       @effect&.call(record)
-      [stdout, stderr, record.fetch(:result).last]
+      record.fetch(:result)
     end
 
     # Rejects omitted requests after success or a production refusal.

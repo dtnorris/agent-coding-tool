@@ -1,0 +1,41 @@
+diff --git a/added.txt b/added.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..7329aed2145f024f4ab1b42676d111d5b1deed7b
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1 @@
++no final newline
+\ No newline at end of file
+diff --git a/binary.bin b/binary.bin
+index b885eaf29b4750cebb0c7e014ef3a63838975bc4..353a281944119b061539fdd5338651aecf406d44 100644
+GIT binary patch
+literal 6
+Nc${O%OD+G$1po&t0#g70
+
+literal 6
+Nc${O%&q?{u1po&X0!aV>
+
+diff --git a/deleted.txt b/deleted.txt
+deleted file mode 100644
+index 33235bba8f870c8af09876b75abc712f59181c97..0000000000000000000000000000000000000000
+--- a/deleted.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-remove
+diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4ec98f2e280f532fb765337db0876bd6d14586c
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++rename
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+index a4ec98f2e280f532fb765337db0876bd6d14586c..0000000000000000000000000000000000000000
+--- a/old.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-rename
+diff --git a/run b/run
+old mode 100644
+new mode 100755

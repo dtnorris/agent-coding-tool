@@ -1,0 +1,24 @@
+{
+  "patch": "quoted-rename.patch",
+  "sha256": "0af299ea0190ac0e58c836521620364ae690ee436ebd9621dd225da5ee79a656",
+  "before": [
+    {
+      "path_hex": "6f6c64096e616d65",
+      "bytes_hex": "657861637400ff",
+      "mode": "100644"
+    }
+  ],
+  "after": [
+    {
+      "path_hex": "6e6577096e616d65",
+      "bytes_hex": "657861637400ff",
+      "mode": "100644"
+    }
+  ],
+  "paths_hex": [
+    "6e6577096e616d65",
+    "6f6c64096e616d65"
+  ],
+  "numstat_hex": "30093009006f6c64096e616d65006e6577096e616d6500",
+  "stat": " \"old\\tname\" => \"new\\tname\" | 0\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+}

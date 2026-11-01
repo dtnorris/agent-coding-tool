@@ -1,0 +1,23 @@
+{
+  "patch": "text.patch",
+  "sha256": "e0daf0de13dcdd5d80e729ddf7102284ac438c57a80461107fbbee35841356e0",
+  "before": [
+    {
+      "path_hex": "66696c652e747874",
+      "bytes_hex": "626173650a",
+      "mode": "100644"
+    }
+  ],
+  "after": [
+    {
+      "path_hex": "66696c652e747874",
+      "bytes_hex": "6e65770a",
+      "mode": "100644"
+    }
+  ],
+  "paths_hex": [
+    "66696c652e747874"
+  ],
+  "numstat_hex": "3109310966696c652e74787400",
+  "stat": " file.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+}

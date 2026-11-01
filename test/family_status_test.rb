@@ -81,9 +81,9 @@ class FamilyStatusTest < Minitest::Test
     [0, 1, 6, 7].each do |count|
       tasks = family_tasks("CL" => count)
       coordinator, inspector = build(tasks)
-      first = output(coordinator, %w[status])
+      first = output(coordinator, %w[status --full])
       assert_equal tasks.first(count > 6 ? 3 : count).map { |task| task.fetch("id") }, ready_ids(first)
-      assert_equal first, output(coordinator, %w[status])
+      assert_equal first, output(coordinator, %w[status --full])
       if count > 6
         assert_includes first, "CL: 7 READY, 4 hidden — act stat --fam CL"
       else
@@ -97,20 +97,20 @@ class FamilyStatusTest < Minitest::Test
   def test_four_families_and_act_preference_have_exact_summaries
     tasks = family_tasks("CL" => 8, "ECT" => 2, "TST" => 3, "BUG" => 1)
     coordinator, = build(tasks)
-    plain = output(coordinator, %w[status])
+    plain = output(coordinator, %w[status --full])
     assert_equal %w[BUG-01 CL-01 ECT-01 TST-01], ready_ids(plain)
     { "CL" => [8, 7], "ECT" => [2, 1], "TST" => [3, 2], "BUG" => [1, 0] }.each do |family, (total, hidden)|
       assert_includes plain, "#{family}: #{total} READY, #{hidden} hidden"
       assert_includes plain, "act stat --fam #{family}" if hidden.positive?
     end
     tasks.concat(family_tasks("ACT" => 1))
-    with_act = output(coordinator, %w[status])
+    with_act = output(coordinator, %w[status --full])
     assert_equal %w[ACT-01 BUG-01 CL-01 ECT-01 TST-01], ready_ids(with_act)
     assert_match(/^ACT-01: READY \(NEXT\)/, with_act)
     assert_includes with_act, "ACT: 1 READY, 0 hidden"
     assert_equal 1, with_act.scan("(NEXT)").length
     tasks.concat(family_tasks("FS" => 1, "IG" => 1))
-    assert_equal 7, ready_ids(output(coordinator, %w[status])).length
+    assert_equal 7, ready_ids(output(coordinator, %w[status --full])).length
   end
 
   # Breadth first selection fills by global rank without relaxing either cap.
@@ -123,7 +123,7 @@ class FamilyStatusTest < Minitest::Test
       [{ "CL" => 7, "ECT" => 7, "TST" => 7 }, %w[CL-01 CL-02 CL-03 ECT-01 ECT-02 TST-01]]
     ].each do |distribution, expected|
       coordinator, = build(family_tasks(distribution))
-      assert_equal expected, ready_ids(output(coordinator, %w[status --active]))
+      assert_equal expected, ready_ids(output(coordinator, %w[status --active --full]))
     end
   end
 
@@ -143,7 +143,7 @@ class FamilyStatusTest < Minitest::Test
       document = JSON.parse(output(coordinator, %w[next --json]))
       next_id = document.dig("recommendations", "starts", 0, "id")
       assert_equal distribution.length == 4 ? "CL-02" : "CL-04", next_id
-      dashboard = output(coordinator, %w[status])
+      dashboard = output(coordinator, %w[status --full])
       assert_equal distribution.length, dashboard.scan(/READY, \d+ hidden/).length
       assert_includes ready_ids(dashboard), next_id
       assert_match(/^#{next_id}: READY \(NEXT\)/, dashboard)
@@ -170,11 +170,11 @@ class FamilyStatusTest < Minitest::Test
     assert_equal "ACT-02", document.dig("recommendations", "starts", 0, "id")
     assert_equal "ACT-01", document.dig("recommendations", "waiting_capacity", 0, "id")
     assert_includes output(coordinator, %w[next]), "  ACT-02 (READY) — Title ACT-02"
-    assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status]))
-    filtered = output(coordinator, %w[status --fam CL])
+    assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status --full]))
+    filtered = output(coordinator, %w[status --fam CL --full])
     assert_equal (1..7).map { |number| "CL-%02d" % number }, ready_ids(filtered)
     refute_includes filtered, "(NEXT)"
-    assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status --fam ACT]))
+    assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status --fam ACT --full]))
     assert_equal 5, inspector.batches
   end
 
@@ -210,15 +210,15 @@ class FamilyStatusTest < Minitest::Test
     end
     (1..5).each { |number| states["WAIT-%02d" % number] = { "result" => { "outcome" => "blocked", "summary" => "decision" } } }
     coordinator, = build(tasks, states:)
-    assert_equal (1..7).map { |number| "CL-%02d" % number }, ready_ids(output(coordinator, %w[status --fam CL]))
-    assert_equal 8, ready_ids(output(coordinator, %w[status --all])).length
-    assert_equal "", output(coordinator, %w[status --fam DONE])
-    assert_includes output(coordinator, %w[status --fam DONE --all]), "DONE-01: COMPLETE"
-    assert_equal "", output(coordinator, %w[status --fam DONE --active])
-    assert_equal "", output(coordinator, %w[status --fam OLD])
-    assert_equal 3, output(coordinator, %w[status --fam WAIT]).scan(/: BLOCKED/).length
-    assert_equal 5, output(coordinator, %w[status --fam WAIT --all]).scan(/: BLOCKED/).length
-    explicit = output(coordinator, %w[status CL-07])
+    assert_equal (1..7).map { |number| "CL-%02d" % number }, ready_ids(output(coordinator, %w[status --fam CL --full]))
+    assert_equal 8, ready_ids(output(coordinator, %w[status --all --full])).length
+    assert_equal "", output(coordinator, %w[status --fam DONE --full])
+    assert_includes output(coordinator, %w[status --fam DONE --all --full]), "DONE-01: COMPLETE"
+    assert_equal "", output(coordinator, %w[status --fam DONE --active --full])
+    assert_equal "", output(coordinator, %w[status --fam OLD --full])
+    assert_equal 3, output(coordinator, %w[status --fam WAIT --full]).scan(/: BLOCKED/).length
+    assert_equal 5, output(coordinator, %w[status --fam WAIT --all --full]).scan(/: BLOCKED/).length
+    explicit = output(coordinator, %w[status CL-07 --full])
     assert_includes explicit, "CL-07: READY — Title CL-07"
     refute_includes explicit, "(NEXT)"
   end
@@ -229,9 +229,9 @@ class FamilyStatusTest < Minitest::Test
     coordinator, inspector = build(family_tasks("CL" => 1))
     [%w[--fam], %w[--fam UNKNOWN], %w[--fam CL --fam CLX], %w[--fam CL --fam CL],
      %w[CL-01 --fam CL], %w[CL-01 --icebox], %w[--all --active], %w[--family CL], %w[--fa CL],
-     %w[--bogus], %w[--mi], %w[--minimal], %w[--min=true]].each do |args|
+     %w[--bogus], %w[--mi], %w[--minimal], %w[--min=true], %w[--fu], %w[--full=true]].each do |args|
       ordinary_error = nil
-      [[], ["--min"]].each do |presentation|
+      [[], ["--min"], ["--full"]].each do |presentation|
         out, err = StringIO.new, StringIO.new
         cli = client(coordinator, out:, err:)
         assert_equal 2, cli.run(["status", *presentation, *args]), args.inspect
@@ -239,6 +239,15 @@ class FamilyStatusTest < Minitest::Test
         assert_match(/ERROR: .+/, err.string)
         ordinary_error ? assert_equal(ordinary_error, err.string) : ordinary_error = err.string
       end
+    end
+    [%w[--min --full], %w[--full --min]].each do |presentation|
+      out, err = StringIO.new, StringIO.new
+      cli = client(coordinator, out:, err:)
+      # No coordinator is available: mode conflicts must refuse before lookup.
+      cli.instance_variable_set(:@coordinator, nil)
+      assert_equal 2, cli.run(["status", "UNKNOWN", *presentation])
+      assert_empty out.string
+      assert_includes err.string, "status --min and --full are mutually exclusive"
     end
     assert_equal 0, inspector.batches
   end
@@ -252,7 +261,7 @@ class FamilyStatusTest < Minitest::Test
     old = ENV.delete("NO_COLOR")
     begin
       [38, 60, 100].each do |width|
-        dashboard = output(coordinator, %w[status], out: Terminal.new(width))
+        dashboard = output(coordinator, %w[status --full], out: Terminal.new(width))
         assert_equal 1, dashboard.scan("(NEXT)").length
         assert_includes dashboard, "act stat --fam CL"
         assert_match(/\e\[\d+mREADY\e\[0m/, dashboard)
@@ -261,7 +270,7 @@ class FamilyStatusTest < Minitest::Test
         end
       end
       ENV["NO_COLOR"] = "1"
-      plain = output(coordinator, %w[status], out: Terminal.new(38))
+      plain = output(coordinator, %w[status --full], out: Terminal.new(38))
       refute_match(/\e\[/, plain)
       assert_match(/^CL-01: READY \(NEXT\)/, plain)
     ensure
@@ -269,7 +278,7 @@ class FamilyStatusTest < Minitest::Test
     end
     tasks = (1..7).map { |number| task("-odd-#{number}") }
     coordinator, = build(tasks)
-    assert_equal 7, ready_ids(output(coordinator, %w[status])).length
+    assert_equal 7, ready_ids(output(coordinator, %w[status --full])).length
     assert_equal ["-odd-1"], ready_ids(output(coordinator, ["status", "--fam=-odd-1"]))
     assert_equal ["-odd-1"], ready_ids(output(coordinator, ["status", "--", "-odd-1"]))
   end
@@ -280,11 +289,11 @@ class FamilyStatusTest < Minitest::Test
     tasks = [task("ACT-14"), task("ACT-02"), task("CL-01")]
     ["complete", "blocked", "failed", "needs_judgment"].each do |outcome|
       coordinator, = build(tasks, states: { "ACT-14" => { "result" => { "outcome" => outcome } } })
-      assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status]))
+      assert_match(/^ACT-02: READY \(NEXT\)/, output(coordinator, %w[status --full]))
     end
     coordinator, inspector = build(tasks, states: { "ACT-14" => prepared_state("ACT-14") })
     inspector.heads[["git@github.com:fixture/ACT-14.git", "main"]] = "b" * 40
-    dashboard = output(coordinator, %w[status])
+    dashboard = output(coordinator, %w[status --full])
     assert_match(/^ACT-14: STALE/, dashboard)
     assert_match(/^ACT-02: READY \(NEXT\)/, dashboard)
     document = JSON.parse(output(coordinator, %w[next --json]))
@@ -315,12 +324,12 @@ class FamilyStatusTest < Minitest::Test
     assert_equal "ACT-01", document.dig("recommendations", "starts", 0, "id")
     assert_equal 0, document.dig("recommendations", "starts").find { |row| row["id"] == "CL-WLO-01" }.dig("downstream", "immediate_unlock_count")
     assert_equal 2, document.dig("recommendations", "starts").find { |row| row["id"] == "CL-01" }.dig("downstream", "immediate_unlock_count")
-    assert_equal cl_ids, ready_ids(output(coordinator, %w[status --fam CL]))
-    assert_equal ready.map { |row| row["id"] }, ready_ids(output(coordinator, %w[status --all]))
-    dashboard = output(coordinator, %w[status])
+    assert_equal cl_ids, ready_ids(output(coordinator, %w[status --fam CL --full]))
+    assert_equal ready.map { |row| row["id"] }, ready_ids(output(coordinator, %w[status --all --full]))
+    dashboard = output(coordinator, %w[status --full])
     assert_includes ready_ids(dashboard), "CL-WLO-01"
     assert_match(/^ACT-01: READY \(NEXT\)/, dashboard)
-    refute_includes output(coordinator, %w[status --fam CL]), "(NEXT)"
+    refute_includes output(coordinator, %w[status --fam CL --full]), "(NEXT)"
     starts = document.dig("recommendations", "starts").map { |row| row["id"] }
     plain = output(coordinator, %w[next])
     positions = starts.map { |id| plain.index("  #{id} (READY)") }
@@ -371,8 +380,8 @@ class FamilyStatusTest < Minitest::Test
     assert_equal %w[ACT-01 CL-01], document.dig("recommendations", "starts").map { |row| row["id"] }
     assert_equal "CL-WLO-01", document.dig("recommendations", "waiting_capacity", 0, "id")
     assert_equal "RUN-01", document.dig("recommendations", "waiting_capacity", 0, "conflicts", 0, "id")
-    assert_equal %w[CL-WLO-01 CL-01], ready_ids(output(coordinator, %w[status --fam CL]))
-    assert_match(/^ACT-01: READY \(NEXT\)/, output(coordinator, %w[status]))
+    assert_equal %w[CL-WLO-01 CL-01], ready_ids(output(coordinator, %w[status --fam CL --full]))
+    assert_match(/^ACT-01: READY \(NEXT\)/, output(coordinator, %w[status --full]))
     assert_equal before, Marshal.dump([tasks, states])
     assert_equal 3, inspector.batches
 
@@ -391,8 +400,8 @@ class FamilyStatusTest < Minitest::Test
     tasks.last["depends_on"] = ["CL-01"]
     tasks[2]["depends_on"] = ["CL-01"]
     coordinator, = build(tasks)
-    assert_equal ["CL-01"], ready_ids(output(coordinator, %w[status --fam CL]))
-    assert_includes output(coordinator, %w[status --fam CL]), "CL-WLO-01: BLOCKED"
+    assert_equal ["CL-01"], ready_ids(output(coordinator, %w[status --fam CL --full]))
+    assert_includes output(coordinator, %w[status --fam CL --full]), "CL-WLO-01: BLOCKED"
   end
 
   # Reordering an identical READY registry adds neither freshness batches nor
@@ -404,7 +413,7 @@ class FamilyStatusTest < Minitest::Test
     ordinary_tasks = Marshal.load(Marshal.dump(tasks))
     ordinary_tasks.first["id"] = "CL-ZZZ-01"
     ordinary, ordinary_inspector = build(ordinary_tasks)
-    [%w[status], %w[status --fam CL], %w[next], %w[next --json]].each do |command|
+    [%w[status --full], %w[status --fam CL --full], %w[next], %w[next --json]].each do |command|
       output(preferred, command)
       output(ordinary, command)
       assert_equal ordinary_inspector.batches, preferred_inspector.batches
@@ -438,7 +447,8 @@ class FamilyStatusTest < Minitest::Test
       coordinator, inspector = build(tasks, state_store: store, prompt_root: File.join(directory, "state", "prompts"))
       %w[STALE-01 STALE-02].each { |id| inspector.heads[["git@github.com:fixture/#{id}.git", "main"]] = "b" * 40 }
       before = Marshal.dump([tasks, states])
-      ordinary = output(coordinator, %w[status])
+      next_before = output(coordinator, %w[next --json])
+      ordinary = output(coordinator, %w[status --full])
       assert_includes ordinary, "\n\n"
       assert_includes ordinary, "    downstream:"
       assert_includes ordinary, "CL: 7 READY, 4 hidden"
@@ -456,10 +466,11 @@ class FamilyStatusTest < Minitest::Test
        %w[--fam CL --icebox], %w[--fam DONE --active], %w[PREP-01], %w[PREP-01 --all],
        %w[PREP-01 --active], %w[ICE-01]].each do |selectors|
         probes_before = [inspector.batches, inspector.authority_calls]
-        full = output(coordinator, ["status", *selectors])
+        full = output(coordinator, ["status", *selectors, "--full"])
         probes_between = [inspector.batches, inspector.authority_calls]
         minimal = output(coordinator, ["status", *selectors, "--min"])
         probes_after = [inspector.batches, inspector.authority_calls]
+        assert_equal minimal, output(coordinator, ["status", *selectors]), selectors.inspect
         expected = full.lines.grep(/\A\S+: /).map { |line| line.split(" — ").first }
         assert_equal expected, minimal.lines.map { |line| line.split(" — ").first }, selectors.inspect
         assert_equal expected.length, minimal.lines.length
@@ -469,6 +480,10 @@ class FamilyStatusTest < Minitest::Test
       end
       empty, = build([])
       assert_equal "", output(empty, %w[status --min])
+      assert_equal "", output(empty, %w[status])
+      assert_equal output(coordinator, %w[status --min]), output(coordinator, %w[status --min --min])
+      assert_equal ordinary, output(coordinator, %w[status --full --full])
+      assert_equal next_before, output(coordinator, %w[next --json])
       assert_equal before, Marshal.dump([tasks, states])
       assert_equal state_bytes, state_bytes.keys.to_h { |path| [path, File.binread(path)] }
     end
@@ -488,6 +503,8 @@ class FamilyStatusTest < Minitest::Test
           [Terminal.new(width), StringIO.new].each do |out|
             ENV["COLUMNS"] = width.to_s
             text = output(coordinator, %w[status --min], out:)
+            default_out = out.tty? ? Terminal.new(width) : StringIO.new
+            assert_equal text, output(coordinator, %w[status], out: default_out)
             assert_equal 1, text.lines.length
             line = text.chomp
             assert_operator AgentCodingTool::CLI.allocate.send(:display_width, line), :<=, width

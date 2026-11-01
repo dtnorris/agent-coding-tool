@@ -251,10 +251,10 @@ class AttemptRecoveryTest < Minitest::Test
         observation = report.fetch("active").fetch("observation_id")
         namespace_metadata = File.join("#{@data}-runs", AgentCodingTool::ExternalActivity::NAMESPACE, ".DS_Store")
         File.binwrite(namespace_metadata, "Finder\x00\xff".b)
-        detail = succeeds("status", "T")
-        dashboard = succeeds("status")
+        detail = succeeds("status", "T", "--full")
+        dashboard = succeeds("status", "--full")
         [detail, dashboard].each { |output| assert_external_stale_projection(output) }
-        broken = succeeds("status", "T", break_projection: true)
+        broken = succeeds("status", "T", "--full", break_projection: true)
         assert_raises(Minitest::Assertion) { assert_external_stale_projection(broken) }
         document = JSON.parse(succeeds("next", "--json"))
         fact = document.fetch("facts").fetch("tasks").find { |row| row["id"] == "T" }
@@ -472,8 +472,8 @@ class AttemptRecoveryTest < Minitest::Test
       begin
         observation = JSON.parse(succeeds("external", "report", "T", "--reporter", "operator", "--kind", "fake-codex", "--scope-complete"))
         id = observation.fetch("active").fetch("observation_id")
-        assert_external_stale_projection(succeeds("status", "T"))
-        assert_external_stale_projection(succeeds("status"))
+        assert_external_stale_projection(succeeds("status", "T", "--full"))
+        assert_external_stale_projection(succeeds("status", "--full"))
         fact = JSON.parse(succeeds("next", "--json")).fetch("facts").fetch("tasks").first
         assert_equal ["STALE", id], [fact.fetch("status"), fact.fetch("external_activity").fetch("observation_id")]
         assert_equal before_retry, cli("prepare", "T", "--retry")

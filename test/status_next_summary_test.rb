@@ -48,7 +48,7 @@ class StatusNextSummaryTest < Minitest::Test
       inspector.reset_counts
       before = state_bytes(dir)
 
-      dashboard = output_for(dir, coordinator, %w[status])
+      dashboard = output_for(dir, coordinator, %w[status --full])
       refute_match(/^NEXT:/, dashboard)
       assert_match(/^A: READY \(NEXT\) — Task$/, dashboard)
       assert_match(/^B: READY — Task$/, dashboard)
@@ -64,7 +64,7 @@ class StatusNextSummaryTest < Minitest::Test
       assert_includes next_output, "C (READY): A (SELECTED)"
       assert_equal 2, inspector.head_batches.length
       assert_empty inspector.snapshot_calls
-      assert_equal dashboard, output_for(dir, coordinator, %w[status])
+      assert_equal dashboard, output_for(dir, coordinator, %w[status --full])
       assert_equal before, state_bytes(dir)
     end
   end
@@ -76,7 +76,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.prepare("A")
 
       assert_match(/^A: PREPARED \(NEXT\) — Task$/,
-                   output_for(dir, coordinator, %w[status]))
+                   output_for(dir, coordinator, %w[status --full]))
       assert_includes output_for(dir, coordinator, %w[next]), "    act start A"
     end
   end
@@ -91,7 +91,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.prepare("A-CANDIDATE")
       coordinator.record("A-CANDIDATE", outcome: "candidate_complete")
 
-      dashboard = output_for(dir, coordinator, %w[status])
+      dashboard = output_for(dir, coordinator, %w[status --full])
       refute_match(/^NEXT:/, dashboard)
       assert_match(/^A-CANDIDATE: CANDIDATE \(NEXT\) — Task$/, dashboard)
       assert_match(/^B-WAIT: READY — Task$/, dashboard)
@@ -110,7 +110,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.prepare("A-RUN")
       coordinator.start("A-RUN")
       assert_match(/^B-WAIT: READY \(NEXT\) — Task$/,
-                   output_for(dir, coordinator, %w[status]))
+                   output_for(dir, coordinator, %w[status --full]))
     end
 
     with_workspace do |dir|
@@ -119,7 +119,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.prepare("A-JUDGMENT")
       coordinator.record("A-JUDGMENT", outcome: "needs_judgment", summary: "choose scope",
                          next_action: "ask operator")
-      dashboard = output_for(dir, coordinator, %w[status])
+      dashboard = output_for(dir, coordinator, %w[status --full])
       assert_match(/^A-JUDGMENT: NEEDS_JUDGMENT \(NEXT\) — Task$/, dashboard)
       assert_includes dashboard, "ask operator"
       assert_includes dashboard, "resume: act prepare A-JUDGMENT --retry"
@@ -138,14 +138,14 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator.prepare("A-STALE")
       heads["alpha"] = "b" * 40
       assert_match(/^A-STALE: STALE \(NEXT\) — Task$/,
-                   output_for(dir, coordinator, %w[status]))
+                   output_for(dir, coordinator, %w[status --full]))
     end
 
     with_workspace do |dir|
       write_task(dir, id: "A", depends_on: ["B"])
       write_task(dir, id: "B", depends_on: ["A"])
       coordinator = coordinator_for_inspector(dir, ProbeInspector.new(heads: {}))
-      dashboard = output_for(dir, coordinator, %w[status])
+      dashboard = output_for(dir, coordinator, %w[status --full])
       refute_match(/^NEXT:/, dashboard)
       refute_includes dashboard, "(NEXT)"
     end
@@ -162,7 +162,7 @@ class StatusNextSummaryTest < Minitest::Test
       coordinator = coordinator_for_inspector(dir, inspector)
       output_for(dir, coordinator, %w[prepare A])
       output_for(dir, coordinator, %w[start A])
-      clean = output_for(dir, coordinator, %w[status A])
+      clean = output_for(dir, coordinator, %w[status A --full])
       assert_match(/^A: IN_FLIGHT — Task$/, clean)
       refute_includes clean, "STALE"
 
@@ -178,14 +178,14 @@ class StatusNextSummaryTest < Minitest::Test
       heads.merge!("alpha" => "b" * 40, "beta" => "d" * 40)
       inspector.reset_counts
 
-      dashboards = [%w[status], %w[status --all], %w[status --fam A]].map do |args|
+      dashboards = [%w[status --full], %w[status --all --full], %w[status --fam A --full]].map do |args|
         output_for(dir, coordinator, args)
       end
-      explicit = output_for(dir, coordinator, %w[status A])
+      explicit = output_for(dir, coordinator, %w[status A --full])
       dashboards.each do |output|
         assert_match(/^A: IN_FLIGHT \(STALE\)/, output)
         assert_equal 2, output.lines.grep(/^    /).length
-        assert_includes output, "2 changed; act stat A; alpha: aaaaaaaa -> bbbbbbbb (main changed)"
+        assert_includes output, "2 changed; act stat A --full; alpha: aaaaaaaa -> bbbbbbbb (main changed)"
         assert_includes output, "reconcile before delivery; liveness unknown; isolation unverified"
         refute_match(/git@|[a-f0-9]{40}|pushed branch changed|execution:/, output)
       end
@@ -204,7 +204,7 @@ class StatusNextSummaryTest < Minitest::Test
         [false, true].each do |no_color|
           no_color ? ENV["NO_COLOR"] = "1" : ENV.delete("NO_COLOR")
           [1, 2, 3, 12, 20, 38, 80, 100, 160].each do |width|
-            output = output_for(dir, coordinator, %w[status], out: TTYOutput.new(width))
+            output = output_for(dir, coordinator, %w[status --full], out: TTYOutput.new(width))
             lines = output.lines.first(3).map(&:chomp)
             assert_equal 3, lines.length
             lines.each do |line|
@@ -245,20 +245,20 @@ class StatusNextSummaryTest < Minitest::Test
       state["write_overlap"] = { "basis" => "manual override", "observed_at" => "2026-01-01T00:00:00Z",
                                  "conflicts" => [{ "task_id" => "PEER", "status" => "IN_FLIGHT" }] }
       store.write("A", state)
-      historical = output_for(dir, coordinator, %w[status])
+      historical = output_for(dir, coordinator, %w[status --full])
       assert_equal 2, historical.lines.grep(/^    /).length
       assert_includes historical, "liveness unknown; isolation last verified at launch"
       refute_includes historical, "overlap:"
-      explicit = output_for(dir, coordinator, %w[status A])
+      explicit = output_for(dir, coordinator, %w[status A --full])
       assert_includes explicit, "last verified ACT launch; current liveness unavailable"
       assert_includes explicit, "manual override with PEER (IN_FLIGHT); observed 2026-01-01T00:00:00Z; not a live isolation check"
       state["write_collision_override"]["launch"]["unverified_manual_conflicts"] = true
       store.write("A", state)
-      assert_includes output_for(dir, coordinator, %w[status]), "liveness unknown; isolation unverified"
+      assert_includes output_for(dir, coordinator, %w[status --full]), "liveness unknown; isolation unverified"
 
       output_for(dir, coordinator, %w[external report A --reporter fixture --kind fake-worker])
       external_before = state_bytes("#{dir}-runs")
-      external = output_for(dir, coordinator, %w[status --all], terminal_width: 38)
+      external = output_for(dir, coordinator, %w[status --all --full], terminal_width: 38)
       # Independent activity warnings intentionally retain their full contract,
       # including lines wider than this terminal; the stale details stay bounded.
       assert_includes external, "EXTERNAL WORK REPORTED: unmanaged; unauthorized by ACT"
@@ -283,19 +283,19 @@ class StatusNextSummaryTest < Minitest::Test
       begin
         [12, 20, 38].each do |width|
           out = TTYOutput.new(width)
-          dashboard = output_for(dir, coordinator, %w[status], out:)
+          dashboard = output_for(dir, coordinator, %w[status --full], out:)
           first = dashboard.lines.first.chomp
           assert_operator AgentCodingTool::CLI.allocate.send(:display_width, first), :<=, width
           refute_includes dashboard, "NEXT:"
         end
-        colored = output_for(dir, coordinator, %w[status], out: TTYOutput.new(80))
+        colored = output_for(dir, coordinator, %w[status --full], out: TTYOutput.new(80))
         assert_match(/A: \e\[\d+mREADY\e\[0m \(NEXT\) — Task/, colored.lines.first)
         assert_equal 1, colored.scan("(NEXT)").length
         ENV["NO_COLOR"] = "1"
-        plain = output_for(dir, coordinator, %w[status], out: TTYOutput.new(80))
+        plain = output_for(dir, coordinator, %w[status --full], out: TTYOutput.new(80))
         refute_match(/\e\[/, plain)
         assert_match(/^A: READY \(NEXT\) — Task$/, plain)
-        explicit = output_for(dir, coordinator, %w[status A])
+        explicit = output_for(dir, coordinator, %w[status A --full])
         refute_includes explicit, "(NEXT)"
         assert_match(/\AA: READY/, explicit)
       ensure
@@ -314,11 +314,12 @@ class StatusNextSummaryTest < Minitest::Test
     before = [state_bytes(dir), state_bytes("#{dir}-runs")]
     [%w[status], %w[status --all], %w[status --fam A], %w[status A]].each do |command|
       inspector.reset_counts
-      full = output_for(dir, coordinator, command.dup)
+      full = output_for(dir, coordinator, [*command, "--full"])
       full_probes = inspector.head_batches.dup
       inspector.reset_counts
       minimal = output_for(dir, coordinator, [*command, "--min"])
       assert_equal full_probes, inspector.head_batches
+      assert_equal minimal, output_for(dir, coordinator, command.dup)
       assert_empty inspector.snapshot_calls
       assert_equal full.lines.grep(/\A[A-B]:/).map { |line| line.split(" — ").first },
                    minimal.lines.map { |line| line.split(" [").first }
@@ -372,7 +373,7 @@ class StatusNextSummaryTest < Minitest::Test
       assert_equal ["ACT-03"], document.dig("recommendations", "starts").map { |row| row.fetch("id") }
       refute document.dig("facts", "reservations").any? { |row| %w[ACT-02 ACT-06].include?(row.fetch("id")) }
       inspector.reset_counts
-      dashboards = [%w[status], %w[status --all], %w[status --fam ACT], %w[status --all --fam ACT]].map do |args|
+      dashboards = [%w[status --full], %w[status --all --full], %w[status --fam ACT --full], %w[status --all --fam ACT --full]].map do |args|
         output_for(dir, coordinator, args)
       end
       dashboards.each do |dashboard|
@@ -413,7 +414,7 @@ class StatusNextSummaryTest < Minitest::Test
           [1, 2, 3, 8, 20, 38, 80, 100, 160, 240].each do |width|
             [nil, width].each do |configured|
               out = configured ? StringIO.new : TTYOutput.new(width)
-              dashboard = output_for(dir, coordinator, %w[status --all], out:, terminal_width: configured)
+              dashboard = output_for(dir, coordinator, %w[status --all --full], out:, terminal_width: configured)
               lines = dashboard.lines.map(&:chomp)
               assert_equal 3, lines.length
               lines.each do |line|

@@ -446,7 +446,7 @@ visibility only: ACT has neither verified nor authorized that execution.
 bin/agent-coding-tool external report TASK --reporter 'operator' --kind 'codex' \
   --identifier 'reported-session-id'
 bin/agent-coding-tool external show TASK
-bin/agent-coding-tool status TASK
+bin/agent-coding-tool status TASK --full
 bin/agent-coding-tool status
 bin/agent-coding-tool next --json
 bin/agent-coding-tool external end TASK OBSERVATION_ID --disposition ended
@@ -605,9 +605,12 @@ before retrying an uncertain operation. No new lifecycle outcome is stored and
 no publication occurs implicitly; normal explicit ACTD publication selects the
 existing state file.
 
-`bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox]`
+`bin/agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox] [--min | --full]`
 
-Shows effective task state. The default dashboard includes active work with
+Shows effective task state in minimal rows by default. Explicit `--min` is
+equivalent to omission; `--full` restores expanded details and summaries for
+the same selection. The two display flags are mutually exclusive in either
+order. `act stat` routes to this native `status` command. The default dashboard includes active work with
 READY compression as described below, the three easiest blocked tasks, and the five most recently
 completed tasks ranked by their recorded completion timestamps. Retained
 timestamped completions display oldest-to-newest, with the newest at the
@@ -620,10 +623,11 @@ without compression or a NEXT marker.
 
 Default and `--active` dashboards hide individual Icebox rows and exclude them
 from READY/active recommendation counts. An open external observation keeps its
-Icebox row visible, including its unverified execution and unknown liveness
-qualifiers. Reporting or ending external work never removes the Icebox
+Icebox row visible. Minimal rows show external-activity indicators; `--full`
+includes the unverified execution and unknown liveness qualifiers.
+Reporting or ending external work never removes the Icebox
 designation; `unicebox` remains explicit. Both facts appear together in `next`
-and its JSON inventory, without recommending the deferred task. Exactly one final line counts the
+and its JSON inventory, without recommending the deferred task. With `--full`, exactly one final line counts the
 full Icebox inventory before READY compression: `0 Icebox tasks`,
 `1 Icebox task from families (TST)`, or
 `8 Icebox tasks from families (ACT, CL, FO, TST)`. Family names use the same
@@ -631,17 +635,17 @@ first-hyphen-prefix rule below, in deterministic lexical order. The count stays
 on one readable line in non-TTY/narrow output (it may exceed a very narrow
 terminal, like an intact drill-down command).
 
-`status TASK` shows the designation timestamp, optional reason, underlying
+`status TASK --full` shows the designation timestamp, optional reason, underlying
 lifecycle/blocker and `act unicebox TASK`. `status --icebox` lists only deferred
 tasks; it may combine with `--fam`, `--all` or `--active`, but not TASK.
-`--all` and explicit family views include full Icebox rows as the very last
+`--all` and explicit family views include individual Icebox rows as the very last
 status group, after BLOCKED, rather than substituting the compact footer.
 Icebox rows use natural task-ID ties and receive no NEXT marker or READY
 priority promotion. All other filtering/compression rules remain as below.
 
 `act stat --fam CL` (`bin/agent-coding-tool status --fam CL`) shows all READY
 work in the exact `CL` family without compression, plus that family's ordinary
-status/diagnostics. Families are mechanical presentation groups: the first
+status rows (`--full` adds diagnostics). Families are mechanical presentation groups: the first
 hyphen-delimited task-ID prefix (`CL-AFDP-01A` and `CL-AFW-07A` are `CL`;
 `ACT-STATE-01` is `ACT`). IDs without a hyphen use their whole ID; an empty
 prefix also falls back to the whole ID. Matching is case-sensitive and exact
@@ -675,7 +679,8 @@ own family. Family coverage, allocation caps and global ranking are preserved;
 reservation checks are never bypassed. Family drill-down marks NEXT only when
 that same global task is present, never a family-local substitute. Each family
 in a compressed view has one subordinate summary such as
-`CL: 8 READY, 7 hidden — act stat --fam CL`; zero-hidden counts are shown too.
+`CL: 8 READY, 7 hidden — act stat --fam CL`; `--full` shows these summaries,
+including zero-hidden counts.
 Counts include only the full READY set, before compression. Narrow output
 wraps summaries while keeping each drill-down command intact; a command wider
 than the terminal can overflow just like other unbreakable detail tokens.
@@ -713,19 +718,20 @@ This is deterministic advisory prioritization only; it does not launch work or
 reserve repositories. Default and `--active` dashboards show only the three
 easiest dependency blockers, ranked by fewest incomplete dependencies; explicit
 `blocked` outcomes without measurable dependency counts rank after
-dependency-derived blockers. `--all` remains exhaustive. Major groups are
+dependency-derived blockers. `--all` remains exhaustive. With `--full`, major groups are
 separated by a blank line. Every broad-dashboard task headline remains on one
 line; embedded title whitespace is normalized, and long headlines truncate to
 the terminal width with ASCII `...`. Subordinate details retain their own
-wrapping or truncation behavior. Explicit `status TASK` lookup shows the full
+wrapping or truncation behavior. Explicit `status TASK --full` lookup shows the full
 original title and details. Dependency blockers use the compact `waiting on:`
 label. When output is a TTY, status labels are colored; set `NO_COLOR` to
 disable ANSI color.
 
-Use `act stat --min` (`bin/agent-coding-tool status --min`) to scan exactly one
+Use `act stat` (`bin/agent-coding-tool status`) to scan exactly one
 width-bounded row per displayed task, without blank separators, detail lines,
-family/hidden-count summaries or an Icebox footer. `act stat --min --all` shows
-the existing full inventory. `--min` also combines with TASK, `--active`,
+family/hidden-count summaries or an Icebox footer. `act stat --all` shows
+the existing full inventory in minimal rows. Explicit `--min` remains supported.
+Both display modes combine with TASK, `--active`,
 `--fam FAMILY` and `--icebox` wherever those selectors are already valid. Task
 selection, ordering, effective status, global NEXT, READY compression and
 completed/Icebox visibility stay the same; an empty selection prints nothing.
@@ -734,8 +740,8 @@ Rows retain ID, human status (including `IN_FLIGHT (STALE)`), NEXT when present,
 and title as space permits. Inline `[external reported]`, `[external conflict]`,
 `[write collision]`, `[recorded overlap]` and `[read-only refresh]` indicators
 refer to existing evidence, granting no execution authority or assurance of
-fresh source, verified isolation or observed liveness. Omit `--min`, optionally
-with TASK, to recover full warnings, reasons, next steps, checkpoint/downstream
+fresh source, verified isolation or observed liveness. Use `act stat --full`, or
+`act stat TASK --full`, to recover full warnings, reasons, next steps, checkpoint/downstream
 details and restoration commands. Minimal output normalizes embedded whitespace
 and neutralizes input controls/terminal escapes. It uses the existing terminal
 width, ANSI-aware truncation and redirected-output fallback (`COLUMNS`, otherwise
@@ -744,11 +750,11 @@ retain them when possible. At extremely narrow widths, even identity, status
 and warning indicators inevitably truncate with the existing ASCII `...`
 convention (one or two dots below three columns).
 
-Recorded `NEEDS_JUDGMENT` rows provide a compact operator handoff: a `reason:`,
+With `--full`, recorded `NEEDS_JUDGMENT` rows provide a compact operator handoff: a `reason:`,
 an optional explicitly recorded `next:`, and the mechanical `resume: act
 prepare TASK --retry` command. Each handoff field is normalized to one line and
 dynamically truncated to the terminal width with ASCII `...`; the stored values
-are unchanged. Use explicit `status TASK` to see the complete, untruncated
+are unchanged. Use explicit `status TASK --full` to see the complete, untruncated
 summary and next action.
 
 Prepared, in-flight, and candidate tasks are compared against current pushed
@@ -756,14 +762,14 @@ heads; writable head movement produces `STALE` or `STALE_CANDIDATE`. Read-only
 movement preserves the state with a refresh/reconciliation warning.
 With a recorded start and no result, human status and next interventions show
 `IN_FLIGHT (STALE)`: source movement does not establish that execution ended.
-Broad stale in-flight rows, including `--all` and `--fam` views, have at most two
+With `--full`, broad stale in-flight rows, including `--all` and `--fam` views, have at most two
 width-bounded detail lines: changed writable sources with eight-character
 prepared/current commit identities and branch, then reconciliation before
 delivery, unknown liveness and qualified isolation evidence. Multiple-source
-summaries give the total and direct operators to `act stat TASK`. Long values
+summaries give the total and direct operators to `act stat TASK --full`. Long values
 use the existing ASCII `...` truncation; narrow headlines prioritize `STALE`.
 Independent external-activity warnings retain their full safety contract.
-Explicit `act stat TASK` retains full source identities, remote URLs, branches,
+Explicit `act stat TASK --full` retains full source identities, remote URLs, branches,
 SHAs and historical execution/overlap evidence, including renewed validation
 before delivery and separate integration/completion authority. Isolation evidence
 is historical; liveness stays unknown. Inspection never probes workers or changes
@@ -774,12 +780,12 @@ eligibility. `next --json` keeps its schema version and adds optional
 using effective `status` and freshness for eligibility. Existing states need no
 migration. Candidates and explicit outcomes retain their existing labels.
 Presentation filtering does not alter task state or dependency resolution.
-Fresh `PREPARED` rows also show observed overlaps with a fresh
+With `--full`, fresh `PREPARED` rows also show observed overlaps with a fresh
 `IN_FLIGHT` or `CANDIDATE` writer with the same authoritative
 repository and branch. These terminal-width-aware diagnostics are recalculated
 on every status query and disappear with the collision; they do not change the
 task's `PREPARED` state. `PREPARED`/`PREPARED` overlap remains advisory, and
-explicit `status TASK` shows every overlap without dashboard truncation.
+explicit `status TASK --full` shows every overlap without dashboard truncation.
 
 Normal lifecycle: `READY` → `prepare` → `PREPARED` → `start` → `IN_FLIGHT` →
 `received` → `CANDIDATE` → `finish` → `COMPLETE`. `received` is shorthand for
@@ -1136,7 +1142,7 @@ multi-repository task keeps one branch/PR per modified repository under its
 existing grouped validation contract. Checkpoint recording still supports one
 writer and does not replace multi-repository delivery validation.
 
-`status TASK` and `next --json` retain the original prepared SHA, observed main
+`status TASK --full` and `next --json` retain the original prepared SHA, observed main
 SHA, artifact, recorded tests and overlaps where available. Missing attempt,
 changed-path, isolation or live-process evidence is unknown, never inferred.
 Candidate inspection is read-only and does not manufacture integration approval.

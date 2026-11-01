@@ -131,7 +131,7 @@ class ManualParallelLaunchTest < Minitest::Test
           assert_nil @store.load("A")["result"]
           assert_empty Dir.glob("#{@data}-runs/A/*")
           assert_empty Dir.glob("#{run_dir}/delivery*")
-          cli_output = overlap_command!("status", "T", cold: active && advance)
+          cli_output = overlap_command!("status", "T", "--full", cold: active && advance)
           assert_includes cli_output, "external isolation/liveness unverified"
           assert_includes cli_output, "managed delivery disabled"
           consumed = File.binread(File.join(@root, "stdin"))

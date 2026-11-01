@@ -762,6 +762,16 @@ Use `act stat` (`bin/agent-coding-tool status`) to scan exactly one
 width-bounded row per displayed task, without blank separators, detail lines,
 family/hidden-count summaries or an Icebox footer. `act stat --all` shows
 the existing full inventory in minimal rows. Explicit `--min` remains supported.
+Task IDs (with their colon) and annotated statuses form left-aligned columns
+sized only from the displayed rows, with one space after the ID column and two
+after the status column. Titles retain their literal punctuation; compact rows
+have no generated dash separator or trailing padding. Padding consumes the
+existing terminal-width budget (explicit width, TTY width, `COLUMNS`, then 100).
+Titles truncate with ASCII `...` without splitting graphemes or ANSI sequences.
+If the natural columns leave no title cell, the entire listing uses an unpadded
+layout instead; long IDs shrink before status/NEXT/warnings when possible, with
+hard truncation at extreme widths. Alignment is unavoidably lost in this narrow
+fallback, while every compact row remains within the same width limit.
 Both display modes combine with TASK, `--active`,
 `--fam FAMILY` and `--icebox` wherever those selectors are already valid. Task
 selection, ordering, effective status, global NEXT, READY compression and

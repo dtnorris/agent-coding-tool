@@ -29,7 +29,7 @@ class LiveWriteCollisionStatusTest < Minitest::Test
         assert_equal 0, cli.run(["status", *selector, "--min"]), err.string
         assert_empty err.string
         assert_equal selector.empty? ? 3 : 1, out.string.lines.length
-        assert_match(/^IG-07A: PREPARED(?: \(NEXT\))? \[write collision\] — Task$/, out.string)
+        assert_match(/^IG-07A: PREPARED(?: \(NEXT\))? \[write collision\]  Task$/, out.string)
         refute_includes out.string, "manual overlap warning;"
       end
     end
@@ -189,7 +189,7 @@ class LiveWriteCollisionStatusTest < Minitest::Test
       cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out:, err:)
       cli.instance_variable_set(:@coordinator, coordinator)
       assert_equal 0, cli.run(%w[status B --min]), err.string
-      assert_match(/\AB: PREPARED \[write collision\] \[read-only refresh\] — Task\n\z/, out.string)
+      assert_match(/\AB: PREPARED \[write collision\] \[read-only refresh\]  Task\n\z/, out.string)
     end
   end
 

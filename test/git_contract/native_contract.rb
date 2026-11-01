@@ -67,7 +67,8 @@ class NativeGitContract < Minitest::Test
     observations.each do |observation|
       next if observation.exception
 
-      stdout, stderr, status = GitContract::Replay.new([observation]).capture3(*observation.argv, chdir: observation.cwd)
+      stdout, stderr, status = GitContract::Replay.new([observation]).capture3(*observation.argv,
+        chdir: observation.cwd, stdin_data: observation.stdin_data)
       assert_equal observation.stdout.bytes, stdout.bytes
       assert_equal observation.stderr.bytes, stderr.bytes
       assert_equal [observation.status.exitstatus, observation.status.termsig, observation.status.success?],
@@ -85,7 +86,7 @@ class NativeGitContract < Minitest::Test
     observations.each_with_index.map do |item, position|
       next item unless position == index
 
-      GitContract::Observation.new(argv: item.argv, cwd: item.cwd,
+      GitContract::Observation.new(argv: item.argv, cwd: item.cwd, stdin_data: item.stdin_data,
         result: [stdout || item.stdout, item.stderr, status.nil? ? item.status : status])
     end
   end

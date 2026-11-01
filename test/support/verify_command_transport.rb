@@ -498,6 +498,104 @@ class CommandTransportVerifier < Minitest::Test
     end
   end
 
+  # Capture3 and boolean replay bind binary stdin without consuming mismatches.
+  # Empty environment defaults normalize; real overrides and unknown options refuse.
+  def test_git_observation_stdin_and_environment_matching
+    input = "patch\x00\xff".b
+    observation = GitContract::Observation.new(argv: [{}, "git", "apply"], cwd: "/fixture",
+      stdin_data: input, result: ["out\x00\xff".b, "err", false])
+    input.clear
+    assert_equal "patch\x00\xff".b, observation.stdin_data
+    assert observation.stdin_data.frozen?
+    assert_equal %w[git apply], observation.argv
+    replay = GitContract::Replay.new([observation])
+    assert_raises(GitContract::UnexpectedObservation) { replay.capture("git", "apply", chdir: "/fixture") }
+    assert_raises(GitContract::UnexpectedObservation) do
+      replay.capture3("git", "apply", chdir: "/fixture", stdin_data: "wrong")
+    end
+    assert_raises(GitContract::UnexpectedObservation) do
+      replay.capture({ "GIT_DIR" => nil }, "git", "apply", chdir: "/fixture", stdin_data: observation.stdin_data)
+    end
+    assert_raises(ArgumentError) do
+      replay.capture3("git", "apply", chdir: "/fixture", stdin_data: observation.stdin_data, binmode: true)
+    end
+    assert_raises(GitContract::UnexpectedObservation) { replay.verify! }
+    assert_equal ["out\x00\xff".b, "err", false],
+      replay.capture({}, "git", "apply", chdir: "/fixture", stdin_data: observation.stdin_data)
+    assert replay.verify!
+    assert_raises(GitContract::UnexpectedObservation) do
+      replay.capture("git", "apply", chdir: "/fixture", stdin_data: observation.stdin_data)
+    end
+    other = GitContract::Observation.new(argv: %w[git apply], cwd: "/fixture",
+      stdin_data: "other", result: ["other", "", true])
+    unordered = GitContract::Replay.new([observation, other], ordered: false)
+    assert_equal ["other", "", true], unordered.capture("git", "apply", chdir: "/fixture", stdin_data: "other")
+    assert_equal ["out\x00\xff".b, "err", false],
+      unordered.capture("git", "apply", chdir: "/fixture", stdin_data: observation.stdin_data)
+    assert unordered.verify!
+  end
+
+  # Reproduces the actual CommandRunner -> capture3 recorder/replay composition
+  # with approved Ruby children. Native binary output and signal facts stay intact.
+  def test_git_native_capture3_transport_roundtrip
+    %w[binary signal].each do |mode|
+      input = mode == "binary" ? "\x00\xffhello\r\n".b : ""
+      approval = permit(mode, options: { pgroup: true })
+      native = GitContract::Native.new
+      runner = AgentCodingTool::CommandRunner.new
+      actual = NoGitExecution.with_permit(approval) do
+        Open3.stub(:capture3, native.method(:capture3)) do
+          runner.capture(approval.environment, *approval.argv, stdin_data: input)
+        end
+      end
+      expected = mode == "binary" ? [input.reverse, "\xfe\x00".b, false] : ["", "", nil]
+      assert_equal expected, actual
+      assert_equal 1, native.observations.length
+      observation = native.observations.first
+      assert_equal input, observation.stdin_data
+      if mode == "binary"
+        assert_equal 7, observation.status.exitstatus
+      else
+        assert_equal Signal.list.fetch("TERM"), observation.status.termsig
+        assert_nil observation.status.success?
+      end
+      replay = GitContract::Replay.new(native.observations)
+      simulated = Open3.stub(:capture3, replay.method(:capture3)) do
+        runner.capture(approval.environment, *approval.argv, stdin_data: input)
+      end
+      assert_equal actual, simulated
+      assert replay.verify!
+    end
+  end
+
+  # The recorder drains diagnostics after EPIPE and starts its watchdog before
+  # writing. A non-reading child cannot turn binary stdin into an unbounded wait.
+  def test_git_native_stdin_rejection_and_deadline
+    input = "\x00\xff".b * 1_048_576
+    approval = permit("reject_input", options: { pgroup: true })
+    native = GitContract::Native.new
+    stdout, stderr, status = NoGitExecution.with_permit(approval) do
+      native.capture3(approval.environment, *approval.argv, stdin_data: input)
+    end
+    assert_equal "", stdout
+    assert_equal "rejected\x00\xff".b, stderr
+    assert_equal 3, status.exitstatus
+    assert_equal input, native.observations.fetch(0).stdin_data
+    fixture do |root, _config|
+      pidfile = File.join(root, "pid")
+      approval = permit("lease", arguments: [pidfile], options: { pgroup: true })
+      bounded = GitContract::Native.new(seconds: 0.2)
+      error = assert_raises(IOError) do
+        NoGitExecution.with_permit(approval) do
+          bounded.capture3(approval.environment, *approval.argv, stdin_data: input)
+        end
+      end
+      assert_match(/exceeded/, error.message)
+      assert_empty bounded.observations
+      assert_raises(Errno::ESRCH) { Process.kill(0, Integer(File.read(pidfile))) } if File.file?(pidfile)
+    end
+  end
+
   # Launcher constructs its nested RepoInspector with the same transport. Raw
   # authority substitution fails; no policy/discovery method is replaced.
   def test_launcher_nested_authority_and_cleanup_status

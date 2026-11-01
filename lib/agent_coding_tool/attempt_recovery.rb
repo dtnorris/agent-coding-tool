@@ -44,7 +44,7 @@ module AgentCodingTool
       raise InvalidState, "close-attempt: #{rows.flat_map { |row| row.fetch('blockers') }.join('; ')}" if
         rows.any? { |row| !row.fetch("blockers").empty? }
       raise InvalidState, "close-attempt: missing or conflicting attempt sequence" unless
-        !rows.empty? && rows.map { |row| row["attempt"] } == (1..rows.length).to_a
+        !rows.empty? && rows.map { |row| row["attempt"] } == attempt_sequence(id, rows.length)
       rows.each do |row|
         next if row["legacy_abandoned"]
         directory = row.fetch("run_dir")
@@ -83,6 +83,7 @@ module AgentCodingTool
         (File.stat(lock_path).mode & 0o077).zero?
       File.open(lock_path, File::RDWR) do |lock|
         raise InvalidState, "close-attempt: launch/recovery reservation busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        TaskReset.new(data_root: @data, transport: @transport).assert_admission!(id)
         plan = preflight(id)
         plan.fetch("attempts").each do |row|
           next if row["closed"] || row["legacy_abandoned"]
@@ -117,7 +118,7 @@ module AgentCodingTool
       return if rows.empty?
       raise InvalidState, "#{id}: #{rows.flat_map { |row| row.fetch('blockers') }.join('; ')}" if
         rows.any? { |row| !row.fetch("blockers").empty? }
-      raise InvalidState, "#{id}: conflicting attempt sequence" unless rows.map { |row| row["attempt"] } == (1..rows.length).to_a
+      raise InvalidState, "#{id}: conflicting attempt sequence" unless rows.map { |row| row["attempt"] } == attempt_sequence(id, rows.length)
       rows.each do |row|
         next if row["legacy_abandoned"]
         raise InvalidState, "#{id}: explicit close-attempt required before fresh preparation/relaunch" unless row["closed"]
@@ -155,6 +156,13 @@ module AgentCodingTool
     end
 
     private
+
+    # Archived generations retain their numeric identities without remaining in
+    # active discovery. New closeout/retry sequences start above that exact floor.
+    def attempt_sequence(id, count)
+      floor = TaskReset.new(data_root: @data, transport: @transport).attempt_floor(id)
+      ((floor + 1)..(floor + count)).to_a
+    end
 
     # Requires verified preservation bound to this exact execution, independently
     # of the current policy/pointers. Wrong/stale checkpoint identity refuses.
@@ -364,8 +372,9 @@ module AgentCodingTool
     # Refuses unknown children at either layout depth without touching siblings.
     def verify_task_paths!(id, rows)
       entries = rows.flat_map { |row| row.dig("inventory", "entries") || [] }
+      retired = TaskReset.new(data_root: @data, transport: @transport).retired_paths(id)
       foreign = WorktreeManager.foreign_task_paths(root: @config.worktree_root, task_id: id,
-                                                   paths: entries.map { |entry| entry.fetch("path") })
+                                                   paths: entries.map { |entry| entry.fetch("path") } + retired)
       raise InvalidState, "close-attempt: foreign task path entries" unless foreign.empty?
     end
 

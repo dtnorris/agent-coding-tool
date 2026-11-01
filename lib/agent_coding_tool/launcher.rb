@@ -124,6 +124,8 @@ module AgentCodingTool
     # Runs one task under the reservation lock and optionally delivers its exact
     # host-validated result. Returns worker status; preflight errors retain evidence.
     def run_locked(id, model, reasoning, lock, allow_write_collision)
+      reset = TaskReset.new(data_root: @data_root, transport: @transport)
+      reset.assert_admission!(id)
       task = TaskStore.new(File.join(@data_root, "tasks")).load(id)
       validate_task!(id, task)
       state_store = StateStore.new(File.join(@data_root, "state"))
@@ -161,7 +163,7 @@ module AgentCodingTool
       task_root = File.join(@run_root, id)
       raise InvalidState, "#{id}: symlinked task evidence" if File.symlink?(task_root)
       FileUtils.mkdir_p(task_root, mode: 0o700)
-      attempt = IncidentalMetadata.children(task_root).length + 1
+      attempt = reset.attempt_floor(id) + IncidentalMetadata.children(task_root).length + 1
       run_dir = File.join(task_root, "#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}-#{SecureRandom.hex(6)}")
       @report_path = File.join(run_dir, "handoff.json")
       invocation_id = SecureRandom.uuid

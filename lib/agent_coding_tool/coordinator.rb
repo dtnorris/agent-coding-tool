@@ -501,6 +501,7 @@ module AgentCodingTool
       raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
       data_root = File.dirname(File.dirname(@state_store.state_path(id)))
       ReservationLock.synchronize(data_root, held: held) do
+        TaskReset.new(data_root: data_root, transport: @transport).assert_admission!(id)
         state = begin
           @state_store.load(id)
         rescue InvalidState
@@ -652,6 +653,7 @@ module AgentCodingTool
         raise InvalidState, "#{id}: missing managed reservation lock; inspect retained evidence"
       end
       ReservationLock.synchronize(data_root, held: held) do |lock|
+        TaskReset.new(data_root: data_root, transport: @transport).assert_admission!(id)
         state = @state_store.load(id)
         raise InvalidState, "#{id}: task state identity mismatch" if state.key?("id") && state["id"] != id
         unless state["result"].nil? || state["result"].is_a?(Hash)
@@ -798,6 +800,13 @@ module AgentCodingTool
     # separately from its READY/BLOCKED basis. Conflicting evidence raises InvalidState.
     def status_context(task)
       id = task.fetch("id")
+      resetter = TaskReset.new(data_root: File.dirname(File.dirname(@state_store.state_path(id))), transport: @transport)
+      reset_history = resetter.history(id)
+      reset = reset_history.find { |receipt| receipt["phase"] != "complete" }
+      if reset
+        return { "status" => status_hash("BLOCKED", task, { "id" => id },
+          "unfinished hard reset (#{reset.fetch('phase')}); repeat act reset #{id} --hard; archive: #{reset.fetch('archive')}") }
+      end
       state = @state_store.load(id)
       if state.key?("icebox") && ((state.key?("id") && state["id"] != id) ||
         (execution_evidence?(id, state) && !state["administrative_override"]))
@@ -847,6 +856,10 @@ module AgentCodingTool
       end
 
       snapshot = state["snapshot"]
+      if !snapshot && !reset_history.empty?
+        blockers = resetter.readiness(id)
+        return { "status" => status_hash("BLOCKED", task, state, blockers.join('; ')) } unless blockers.empty?
+      end
       return { "status" => status_hash("READY", task, state) } unless snapshot
 
       { "pending" => { "task" => task, "state" => state, "outcome" => outcome, "snapshot" => snapshot } }
@@ -1097,6 +1110,8 @@ module AgentCodingTool
         "state" => state
       }
       result = state["result"]
+      history = TaskReset.new(data_root: File.dirname(File.dirname(@state_store.state_path(task.fetch("id")))), transport: @transport).history(task.fetch("id"))
+      status["reset_history"] = history unless history.empty?
       if state["administrative_override"]
         status["administrative_override"] = state.fetch("administrative_override")
         status["resource_eligibility"] = "unverified; retained execution/reservations require independent checks"

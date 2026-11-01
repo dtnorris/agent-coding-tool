@@ -587,8 +587,8 @@ again from actual lifecycle, dependencies and freshness. Dependency changes
 while deferred remain visible as underlying blockers and may prevent READY
 after restoration. Explicit `prepare`, automatic `launch`, manual `start`,
 `record`, `received` and `finish` refuse designated work. `prepare --retry`
-cannot restore it. `reset` is a no-op for a deferred task, retaining all state;
-only explicit restoration permits lifecycle entry.
+cannot restore it. Soft `reset` is a no-op for a deferred task, retaining all
+state; explicit `unicebox` or separately confirmed hard reset removes deferral.
 
 Scheduling mutations, preparation, starts and outcomes serialize on the same
 private `launch.lock`, including first preparation and direct Coordinator API
@@ -1073,8 +1073,10 @@ candidate/complete outcomes and existing delivery/validation records. A patch
 does not grant permission to discard workspace changes. Verified partial
 creation may be preserved for retry, including a native addition whose last
 durable marker is `creating`; missing ownership after native mutation refuses.
-No unsuccessful-attempt destructive cleanup is added. Normal cleanup and
-`abandon-preflight` retain their existing eligibility and liveness gates.
+Closeout grants no destructive authority. The separate, explicitly confirmed
+[hard reset](#recoverable-task-scoped-hard-reset) preserves and retires eligible
+task-owned resources. Normal cleanup and `abandon-preflight` retain their
+existing eligibility and liveness gates.
 
 Retry liveness is deliberately bounded: it requires matching host/boot identity,
 absence of the recorded host PID, worker PID and worker group, consistent terminal
@@ -1214,9 +1216,11 @@ if manual lifecycle state was reset. Inspect artifacts and independently confirm
 that the host, worker and descendants have stopped before resolving anything.
 Then record the appropriate ACT outcome explicitly; only a human-reviewed result
 should use `received`. For another attempt, use explicit `prepare --retry` after
-a non-complete outcome. Preserve and move unresolved/partial run directories to
-an operator-managed archive outside the runs root only after that liveness
-judgment; launch does not provide an automatic recovery switch. An already
+a non-complete outcome. The supported
+[hard reset](#recoverable-task-scoped-hard-reset) can preserve and retire
+independently proved inactive task-owned resources without manual archive
+relocation. Unknown ownership or process use still refuses; a lifecycle assertion
+cannot supply missing evidence. Launch provides no automatic recovery switch. An already
 attempted preparation cannot be silently reused. Manual lifecycle commands
 remain human assertions, not process locks.
 
@@ -1254,7 +1258,8 @@ act checkpoint gate TASK --force --workspace /path/to/preserved/workspace -- bun
 
 Unknown tasks/outcomes, malformed arguments, ambiguous identities, unsafe paths,
 busy physical locks and required I/O failures are errors. `--force` does not
-implement `reset --hard`; that combination is unsupported here. Launch, cleanup,
+combine with `reset --hard`; hard reset has its separate preview/confirmation
+and preservation/retirement contract. Launch, cleanup,
 delivery, integration and Git publication retain their separate safeguards and
 authority. COMPLETE and IN_FLIGHT declarations establish neither passing tests,
 live workers nor permission to remove resources. Status exposes the declaration
@@ -1829,7 +1834,142 @@ that moment.
 
 Clears runtime state for a task, including the in-flight marker. The task
 definition is untouched. A deferred task retains its entire state until explicit
-`unicebox`; reset never silently removes scheduling intent.
+`unicebox`; soft reset never silently removes scheduling intent. Explicit hard
+reset has its own preview and confirmation and removes deferral as described below.
+
+### Recoverable task-scoped hard reset
+
+`act reset TASK --hard` and `act reset --hard TASK` are equivalent. Use
+`act reset TASK --hard --dry-run` to inspect scope without writing files, locks,
+receipts, lifecycle state or Git administration. Soft reset retains managed
+resources/history and preserves Icebox; hard reset explicitly archives them and
+retires verified disposable resources. `--force`, `--reason` and automatic yes
+are not supported with `--hard`.
+
+```sh
+act reset TASK --hard --dry-run
+act reset TASK --hard
+# After reviewing the displayed scope, enter yes at the terminal prompt.
+act prepare TASK
+act launch TASK --codex
+```
+
+The preview identifies every historical attempt, exact worktree and retained
+branch, dirty/candidate content, prior outcome (including COMPLETE), affected
+dependents, managed evidence, archive destination, external-data locations left
+in place and surviving external blockers. One terminal confirmation defaults
+to no; blank input, EOF and redirected/noninteractive stdin decline even when
+the input is `yes`. Preview, decline and reset do not run preparation, workers,
+tests, delivery or publication. No prior recorded outcome, separate closeout,
+`--retry`, manual archive relocation or state editing is required.
+
+Ownership comes from each original checksum-bound prompt/preparation and native
+Git inventory/backpointers/registry. Today's repository names, access labels and
+source paths control the *next* preparation, not the old execution's identity.
+Both fixed-path legacy and attempt layouts, multiple attempts and independently
+verified partial creation are supported. Missing/corrupt ownership, foreign or
+symlinked roots, nested repositories, special files, overlapping paths and
+unavailable process observations refuse; directory location or a supplied
+receipt alone grants no disposal authority. Independently owned managed resources
+can be recovered despite malformed lifecycle or auxiliary progress bytes. Such
+bytes remain explicitly unverified; they never become passing validation.
+
+Before the first removal, ACT creates and verifies an operator-owned private
+archive at `<canonical-data-directory>-resets/TASK/UUID/`, **outside** active run
+and reservation discovery. `intent.json` maps every original source to its copy
+and records identities, hashes and POSIX modes. `original/` contains exact task,
+state, managed prompts, run/checkpoint/gate/delivery/closeout evidence and override
+history. `candidates/N/worktree/` contains the entire original filesystem,
+including staged/unstaged binary versions, additions/deletions, untracked and
+ignored files, empty directories and supported modes/links. Symlinks are copied
+as links, never followed into external data. FIFOs, sockets and devices refuse
+before retirement. Source fixtures and other external data remain in place;
+shared Git objects/configuration and unrelated private data are not recursively
+collected.
+
+Each `candidates/N/repository.git/` is an independent object store containing
+HEAD/base history and every index-stage object, with the exact raw index and any
+split-index dependency. It has no shared-object alternates and records detached
+HEAD for independent reconstruction; the original branch and `.git` pointer
+remain recorded in intent/worktree bytes. Git object closure and index entries
+are checked before retirement. To reconstruct for separately authorized review,
+copy that candidate's `worktree` directory to a new absent destination, replace
+only the copied `.git` pointer with a copy of its `repository.git` directory,
+then set `git -C DEST config core.bare false`. Do not run checkout/reset/add:
+the copied files and raw index already preserve distinct working and staging
+states, including unmerged stages. Compare HEAD, `git ls-files --stage -z`, raw
+index hashes, file/link hashes and modes against intent. Reconstruction uses no
+original source checkout and confers no validation, acceptance or publication.
+
+After confirmation ACT holds the existing physical reservation lock and rechecks
+definition, source/index identities, native ownership, external activity and
+liveness. Live/reused PIDs/groups, unknown/manual workers, active observations,
+unfinished gates/publication and competing writers refuse with their blocker.
+No unknown process is killed and no global lock is deleted. Dirty and unmerged
+content is permitted only after complete verified preservation and explicit
+consent. ACT then uses `git worktree remove --force -- EXACT_PATH` only at proved
+task-owned boundaries. Ordinary checkouts, sibling tasks, all branch refs/commits,
+external data/observations and remote delivery artifacts remain untouched. There
+is no shared-root recursive cleanup, worktree prune, git clean, repository hard
+reset, ref deletion or automatic revocation of accepted/published results.
+
+`operation.yml` is a small durable phase/action receipt, bound to the immutable
+intent and verified content manifest. Preservation precedes `archived`, native
+removal and evidence retirement precede `publishing`, and lifecycle publication
+precedes `complete`. Active original evidence/prompts are renamed to the fixed
+`retired/` mapping only after verification/removal; original statuses/bytes are
+never rewritten to fabricate closeout or success. Interrupted operations retain
+every recovery artifact and fence normal preparation, launch, checkpoint and
+publication. Repeat **the same hard-reset command**: it rechecks ownership,
+liveness, hashes and recorded actions, resumes only that operation, and refuses
+reoccupied paths/new resources. Inspect the printed phase/archive and pending
+action on failure. I/O/capacity/permission or directory-sync failures remain
+failures; a state replacement followed by receipt failure is a post-publication
+uncertainty, not rollback or success. This is not a multi-filesystem transaction
+or a demonstrated power-loss guarantee. An incomplete archival copy is retained;
+if its recorded source changed, recovery refuses for operator judgment.
+
+Successful reset clears only the task's runtime preparation, start, result,
+completion, checkpoint/collision and deferral pointers. It retains the current
+task definition, priorities/dependencies, unrelated state metadata, global
+configuration and other tasks. Global ACT configuration is hash/identity-bound
+for rechecks without copying unrelated configuration into the archive.
+The output identifies the archive, retired resources, retained branches,
+resulting scheduler status and `act prepare TASK`. READY is conditional on the
+unchanged valid task definition/configuration and genuinely complete prerequisites;
+an incomplete dependency remains BLOCKED with its actual reason. Preparation
+performs its usual current-source checks; missing current repository configuration
+also remains BLOCKED in status/next after reset. Manual starts/outcomes and
+administrative overrides without independent inactive managed-execution proof
+refuse; a failed/complete/reset declaration cannot establish termination.
+Neither reset success nor READY accepts
+the implementation or authorizes a real reset, launch, publication or integration.
+
+`act worktrees TASK`, explicit status and `next --json` expose reset archive
+locators separately from active attempts. Original history remains historical;
+no old gate, checkpoint or delivery receipt binds a new execution. Attempt
+numbers continue above the retired floor, preserving old branches without
+reusing their paths or admitting late results as new proof. Repeating reset on an
+unchanged reset task is a no-op with no new archive. A newer execution requires
+its own inventory, archive and confirmation. Keep the complete archive and phase
+receipt together and private; deleting them destroys recovery/sequence evidence.
+
+The offline public journey lives in `test/integration/attempt_retry_git_integration.rb`.
+It uses generated ACTD and native Git, with finite fake workers and declared
+boot/lsof/sandbox boundaries. Removing the retirement handoff fails the same
+journey. Offline success does not qualify native macOS liveness, sandbox
+containment or host acceptance. David must run the accepted complete/YAML gates
+through checkpoint record/verify/gate and separately review native Mac behavior
+before operational use. No real task reset is authorized by implementation tests.
+
+Checkpoint gates hold the same physical reservation across commands and candidate
+checks. Synchronous nested checkpoint operations in that gate's thread borrow its
+revalidated lock; competing threads/processes still refuse. The existing
+best-effort exempt/manual gate can run with a regular file occupying run storage,
+without following links or writing receipts there. That case has no managed
+resources/checkpoint and cannot qualify for hard reset: its namespace is unusable
+and its manual reservation remains unknown. Busy locks and required evidence do
+not receive this exception.
 
 `bin/agent-coding-tool publish [TASK | --all] [--dry-run]`
 

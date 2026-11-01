@@ -21,11 +21,19 @@ module FeedbackCoverage
   # Normalizes Coverage's arrays and branch coordinates into JSON-safe nodes.
   # Returns executable line/branch hit counts; nil lines never enter the total.
   def self.nodes(result)
-    lines = result.fetch(:lines).each_with_index.filter_map { |hits, index| ["line:#{index + 1}", hits] unless hits.nil? }
-    branches = result.fetch(:branches).flat_map do |origin, targets|
-      targets.map { |target, hits| ["branch:#{origin.inspect}:#{target.inspect}", hits] }
+    @line_names ||= []
+    @branch_names ||= {}
+    observed = {}
+    result.fetch(:lines).each_with_index do |hits, index|
+      observed[(@line_names[index] ||= "line:#{index + 1}")] = hits unless hits.nil?
     end
-    (lines + branches).to_h
+    result.fetch(:branches).each do |origin, targets|
+      names = (@branch_names[origin] ||= {})
+      targets.each do |target, hits|
+        observed[(names[target] ||= "branch:#{origin.inspect}:#{target.inspect}")] = hits
+      end
+    end
+    observed
   end
 
   # Independently compiles the current all-file denominator in the outer runner
@@ -59,7 +67,14 @@ module FeedbackCoverage
   # to be a production file merely from its basename.
   def self.relative(path, context)
     absolute = File.expand_path(path)
-    relative = context.fetch("sources").keys.find { |candidate| absolute.end_with?("/#{candidate}") }
+    return nil if @probe_contexts&.any? { |probe| probe.equal?(context) } && !absolute.start_with?(context.fetch("root") + "/")
+    return nil if @probe_contexts&.any? { |probe| !probe.equal?(context) && absolute.start_with?(probe.fetch("root") + "/") }
+    sources = context.fetch("sources")
+    unless @relative_sources.equal?(sources)
+      @relative_sources = sources
+      @relative_candidates = sources.keys.group_by { |candidate| File.basename(candidate) }
+    end
+    relative = @relative_candidates.fetch(File.basename(absolute), []).find { |candidate| absolute.end_with?("/#{candidate}") }
     return nil unless relative
     raise "coverage: changed source #{absolute}" unless File.file?(absolute) &&
       Digest::SHA256.file(absolute).hexdigest == context.fetch("sources").fetch(relative)
@@ -82,45 +97,116 @@ module FeedbackCoverage
     context.fetch("sources").each_key do |path|
       RubyVM::InstructionSequence.compile_file(File.join(context.fetch("root"), path), coverage_enabled: true)
     end
+    # Cache coordinate labels before execution; signal-time completion must fit
+    # the real owner's 50ms TERM/KILL interval without omitting any nodes.
+    Coverage.peek_result.each do |path, result|
+      nodes(result) if relative(path, context)
+    end
+    register(context)
+    at_exit { finish }
+  end
+
+  # Registers the contract's fixed three-file synthetic denominator alongside
+  # inherited real-source instrumentation. No environment context is replaced;
+  # roots must be disjoint and all synthetic bytes/layout are validated first.
+  def self.start_probe(context_path)
+    context = JSON.parse(File.binread(context_path))
+    expected = %w[bin/agent-coding-tool lib/loaded.rb lib/unloaded.rb]
+    raise "coverage: invalid synthetic probe layout" unless context.fetch("sources").keys.sort == expected &&
+      sources(context.fetch("root")) == context.fetch("sources")
+    root = File.realpath(context.fetch("root"))
+    raise "coverage: overlapping probe root" if (@observers || []).any? { |state|
+      other = state.fetch(:context).fetch("root")
+      root == other || root.start_with?(other + "/") || other.start_with?(root + "/") }
+    raise "coverage: instrumentation started after production load" if $LOADED_FEATURES.any? { |path| path.start_with?(root + "/lib/") }
+    Coverage.start(lines: true, branches: true) unless Coverage.running?
+    context.fetch("sources").each_key do |path|
+      RubyVM::InstructionSequence.compile_file(File.join(root, path), coverage_enabled: true)
+    end
+    (@probe_contexts ||= []) << context
+    register(context)
+    at_exit { finish }
+  end
+
+  # Registers a fresh interpreter identity and production activity trace. Returns
+  # nil; exclusive marker creation and source validation failures propagate.
+  def self.register(context)
     identifier = "#{Process.pid}-#{SecureRandom.hex(12)}"
     prefix = File.join(context.fetch("directory"), identifier)
     File.write("#{prefix}.started", JSON.generate("pid" => Process.pid, "argv" => [$PROGRAM_NAME, *ARGV], "cwd" => Dir.pwd), mode: "wx")
-    active = false
+    state = { context: context, prefix: prefix, pid: Process.pid, active: false, finished: false }
+    @observer = state
+    (@observers ||= []) << state
     trace = TracePoint.new(:line) do |event|
       next unless context.fetch("sources").keys.any? { |path| File.expand_path(event.path).end_with?("/#{path}") }
 
-      relative(event.path, context)
+      next unless relative(event.path, context)
       File.write("#{prefix}.active", "ACT source executed\n", mode: "wx")
-      active = true
+      state[:active] = true
       trace.disable
     end
+    state[:trace] = trace
+    @trace = trace
     trace.enable
-    original_pid = Process.pid
-    at_exit do
-      trace.disable
-      raise "coverage: forked interpreter lacks fresh coverage context" unless Process.pid == original_pid
-      raise "coverage: source changed during execution" unless sources(context.fetch("root")) == context.fetch("sources")
+    nil
+  end
 
-      files = {}
-      Coverage.result.each do |path, result|
-        # Nested verifier layouts share the observer but are not production.
-        # Only exact, still-zero layouts are excluded; executed files must pass
-        # the same byte identity check as any other observed source.
-        next if @compiled_fixtures&.key?(path) && @compiled_fixtures.fetch(path) == nodes(result)
+  # Rebinds only a genuinely forked observer before the owner block executes.
+  # Child counters are cleared in the child address space; parent hits cannot be
+  # evidence for child execution. The inherited all-file layouts remain intact.
+  def self.after_fork
+    raise "coverage: no inherited observer" unless @observer
+    raise "coverage: fork observer is not inherited" if @observer.fetch(:pid) == Process.pid
+    @trace.disable
+    context = @observer.fetch(:context)
+    raise "coverage: fork context changed" unless ENV["ACT_COVERAGE_CONTEXT"] &&
+      JSON.parse(File.binread(ENV.fetch("ACT_COVERAGE_CONTEXT"))) == context
+    raise "coverage: fork source changed" unless sources(context.fetch("root")) == context.fetch("sources")
+    Coverage.result(stop: false, clear: true)
+    @observers = []
+    register(context)
+  end
 
-        relative_path = relative(path, context)
-        next unless relative_path
+  # Writes durable complete evidence once, including for a permitted exit! owner.
+  # Unregistered forks, changed sources and duplicate completion refuse rather
+  # than borrowing parent hits or silently dropping an active child.
+  def self.finish
+    states = @observers || []
+    pending = states.reject { |state| state.fetch(:finished) }
+    return if pending.empty?
+    pending.each { |state| state.fetch(:trace).disable }
+    results = Coverage.peek_result
+    pending.each { |state| finish_state(state, results) }
+    Coverage.result
+    nil
+  end
 
-        observed = nodes(result)
-        previous = files[relative_path]
-        raise "coverage: contradictory executable layout" if previous && previous.keys.sort != observed.keys.sort
-        files[relative_path] = observed.to_h { |node, hits| [node, [hits, previous&.fetch(node, 0) || 0].max] }
-      end
-      result = { "invocation" => context.fetch("invocation"), "selection" => context.fetch("selection"),
-                 "stage" => context.fetch("stage"), "sources" => context.fetch("sources"),
-                 "pid" => Process.pid, "active" => active, "files" => files }
-      File.write("#{prefix}.json", JSON.generate(result), mode: "wx")
+  # Writes one observer's full denominator from the same native coverage result.
+  # Multiple synthetic controls never replace or clear the inherited real context.
+  def self.finish_state(state, results)
+    raise "coverage: forked interpreter lacks fresh coverage context" unless Process.pid == state.fetch(:pid)
+    context = state.fetch(:context)
+    raise "coverage: source changed during execution" unless sources(context.fetch("root")) == context.fetch("sources")
+    files = {}
+    results.each do |path, result|
+      next if @compiled_fixtures&.key?(path) && @compiled_fixtures.fetch(path) == nodes(result)
+      relative_path = relative(path, context)
+      next unless relative_path
+      observed = nodes(result)
+      previous = files[relative_path]
+      raise "coverage: contradictory executable layout" if previous && previous.keys.sort != observed.keys.sort
+      files[relative_path] = observed.to_h { |node, hits| [node, [hits, previous&.fetch(node, 0) || 0].max] }
     end
+    result = { "invocation" => context.fetch("invocation"), "selection" => context.fetch("selection"),
+      "stage" => context.fetch("stage"), "sources" => context.fetch("sources"),
+      "pid" => Process.pid, "active" => state.fetch(:active), "files" => files }
+    File.open("#{state.fetch(:prefix)}.json", File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(JSON.generate(result))
+      file.flush
+      file.fsync
+    end
+    state[:finished] = true
+    nil
   end
 
   # Merges fresh child evidence by union of executed source nodes. Returns an

@@ -6,6 +6,7 @@ require "rbconfig"
 require "timeout"
 require_relative "launcher_support"
 
+# Exercises launcher lifecycle, authority and genuine child statuses in private fixtures.
 class LauncherTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
@@ -29,6 +30,7 @@ class LauncherTest < Minitest::Test
     old_pid ? assert_equal(old_pid, current_pid) : assert_nil(current_pid)
   end
 
+  # Verifies launch binds pushed base independent of dirty divergent ordinary checkout; assertion failures raise.
   def test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout
     fixture(git: true, process: true) do
       File.write(File.join(@ordinary, "file.txt"), "local\n")
@@ -79,6 +81,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies prepared prompt is consumed without reprepare and recommendation is advisory; assertion failures raise.
   def test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory
     fixture do
       # Exercise the actual runner/native-transport/fixture composition before
@@ -174,6 +177,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies stale input and changed remote authority fail closed; assertion failures raise.
   def test_stale_input_and_changed_remote_authority_fail_closed
     fixture(git: true, mutable_remote: true) do
       @coordinator.prepare('T')
@@ -496,6 +500,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies exit provenance exposes midflight head movement without rewriting preparation; assertion failures raise.
   def test_exit_provenance_exposes_midflight_head_movement_without_rewriting_preparation
     fixture(process: true) do
       @coordinator.prepare('T')
@@ -518,6 +523,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies exit freshness unavailable is reported without losing worker status; assertion failures raise.
   def test_exit_freshness_unavailable_is_reported_without_losing_worker_status
     fixture(process: true) do
       spawning = lambda do |*args, **options|
@@ -564,6 +570,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies incompatible snapshot and foreign project configuration block worker; assertion failures raise.
   def test_incompatible_snapshot_and_foreign_project_configuration_block_worker
     fixture do
       @coordinator.prepare('T')
@@ -583,6 +590,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies cli returns real nonzero worker code using fake path; assertion failures raise.
   def test_cli_returns_real_nonzero_worker_code_using_fake_path
     fixture(git: true, process: true) do
       write_fake('failure')
@@ -652,6 +660,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies two writable worktrees keep separate prepared authorities; assertion failures raise.
   def test_two_writable_worktrees_keep_separate_prepared_authorities
     fixture(git: true) do
       other = File.join(@root, "other")
@@ -684,8 +693,10 @@ class LauncherTest < Minitest::Test
       activity = @coordinator.external_activity
       document = activity.report("OTHER", reporter: "operator", kind: "fake", scope_complete: true)
       state = @store.load("T")
-      error = assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T", allow_write_collision: true) }
-      assert_includes error.message, "external activity conflict"
+      [false, true].each do |explicit|
+        error = assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T", allow_write_collision: explicit) }
+        assert_includes error.message, "external activity conflict"
+      end
       assert_equal state, @store.load("T")
       refute File.exist?(File.join("#{@data}-runs", "T"))
       activity.end_activity("OTHER", document.fetch("active").fetch("observation_id"), disposition: "ended")

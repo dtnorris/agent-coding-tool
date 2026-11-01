@@ -17,6 +17,7 @@ class WorktreeManagerTest < Minitest::Test
     stdout.strip
   end
 
+  # Yields private files and independent modeled authority; verifies faults on cleanup.
   def fixture(git: true)
     Dir.mktmpdir("act-worktrees-") do |root|
       @root = File.realpath(root)
@@ -130,6 +131,7 @@ class WorktreeManagerTest < Minitest::Test
     path
   end
 
+  # Verifies visible branch exact base and dirty divergent ordinary checkout; assertion failures raise.
   def test_visible_branch_exact_base_and_dirty_divergent_ordinary_checkout
     fixture do
       File.write(File.join(@ordinary, "file.txt"), "local\n")
@@ -159,6 +161,7 @@ class WorktreeManagerTest < Minitest::Test
     end
   end
 
+  # Verifies pinned detached reader and cleanup blocker; assertion failures raise.
   def test_pinned_detached_reader_and_cleanup_blocker
     fixture do
       reader = File.join(@root, "reader")
@@ -266,6 +269,7 @@ class WorktreeManagerTest < Minitest::Test
     end
   end
 
+  # Verifies fresh process inspection and cleanup dry run do not mutate; assertion failures raise.
   def test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate
     fixture do
       data = File.join(@root, "data")

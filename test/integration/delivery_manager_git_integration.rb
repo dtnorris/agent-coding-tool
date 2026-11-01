@@ -8,6 +8,7 @@ require "open3"
 require "rbconfig"
 require "minitest/mock"
 
+# Exercises delivery with modeled Git, physical evidence and real guarded validators.
 class DeliveryManagerTest < Minitest::Test
   include TestHelpers
   include ValidationProcesses
@@ -293,8 +294,24 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Verifies private output blocks publication but retains local commit and logs; assertion failures raise.
   def test_private_output_blocks_publication_but_retains_local_commit_and_logs
     fixture(output: "token ghp_secret 2 tests, 3 assertions, 0 failures, 0 errors, 0 skips") do |manager, provider, _guard, _coordinator, workspace, run_dir, _data|
+      # A modified tracked validator cannot borrow the reviewed script's permit.
+      validator = File.join(workspace, "fixture-validation.rb")
+      reviewed = File.binread(validator)
+      begin
+        File.binwrite(validator, reviewed + "# unexpected replacement\n")
+        assert_raises(GitContract::UnexpectedObservation) do
+          Open3.popen3(*validation_command, chdir: workspace, pgroup: true)
+        end
+        # Unknown inline programs still reach the guard and create no child.
+        assert_raises(NoGitExecution::ProhibitedExecution) do
+          Open3.popen3(RbConfig.ruby, "-e", "exit 0", chdir: workspace)
+        end
+      ensure
+        File.binwrite(validator, reviewed)
+      end
       assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
       assert_empty provider.pushes
       refute_empty git(workspace, "show", "-s", "--format=%B", "HEAD")
@@ -389,6 +406,7 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Verifies live git push adapter creates only absent feature ref; assertion failures raise.
   def test_live_git_push_adapter_creates_only_absent_feature_ref
     fixture do |_manager, _provider, _guard, coordinator, workspace, _run_dir, _data|
       remote = git(workspace, "remote", "get-url", "origin").strip
@@ -406,6 +424,7 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Verifies live guard rejects unbounded or unclassified publication; assertion failures raise.
   def test_live_guard_rejects_unbounded_or_unclassified_publication
     Dir.mktmpdir do |root|
       checker = File.join(ChildProcesses::FIXTURES, "publication_lease.rb")

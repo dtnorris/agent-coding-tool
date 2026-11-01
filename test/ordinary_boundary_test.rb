@@ -36,8 +36,7 @@ class OrdinaryBoundaryTest < Minitest::Test
         -> { native_spawn.call(*command) }
       ]
       operations.each do |operation|
-        # Either installed guard may reject first; neither may release a child.
-        assert_raises(OrdinaryExecution::ProhibitedExecution, NoGitExecution::ProhibitedExecution, &operation)
+        assert_raises(OrdinaryExecution::ProhibitedExecution, &operation)
         refute File.exist?(marker)
       end
       assert_ordinary_rejects_permitted_child
@@ -57,8 +56,11 @@ class OrdinaryBoundaryTest < Minitest::Test
   # Proves the stronger ordinary boundary still refuses an otherwise permitted
   # reviewed Ruby child. Returns after refusal; assertion/bootstrap errors fail.
   def assert_ordinary_rejects_permitted_child
-    ordinary = File.realpath(File.join(__dir__, "ordinary_execution.rb"))
-    preloads = { ordinary => Digest::SHA256.file(ordinary).hexdigest }
+    # Match the runner's fixed ordinary bootstrap; unknown RUBYOPT still refuses.
+    preloads = %w[ordinary_execution.rb ordinary_support.rb suite_reporter.rb].to_h do |name|
+      path = File.realpath(File.join(__dir__, name))
+      [path, Digest::SHA256.file(path).hexdigest]
+    end
     if defined?(Bundler)
       bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
       preloads[bundler] = Digest::SHA256.file(bundler).hexdigest
@@ -74,8 +76,7 @@ class OrdinaryBoundaryTest < Minitest::Test
         Process.waitpid(pid) # Reap the finite owned child if the negative control fails.
       end
     end
-    # TracePoint guards may refuse before the zero-Git permit is consumed;
-    # the required outcome is the ordinary refusal above, before a child exists.
+    refute permit.used?, "ordinary refusal must precede selective permit consumption"
   end
 
   # Material environment, cwd, order, duplication and omissions fail before a

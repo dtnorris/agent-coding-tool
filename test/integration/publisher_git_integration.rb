@@ -107,10 +107,12 @@ class PublisherTest < Minitest::Test
     [out, err, status]
   end
 
+  # Returns the modeled remote main SHA; missing or failed remote reads raise.
   def remote_head(root)
     run_git(root, "ls-remote", "--exit-code", "origin", "refs/heads/main").first.split.first
   end
 
+  # Returns committed paths from NUL-delimited model output; command failures raise.
   def committed_paths(root)
     run_git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD").first.split("\0").sort
   end
@@ -143,6 +145,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies task scope and invalid arguments; assertion failures raise.
   def test_task_scope_and_invalid_arguments
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "one\n")
@@ -164,6 +167,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies all sweeps tracked untracked staged and deletions but not ignored; assertion failures raise.
   def test_all_sweeps_tracked_untracked_staged_and_deletions_but_not_ignored
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "changed\n")
@@ -180,6 +184,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies all three dry runs are read only; assertion failures raise.
   def test_all_three_dry_runs_are_read_only
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "pending\n")
@@ -235,6 +240,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies partial staging of selected file blocks narrow publication; assertion failures raise.
   def test_partial_staging_of_selected_file_blocks_narrow_publication
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "staged\n")
@@ -248,6 +254,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies identity branch divergence and unpublished history fail closed; assertion failures raise.
   def test_identity_branch_divergence_and_unpublished_history_fail_closed
     with_repo do |root, bare|
       File.write(File.join(root, "state", "T1.yml"), "pending\n")
@@ -295,6 +302,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies commit failure does not claim publication; assertion failures raise.
   def test_commit_failure_does_not_claim_publication
     with_repo do |root, _bare|
       prompt = File.join(root, "state", "prompts", "T1-20261008T120000Z.txt")
@@ -314,6 +322,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies detached missing remote and dry run blocker; assertion failures raise.
   def test_detached_missing_remote_and_dry_run_blocker
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "pending\n")
@@ -327,6 +336,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies all rejects untracked nested git checkout; assertion failures raise.
   def test_all_rejects_untracked_nested_git_checkout
     with_repo do |root, _bare|
       nested = File.join(root, "nested")
@@ -358,6 +368,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies parallel publish calls serialize and do not duplicate commit; assertion failures raise.
   def test_parallel_publish_calls_serialize_and_do_not_duplicate_commit
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), "pending\n")
@@ -376,6 +387,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies rename crossing narrow scope blocks but all accepts; assertion failures raise.
   def test_rename_crossing_narrow_scope_blocks_but_all_accepts
     with_repo do |root, _bare|
       metadata = File.join(root, ".DS_Store")
@@ -406,6 +418,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies status is read only and repository operation blocks publish; assertion failures raise.
   def test_status_is_read_only_and_repository_operation_blocks_publish
     with_repo do |root, _bare|
       File.write(File.join(root, "state", "T1.yml"), YAML.dump({ "id" => "T1" }))
@@ -425,6 +438,7 @@ class PublisherTest < Minitest::Test
     end
   end
 
+  # Verifies remote push race preserves local commit without reconciliation; assertion failures raise.
   def test_remote_push_race_preserves_local_commit_without_reconciliation
     with_repo do |root, bare|
       other = File.join(File.dirname(root), "other")

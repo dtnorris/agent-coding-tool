@@ -517,6 +517,26 @@ class RunEvidenceTest < Minitest::Test
     JSON.parse(output)
   end
 
+  # Observes live public status within one deadline. Only the exact nonblocking
+  # busy refusal is retried; persistent contention, other failures and bad JSON
+  # still fail. Each fresh CLI keeps the genuine ledger and child-process guard.
+  def cli_status_when_available(path, seconds: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    busy = "ERROR: evidence session refused (session.busy); check private grant, exact run identity and session status\n"
+    loop do
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      flunk "CLI status remained busy after #{seconds}s" unless remaining.positive?
+      output, error, status = ChildProcesses.capture("evidence_cli",
+        arguments: ["plain", "evidence", "status", "--session", path], seconds: remaining)
+      unless status.exitstatus == 2 && output.empty? && error == busy
+        assert status.success?, "CLI status failed: #{error}"
+        return JSON.parse(output)
+      end
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      IO.select(nil, nil, nil, [0.01, remaining].min) if remaining.positive?
+    end
+  end
+
   # Yields live pipes and a genuine waiter for one exact public evidence child.
   # The caller owns EOF/signals and bounded waits; the permit preserves coverage.
   def evidence_process(*arguments, mode: "plain", environment: {}, cwd: nil, &block)
@@ -677,44 +697,8 @@ class RunEvidenceTest < Minitest::Test
   # The client key appears only in this declared synthetic assertion and .env.
   def tunnel_fixture
     client = File.join(@temporary, "fixture-client")
-    source = <<~'RUBY'
-      require "json"
-      require "socket"
-      require "open3"
-      require "shellwords"
-      exit 41 unless ENV["CONTROL_PLANE_API_KEY"] == "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
-      exit 42 if ENV.key?("OPENAI_TUNNEL_KEY") || ENV.key?("OTHER_SECRET")
-      config = JSON.parse(File.binread(ARGV.fetch(2)))
-      capacity = config.dig("admin_ui", "log_buffer_events")
-      exit 45 unless capacity.is_a?(Integer) && capacity.positive?
-      command = Shellwords.split(config.fetch("mcp").fetch("commands").first.fetch("command"))
-      exit 43 unless command.take(2) == ["/usr/bin/env", "-i"]
-      exit 44 if command.any? { |argument| argument.include?(ENV.fetch("CONTROL_PLANE_API_KEY")) }
-      input, output, waiter = Open3.popen2(*command)
-      wire = UNIXServer.new("wire")
-      health = TCPServer.new("127.0.0.1", 0)
-      Thread.new do
-        loop do
-          connection = health.accept
-          connection.gets
-          connection.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-          connection.close
-        end
-      end
-      File.write(config.fetch("health").fetch("url_file"), "http://127.0.0.1:#{health.addr[1]}\n", perm: 0o600)
-      connection = wire.accept
-      while (frame = connection.gets)
-        input.write(frame)
-        input.flush
-        response = output.gets
-        break unless response
-        connection.write(response)
-      end
-      input.close
-      waiter.value
-    RUBY
-    RubyVM::InstructionSequence.compile(source)
-    File.write(client, "#!#{RbConfig.ruby}\n" + source, perm: 0o700)
+    source = File.binread(File.join(ChildProcesses::FIXTURES, "tunnel_client.rb"))
+    File.write(client, source, perm: 0o700)
     @dotenv = File.join(@temporary, ".env")
     File.write(@dotenv, "OPENAI_TUNNEL_KEY='ACT29_SYNTHETIC_CREDENTIAL_7fQ9'\nOTHER_SECRET=unrelated-sentinel\n", perm: 0o600)
     @runtime = File.join(@temporary, "shared-runtime")
@@ -804,7 +788,7 @@ class RunEvidenceTest < Minitest::Test
       end
       bad = exchange.call(rpc("tools/call", {}, meta: metadata(tool: true).merge("unknown" => "private-context")))
       assert_equal "metadata.unknown_member", bad.dig("error", "data", "stage")
-      assert_equal 2, cli("status", "--session", path)["selected_runs"].length
+      assert_equal 2, cli_status_when_available(path)["selected_runs"].length
       assert_equal "stopped", cli("stop", "--session", path)["status"]
     end
     adapter_diagnostics = File.binread(File.join(@temporary, "tunnel-first", "adapter-diagnostics.jsonl"))

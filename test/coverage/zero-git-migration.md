@@ -110,12 +110,34 @@ Deletion or replacement refuses before spawn, including when `unsetenv_others`
 requires the caller to forward the context explicitly. Approved coverage children
 are verified through active instrumentation and fresh execution evidence.
 Inherited environment changes and removal of bootstrap cannot borrow a permit.
-No non-Ruby executable is currently allowlisted. Add a new executable boundary
-only with explicit owner-reviewed descendant-protection requirements.
+New executable boundaries require explicit owner-reviewed descendant protection.
+The operator approved only the disposable candidate's two finite tunnel native
+capabilities: `/bin/ps -axo comm=` and retained-leader `pid=,pgid=,stat=` inventory,
+and literal `/usr/bin/env -i` for the exact bound ACT evidence serve child.
+`support/tunnel_processes.rb` binds binary/source bytes, exact callsite, argv,
+environment/options, issuing process/thread, cwd, context bytes and single use.
+The private reviewed client receives the synthetic credential; the real clean
+trampoline passes only runtime settings and reviewed guard/coverage/audit
+instrumentation to the adapter. Configuration/session/source drift refuses.
+Real pipes/status, owner fork, READY, EOF, signals and cleanup remain production
+operations. This approval grants no other executable, Git, host or publication
+access. Native C-entry observation remains active for cached bypasses.
+
+The continuation adds `ForkPermit` for one block-form real owner fork, bound
+by reviewed source hash and exact line, process/thread, cwd and environment.
+`with_fork_permit` authorizes one wrapper-mediated native fork entry; cached,
+non-block, changed and reused calls refuse. Descendant execution guards persist.
+With coverage active the child clears inherited counters, registers fresh
+identity/activity evidence before entering the block, and completes it before
+owner `exit!`. Parent counters and all-file layouts remain unchanged. The focused
+`verify_fork_coverage.rb` is component evidence, not public tunnel acceptance.
+The separate operator approval above resolves only the two native boundaries;
+`ForkPermit` itself grants no executable permission. `verify_tunnel_processes.rb`
+retains request/context/source/cached-entry and single-use refusal controls.
 
 Native C-entry observation rejects cached original Process/Kernel/IO methods
 that bypass Ruby wrappers; the approved wrapper authorizes only its single
-checked spawn C entry. Kernel system/exec/backticks/fork/daemon, Process equivalents,
+checked spawn C entry. Kernel system/exec/backticks/daemon, undeclared fork and Process equivalents,
 IO.popen and PTY spawn remain denied. Pipe-capable IO class methods/Kernel.open
 require checked String file paths. Their cached originals are conservatively
 denied even for file reads; normal wrapper-mediated file reads preserve bytes.
@@ -230,3 +252,63 @@ existing executable or symlink, changed request or reuse. The verifier observes
 the native ENOENT object on capture3, grouped and timed paths; injected exceptions
 and missing-cwd probes remain separate. The companion guard patch requires
 its owner's review; no exception to zero-Git or full acceptance is implied.
+
+## Preserved main repair continuation
+
+The Rake feedback context uses the existing `SourceIdentity` reader for actual
+source provenance; Git version remains explicitly unavailable. The runner uses
+one hash-bound `suite_entry.rb` instead of inline Ruby. Its suite-only reporter
+is removed from descendant RUBYOPT after loading, while guard/coverage remain.
+Ordinary launches install the stronger all-process boundary before the selective
+guard. Feedback verifier children are fixed Ruby modes, including real signal,
+watchdog and descendant controls. Their fixed synthetic coverage denominator is
+registered alongside the unchanged inherited real context, with disjoint roots;
+it neither replaces real instrumentation nor contributes nodes to its denominator.
+
+`memory_git/reset_fixtures.rb` is opt-in only for the reset integration fixture.
+Native preparation occurs outside protected invocations and records exact commit,
+index, pack and idx bytes for finite seed/binary/staged/unmerged/mode states.
+Unknown states/requests refuse. Observations never repair corrupt physical files.
+Archive verification requires native file hashes, index checksum, independently
+parsed no-delta pack object IDs/framing/checksum and complete tree/commit closure.
+Corruption controls and separately retained stores support independent native
+fsck/stage reconstruction outside tests. No protected invocation executes Git;
+there is no native fallback or general index/pack generator. Fixture-only direct
+update-index uses the same explicit finite transport. Warm lsof retains its exact
+declared external fixture response with native Ruby status. Existing scope,
+retirement, bytes/modes, negative controls and all case identities remain.
+
+Optional `ACT_EXECUTION_AUDIT` records per-PID boundary decisions and bound
+executable names without argv/environment secrets. This remains internal Ruby
+boundary evidence, not independent OS tracing or protection against arbitrary
+native extensions. Full behavior, all-source coverage, runtime comparability and
+operator acceptance remain separate required gates.
+
+The exact wrapper attempt exposed two additional existing harness violations:
+the installed Bundler Rake shell shim required exec, and seven native-contract
+cases still launched Git. The guard refused both, including Bundler's diagnostic
+Git-version lookup. The candidate's `test/support/bin/rake` is a direct Ruby
+entry selected by invocation-local PATH and loaded in-process by Bundler; no
+exec capability or host configuration was added. Feedback source provenance now
+hashes that entry and records PATH. Native-contract identities/assertions now
+consume finite independent world authorities and a hash-bound native-prepared
+rename transcript; actual byte/signal/timeout and ENOENT controls still use
+reviewed real Ruby/absent-executable permits. Unknown Git never falls back.
+
+The fully instrumented aggregate exposed two retry/reset fixture cases whose
+broker outlived the default 20-second infrastructure lease. Only their shared
+fixture now explicitly requests one nonrenewing 60-second lease; the broker's
+default and its two-second request deadline, all accepted policy budgets/floors,
+and the independent aggregate 500-second deadline remain unchanged. The two
+previously failing cases pass under full instrumentation before the aggregate
+rerun. Runner-produced per-case files are retained as `cases.result` beside the
+coverage evidence, including on failed commands, before temporary cleanup.
+
+`verify_suite_processes.rb` retains immutability controls for the ordinary
+bootstrap reorder. Its inserted preload path and replacement RUBYOPT/effective
+environment strings stay frozen, preventing in-place mutation of both requested
+and expected envelope bytes through an alias.
+
+The immutability controls also cover caller-owned fork/native source-digest
+strings. Permissions duplicate and freeze source identities and every file-map
+digest at issuance; mutating caller inputs cannot rebind already-reviewed bytes.

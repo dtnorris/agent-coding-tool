@@ -5,6 +5,7 @@ require_relative "launcher_support"
 require "stringio"
 require "timeout"
 
+# Exercises simultaneous guarded launchers against shared modeled Git authority.
 class ParallelLaunchTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
@@ -50,11 +51,15 @@ class ParallelLaunchTest < Minitest::Test
     nil
   end
 
-  def test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint
+  # Cold public prepare/launch must admit a verified active sibling by default.
+  # Cold guarded CLIs share main's modeled Git authority and retain real workers.
+  def test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint
     fixture(git: true, process: true, mutable_remote: true) do
       write_task(@data, id: "B", repositories: { "alias" => { "access" => "write", "path" => @ordinary } })
-      @coordinator.prepare("T")
-      @coordinator.prepare("B")
+      %w[T B].each do |id|
+        _output, error, status = cold_launcher("prepare", id)
+        assert status.success?, error
+      end
       write_fake("sleep")
       first_host = spawn_cli_worker("T")
       first_pid = nil
@@ -77,9 +82,11 @@ class ParallelLaunchTest < Minitest::Test
           assert_match(/worker process parent\/group changed/, error.message)
         end
         write_fake("success")
-        assert_equal 0, Timeout.timeout(20) {
-          launcher(real_sandbox_probe: true).launch("B", allow_write_collision: true)
+        _output, error, status = Timeout.timeout(20) {
+          cold_launcher("launch", "B", "--codex")
         }
+        assert status.success?, error
+        assert_includes error, "verified ACT-managed overlap at launch (default_verified_managed)"
 
         second = handoff("B")
         assert_equal "running", handoff("T").fetch("status")
@@ -92,6 +99,8 @@ class ParallelLaunchTest < Minitest::Test
         refute_includes second.fetch("argv"), running.fetch("workspace")
         assert_includes File.binread(second.fetch("stdin_path")), running.fetch("workspace")
         authorization = second.fetch("collision_authorization")
+        assert_equal "default_verified_managed", authorization.fetch("admission_basis")
+        refute authorization.key?("unverified_manual_conflicts")
         assert_equal "B", authorization.fetch("task_id")
         assert_equal 1, authorization.fetch("attempt")
         assert_equal ["T"], authorization.fetch("verified_conflicts").map { |row| row.fetch("task_id") }
@@ -137,10 +146,12 @@ class ParallelLaunchTest < Minitest::Test
         record = JSON.parse(File.binread(record_path))
         record.fetch("entries").first["path"] = @ordinary
         File.binwrite(record_path, JSON.generate(record))
-        error = assert_raises(AgentCodingTool::InvalidState) {
-          launcher.launch("B", allow_write_collision: true)
-        }
-        assert_match(/partial or conflicting ownership/, error.message)
+        [false, true].each do |explicit|
+          error = assert_raises(AgentCodingTool::InvalidState) {
+            launcher.launch("B", allow_write_collision: explicit)
+          }
+          assert_match(/partial or conflicting ownership/, error.message)
+        end
         assert_equal "running", handoff("T").fetch("status")
         refute @store.load("B")["started_at"]
       ensure
@@ -149,6 +160,7 @@ class ParallelLaunchTest < Minitest::Test
     end
   end
 
+  # Verifies advanced main makes parallel prepared baselines incompatible; assertion failures raise.
   def test_advanced_main_makes_parallel_prepared_baselines_incompatible
     fixture(git: true, process: true, mutable_remote: true) do
       write_task(@data, id: "B", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
@@ -163,10 +175,12 @@ class ParallelLaunchTest < Minitest::Test
       git("commit", "-m", "advance main", chdir: @ordinary)
         git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         @coordinator.prepare("B")
-        error = assert_raises(AgentCodingTool::InvalidState) {
-          launcher.launch("B", allow_write_collision: true)
-        }
-        assert_match(/incompatible prepared baseline/, error.message)
+        [false, true].each do |explicit|
+          error = assert_raises(AgentCodingTool::InvalidState) {
+            launcher.launch("B", allow_write_collision: explicit)
+          }
+          assert_match(/incompatible prepared baseline/, error.message)
+        end
         assert_equal "STALE", @coordinator.status("T").fetch("status")
         refute @store.load("B")["started_at"]
       ensure

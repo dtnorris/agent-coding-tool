@@ -332,6 +332,8 @@ module AgentCodingTool
     # Reserves a prepared task after dependency/freshness checks; returns its state.
     # Manual overlaps are advisory, never verified isolation. Invalid input raises
     # InvalidState/RepositoryError before any state write; all callers share a lock.
+    # Managed launch evidence records default admission separately from explicit
+    # permission; historical launch authorizations still require that permission.
     # Opted-in planning verifies full skill material and saved prompt bytes first.
     def start(id, allow_write_collision: false, expected_collisions: nil, launch_authorization: nil, reservation_lock: nil, force: false, reason: nil)
       if force
@@ -390,10 +392,15 @@ module AgentCodingTool
         raise InvalidState, "#{id}: write reservations changed during launch; inspect and retry"
       end
       manual_conflicts = launch_authorization&.fetch("unverified_manual_conflicts", []) || []
-      if launch_authorization && (!allow_write_collision || (collisions.empty? && manual_conflicts.empty?) ||
-                                  launch_authorization["task_id"] != id ||
-                                  launch_authorization["conflicts"] != collisions)
-        raise InvalidState, "#{id}: invalid launch collision authorization"
+      if launch_authorization
+        basis = launch_authorization["admission_basis"]
+        expected_basis = allow_write_collision ? "explicit_permission" : "default_verified_managed"
+        unless (basis == expected_basis || (allow_write_collision && !launch_authorization.key?("admission_basis"))) &&
+               (allow_write_collision || (manual_conflicts.empty? && launch_authorization.fetch("verified_conflicts", []).any?)) &&
+               !(collisions.empty? && manual_conflicts.empty?) &&
+               launch_authorization["task_id"] == id && launch_authorization["conflicts"] == collisions
+          raise InvalidState, "#{id}: invalid launch collision authorization"
+        end
       end
       collisions = (collisions + manual_conflicts.map { |row|
         row.slice("task_id", "status").merge("repositories" => row.fetch("repositories").dup)
@@ -410,7 +417,7 @@ module AgentCodingTool
             state.fetch("snapshot").fetch(name).slice("remote_url", "branch") }
         }
       end
-      if allow_write_collision && !collisions.empty?
+      if (allow_write_collision || launch_authorization) && !collisions.empty?
         state["write_collision_override"] = {
           "allowed_at" => started_at,
           "conflicts" => collisions

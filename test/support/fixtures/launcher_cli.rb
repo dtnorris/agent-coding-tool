@@ -14,6 +14,8 @@ context.instance_variable_set(:@ordinary, File.join(root, 'ordinary'))
 context.instance_variable_set(:@fake, File.join(root, 'codex'))
 context.instance_variable_set(:@store, AgentCodingTool::StateStore.new(File.join(data, 'state')))
 context.instance_variable_set(:@memory_world, MemoryGit::Session.transport)
+# Cold overlap checks use the real worker's recorded PID/parent/group evidence.
+context.instance_variable_set(:@real_process, true)
 context.instance_variable_set(:@fake_mode, JSON.parse(File.binread(File.join(root, 'fake-settings.json'))).fetch('mode'))
 context.instance_variable_set(:@fake_version, 'codex-cli 0.162.1')
 context.instance_variable_set(:@fake_help, '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model')

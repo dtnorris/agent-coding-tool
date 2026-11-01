@@ -63,10 +63,19 @@ module FeedbackRuntime
   # Output goes to regular files so an inherited pipe cannot trap reader cleanup.
   # Returns actual status, timeout, elapsed and cleanup facts. Spawn/interrupt
   # exceptions propagate unchanged after bounded owned-process cleanup.
-  def self.capture(argv, environment:, root:, seconds:, stdout_path:, stderr_path:)
+  # An optional fresh fixture readiness file separates bounded startup from
+  # the hang deadline; missing readiness raises after the same owned cleanup.
+  def self.capture(argv, environment:, root:, seconds:, stdout_path:, stderr_path:, ready_path: nil, startup_seconds: nil)
     raise ArgumentError, "positive finite hang deadline required" unless seconds.is_a?(Numeric) && seconds.finite? && seconds.positive?
 
+    if ready_path
+      raise ArgumentError, "positive finite startup deadline required" unless startup_seconds.is_a?(Numeric) && startup_seconds.finite? && startup_seconds.positive?
+      raise ArgumentError, "readiness file must be absent before capture" if File.exist?(ready_path)
+    end
+
     started = clock
+    ready = ready_path.nil?
+    deadline = started + (ready ? seconds : startup_seconds)
     pid = nil
     status = nil
     expired = false
@@ -86,7 +95,15 @@ module FeedbackRuntime
           begin
             until finished
               discover(owned)
-              if clock - started >= seconds
+              now = clock
+              unless ready
+                raise "feedback: child readiness deadline exceeded" if now >= deadline
+                if File.file?(ready_path)
+                  ready = true
+                  deadline = now + seconds
+                end
+              end
+              if ready && now >= deadline
                 expired = true
                 terminate(owned, pid)
                 break

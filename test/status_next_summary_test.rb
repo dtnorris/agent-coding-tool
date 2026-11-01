@@ -252,6 +252,13 @@ class StatusNextSummaryTest < Minitest::Test
       explicit = output_for(dir, coordinator, %w[status A --full])
       assert_includes explicit, "last verified ACT launch; current liveness unavailable"
       assert_includes explicit, "manual override with PEER (IN_FLIGHT); observed 2026-01-01T00:00:00Z; not a live isolation check"
+      %w[default_verified_managed explicit_permission].each do |basis|
+        state["write_collision_override"]["launch"]["admission_basis"] = basis
+        store.write("A", state)
+        detail = output_for(dir, coordinator, %w[status A --full])
+        assert_includes detail, basis == "default_verified_managed" ? "default managed admission" : "explicit permission"
+        assert_includes detail, "current liveness unavailable"
+      end
       state["write_collision_override"]["launch"]["unverified_manual_conflicts"] = true
       store.write("A", state)
       assert_includes output_for(dir, coordinator, %w[status --full]), "liveness unknown; isolation unverified"

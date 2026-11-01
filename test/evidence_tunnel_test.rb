@@ -25,7 +25,7 @@ class EvidenceTunnelTest < Minitest::Test
     @session = AgentCodingTool::EvidenceSession.new(@path)
     @out, @err = StringIO.new, StringIO.new
     @tunnel = AgentCodingTool::EvidenceTunnel.new(session: @path, grant: grant_path,
-      env_file: nil, client: "/unused-client", runtime_dir: @temporary, out: @out, err: @err)
+      env_file: nil, client: "/unused-client", runtime_dir: @temporary, out: @out, err: @err, spawn: method(:fake_spawn))
     @tunnel.instance_variable_set(:@session, @session)
     @cleaned = []
     cleaned = @cleaned
@@ -75,11 +75,9 @@ class EvidenceTunnelTest < Minitest::Test
       @keepalive.closed? ? [[watch], [], []] : nil
     end
     Signal.stub(:trap, ->(name, handler = nil, &block) { signals[name] = handler || block }) do
-      Process.stub(:spawn, method(:fake_spawn)) do
-        Process.stub(:clock_gettime, ->(_clock) { @clock }) do
-          Time.stub(:now, -> { @wall }) do
-            IO.stub(:select, wait) { @exit_code = @tunnel.send(:own, watch, nil) }
-          end
+      Process.stub(:clock_gettime, ->(_clock) { @clock }) do
+        Time.stub(:now, -> { @wall }) do
+          IO.stub(:select, wait) { @exit_code = @tunnel.send(:own, watch, nil) }
         end
       end
     end

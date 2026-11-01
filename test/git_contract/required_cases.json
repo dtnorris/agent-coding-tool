@@ -33,5 +33,13 @@
     "NativeGitContract#test_native_process_observer",
     "NativeGitContract#test_nul_status_parser_and_refusal",
     "NativeGitContract#test_strict_replay"
+  ],
+  "test/git_contract/progress_contract.rb": [
+    "ProgressContract#test_live_redirected_progress_before_child_exit",
+    "ProgressContract#test_failures_skips_signals_and_corrupt_evidence_remain_failures",
+    "ProgressContract#test_plans_follow_real_selections",
+    "ProgressContract#test_rake_plans_aliases_and_multiple_tasks",
+    "ProgressContract#test_partial_stale_and_duplicate_events",
+    "ProgressContract#test_timeout_and_interrupt_stop_observer"
   ]
 }

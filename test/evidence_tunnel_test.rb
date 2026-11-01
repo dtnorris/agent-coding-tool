@@ -315,7 +315,12 @@ class EvidenceTunnelTest < Minitest::Test
     Process.stub(:getpgid, ->(_target) { raise Errno::ESRCH }) do
       Process.stub(:kill, ->(signal, target) { signals << [signal, target]; 1 }) do
         Process.stub(:waitpid, ->(target) { reaped << target; target }) do
-          Open3.stub(:capture3, [output, error, status]) { result = cleanup.call(pid) }
+          observation = lambda do |*argv, **options|
+            assert_equal [@tunnel.send(:clean_environment), "/bin/ps", "-axo", "pid=,pgid=,stat="], argv
+            assert_equal({ unsetenv_others: true }, options)
+            [output, error, status]
+          end
+          MemoryGit::Session.with_capture(observation) { result = cleanup.call(pid) }
         end
       end
     end

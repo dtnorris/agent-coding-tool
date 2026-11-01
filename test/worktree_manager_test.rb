@@ -5,9 +5,10 @@ require_relative "recovery_observations"
 require "minitest/mock"
 require "stringio"
 
-# Exercises production ownership against disposable native Git, with declared
-# observations only for decisions that refuse before any native mutation.
+# Exercises production ownership against independent modeled Git authority and
+# real filesystem resources, with explicit observations for early refusals.
 class WorktreeManagerTest < Minitest::Test
+  include TestHelpers
   include RecoveryObservations
 
   def git(*args, chdir: nil)
@@ -16,29 +17,37 @@ class WorktreeManagerTest < Minitest::Test
     stdout.strip
   end
 
+  # Yields private files and independent modeled authority; verifies faults on cleanup.
   def fixture(git: true)
     Dir.mktmpdir("act-worktrees-") do |root|
       @root = File.realpath(root)
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = @root
       @ordinary = File.join(@root, "ordinary")
-      seed = TestHelpers.git_seed if git
-      @remote = git ? File.join(seed.fetch(:root), "remote.git") : File.join(@root, "remote.git")
+      @remote = File.join(@root, "remote.git")
       @record = File.join(@root, "private", "worktrees.json")
       @visible = File.join(@root, "ACT-Worktrees")
       FileUtils.mkdir_p(File.dirname(@record))
+      @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
       if git
-        # The seed remote is immutable in this suite; each test owns its copied
-        # ordinary checkout, refs, worktrees and ownership record.
-        FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), @ordinary)
-        @base = seed.fetch(:base)
+        @memory_checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @base = @memory_checkout.head
       else
-        # These failures occur before Git identity is consulted.
         FileUtils.mkdir_p([@ordinary, @remote])
         @base = "a" * 40
       end
       @snapshot = { "repo" => { "path" => @ordinary, "remote" => "origin", "remote_url" => @remote,
                                   "branch" => "main", "pushed_sha" => @base } }
       @task = { "repositories" => { "repo" => { "access" => "write" } } }
-      yield
+      MemoryGit::Session.with(@memory_world) do
+        MemoryGit::Session.with_capture(lambda { |*argv, **options|
+          raise MemoryGit::Mismatch, "undeclared worktree observation" unless @memory_world && argv.first == "git" && options.keys == [:chdir]
+          @memory_world.call(argv, cwd: options.fetch(:chdir)).to_ary
+        }) { yield }
+      end
+    ensure
+      ENV['TMPDIR'] = previous_tmpdir
+      @memory_world&.verify!
     end
   end
 
@@ -122,12 +131,14 @@ class WorktreeManagerTest < Minitest::Test
     path
   end
 
+  # Verifies visible branch exact base and dirty divergent ordinary checkout; assertion failures raise.
   def test_visible_branch_exact_base_and_dirty_divergent_ordinary_checkout
     fixture do
       File.write(File.join(@ordinary, "file.txt"), "local\n")
-      git("commit", "-am", "local", chdir: @ordinary)
+      git("add", "-A", chdir: @ordinary)
+      git("commit", "-m", "local", chdir: @ordinary)
       File.write(File.join(@ordinary, "untracked"), "untouched")
-      before = [git("rev-parse", "HEAD", chdir: @ordinary), git("status", "--porcelain", chdir: @ordinary),
+      before = [git("rev-parse", "HEAD", chdir: @ordinary), git("status", "--porcelain", "--untracked-files=all", chdir: @ordinary),
                 File.binread(File.join(@ordinary, "untracked"))]
       aliased_snapshot = Marshal.load(Marshal.dump(@snapshot))
       aliased_snapshot.fetch("repo")["path"] = system_alias(@ordinary)
@@ -138,7 +149,7 @@ class WorktreeManagerTest < Minitest::Test
       assert_equal @visible, JSON.parse(File.read(@record)).fetch("root")
       assert_equal "act/NC-02A/attempt-1", git("branch", "--show-current", chdir: entry.fetch("path"))
       assert_equal @base, git("rev-parse", "HEAD", chdir: entry.fetch("path"))
-      assert_equal before, [git("rev-parse", "HEAD", chdir: @ordinary), git("status", "--porcelain", chdir: @ordinary),
+      assert_equal before, [git("rev-parse", "HEAD", chdir: @ordinary), git("status", "--porcelain", "--untracked-files=all", chdir: @ordinary),
                             File.binread(File.join(@ordinary, "untracked"))]
       preflight = manager.cleanup_preflight.first
       assert_equal entry.fetch("path"), preflight.fetch("path")
@@ -150,10 +161,11 @@ class WorktreeManagerTest < Minitest::Test
     end
   end
 
+  # Verifies pinned detached reader and cleanup blocker; assertion failures raise.
   def test_pinned_detached_reader_and_cleanup_blocker
     fixture do
       reader = File.join(@root, "reader")
-      FileUtils.cp_r(@ordinary, reader)
+      @memory_world.copy(@memory_checkout, path: reader)
       @snapshot["dep"] = { "path" => reader, "remote" => "origin", "remote_url" => @remote,
                             "branch" => "main", "pushed_sha" => @base }
       @task["repositories"]["dep"] = { "access" => "read_only" }
@@ -224,7 +236,8 @@ class WorktreeManagerTest < Minitest::Test
     fixture do
       branch_manager = AgentCodingTool::WorktreeManager.new(root: @visible, record_path: File.join(@root, "private", "branch.json"))
       entry = branch_manager.create(task_id: "B", attempt: 1, task: @task, snapshot: @snapshot).fetch("entries").first
-      git("switch", "-c", "foreign", chdir: entry.fetch("path"))
+      git("branch", "foreign", chdir: entry.fetch("path"))
+      @memory_checkout.repository.worktrees.fetch(entry.fetch("path")).head_ref = "refs/heads/foreign"
       assert_raises(AgentCodingTool::InvalidState) { branch_manager.inspect! }
       assert_equal "foreign", git("branch", "--show-current", chdir: entry.fetch("path"))
     end
@@ -256,6 +269,7 @@ class WorktreeManagerTest < Minitest::Test
     end
   end
 
+  # Verifies fresh process inspection and cleanup dry run do not mutate; assertion failures raise.
   def test_fresh_process_inspection_and_cleanup_dry_run_do_not_mutate
     fixture do
       data = File.join(@root, "data")
@@ -282,7 +296,7 @@ class WorktreeManagerTest < Minitest::Test
         "preparation" => @snapshot, "status" => "exited",
         "prompt_sha256" => Digest::SHA256.hexdigest(prompt), "prompt_bytes" => prompt.bytesize))
       File.write(File.join(entry.fetch("path"), "candidate"), "keep")
-      before = [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
+      before = [File.binread(record), git("status", "--porcelain", "--untracked-files=all", chdir: entry.fetch("path"))]
       out, err = StringIO.new, StringIO.new
       cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: data, out: out, err: err)
       assert_equal 0, cli.run(%w[worktrees T])
@@ -291,7 +305,7 @@ class WorktreeManagerTest < Minitest::Test
       out.rewind
       assert_equal 0, cli.run(%w[cleanup T --dry-run])
       assert_includes JSON.parse(out.string).fetch("attempts").first.first.fetch("blockers"), "worktree contains changes"
-      assert_equal before, [File.binread(record), git("status", "--porcelain", chdir: entry.fetch("path"))]
+      assert_equal before, [File.binread(record), git("status", "--porcelain", "--untracked-files=all", chdir: entry.fetch("path"))]
       assert_equal 2, cli.run(%w[cleanup T])
     end
   end

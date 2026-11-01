@@ -25,7 +25,7 @@ module RecoveryObservations
   # refusals asserted inside the block. Filesystem operations are not replaced.
   def with_recovery_observations(observations)
     replay = GitContract::Replay.new(observations)
-    result = Open3.stub(:capture3, replay.method(:capture3)) { yield }
+    result = MemoryGit::Session.with_capture(replay.method(:capture3)) { yield }
     assert replay.verify!
     result
   end

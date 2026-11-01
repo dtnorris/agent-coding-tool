@@ -1,0 +1,17 @@
+{
+  "sha256": "c3d2af91fc0dd2ae19cbed90c65a326497a0842ab071c8523f1a449bde1995ee",
+  "before": [],
+  "after": [
+    {
+      "path_hex": "2e44535f53746f7265",
+      "bytes_hex": "686973746f726963616c6c79207265636f7264656400ff",
+      "mode": "100644"
+    }
+  ],
+  "paths_hex": [
+    "2e44535f53746f7265"
+  ],
+  "numstat_hex": "2d092d092e44535f53746f726500",
+  "stat": " .DS_Store | Bin 0 -> 23 bytes\n",
+  "patch_base64": "ZGlmZiAtLWdpdCBhLy5EU19TdG9yZSBiLy5EU19TdG9yZQpuZXcgZmlsZSBtb2RlIDEwMDY0NAppbmRleCAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwLi5kNzUxZWEwZTJjYzAwMmMyMDlkMmY1NTFiZWMxNDdlNWJjNTcyZTRlCkdJVCBiaW5hcnkgcGF0Y2gKbGl0ZXJhbCAyMwplY21kMUVFSDIzfSUxbG5vJCpFSypOPT9vJE49WiMmX3p3Vlp7dDE1bwoKbGl0ZXJhbCAwCkhjbVY/ZDAwMDAxCgo="
+}

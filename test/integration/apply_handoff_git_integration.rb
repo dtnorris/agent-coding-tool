@@ -2,8 +2,11 @@
 
 require_relative "../apply_handoff_support"
 require "pty"
+require_relative "../support/apply_fixture_world"
 require "shellwords"
 require "timeout"
+require_relative "../support/memory_git/broker"
+require_relative "../support/child_processes"
 
 # Public CLI integration with real local Git, terminal consent and sibling
 # validation. Every mutation is confined to disposable, locally remoted repos.
@@ -12,22 +15,70 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   CLI = File.expand_path("../../bin/agent-coding-tool", __dir__)
   include ApplyHandoffFixtures
 
+  # Pins the original new-task text transition independently of later working
+  # bytes so repeat application produces a Git refusal rather than codec drift.
+  def fixture(**options)
+    super(**options) do
+      @memory_world.register_patch(@memory_world.send(:patch_record, @patch, {}))
+      yield
+    end
+  end
+
+  # Uses the same fresh model with declared display/refusal observations only.
+  # Registers native-qualified fixed transitions before admitting a cold broker.
+  def with_memory_world(root)
+    world = ApplyFixtureWorld.new(root: root)
+    records = JSON.parse(File.binread(File.expand_path('../support/memory_git/fixtures/apply-transitions.json', __dir__)))
+    records.each do |descriptor|
+      trees = %w[before after].to_h do |side|
+        [side.to_sym, descriptor.fetch(side).to_h { |entry|
+          [[entry.fetch('path_hex')].pack('H*'), MemoryGit::Entry.new([entry.fetch('bytes_hex')].pack('H*'), mode: entry.fetch('mode'))] }]
+      end
+      world.register_patch(MemoryGit::PatchCase.new(**trees,
+        bytes: descriptor.fetch('patch_base64').unpack1('m0'), sha256: descriptor.fetch('sha256'),
+        paths: descriptor.fetch('paths_hex').map { |hex| [hex].pack('H*') },
+        numstat: [descriptor.fetch('numstat_hex')].pack('H*'), stat: descriptor.fetch('stat')))
+    end
+    MemoryGit::Session.with(world) { yield world }
+  ensure
+    world&.verify!
+  end
+
+  # Normalizes only legacy fixture setup spellings to supported object operations.
+  # Production Git envelopes are unchanged and still checked by the shared world.
+  def git(path, *arguments, input: '')
+    if arguments == ['log', '-1', '--format=%s']
+      checkout = @apply_checkouts.fetch(path)
+      return checkout.repository.objects.fetch(checkout.head).message.lines.first
+    end
+    if arguments.first(4) == %w[diff-tree --no-commit-id --name-only -r] && !arguments.include?('-z')
+      return super(path, *arguments.first(4), '-z', *arguments.drop(4), input: input).tr("\0", "\n")
+    end
+    super
+  end
+
   # Runs the actual CLI from unrelated cwd, using a PTY for stdin only. Each
   # response/callback occurs after its displayed prompt; stdout/stderr remain raw.
   # A 20-second fixture hang ceiling kills only the owned child on driver failure.
-  def cli(responses = [], terminal: true, environment: {})
-    # Apply needs no prompt-renderer skill fixture. Do not load ACT into the
-    # synthetic validation children that intentionally receive signals or exec.
-    # Keep every other inherited option, including the real coverage preload.
-    skill_preload = "-r#{File.expand_path('../coding_skill_support.rb', __dir__)}"
-    rubyopt = Shellwords.join(Shellwords.split(ENV.fetch("RUBYOPT", "")).reject { |option| option == skill_preload })
-    env = { "AGENT_CODING_TOOL_DATA_DIR" => @a, "RUBYOPT" => rubyopt }.merge(environment)
-    return Open3.capture3(env, RbConfig.ruby, CLI, "apply", @json, chdir: @root, binmode: true, stdin_data: responses.join("\n")) unless terminal
+  def cli(responses = [], terminal: true, environment: {}, public_arguments: nil)
+    broker = MemoryGit::Broker.new(world: @memory_world, directory: @root, case_id: 'apply-public')
+    env = { "AGENT_CODING_TOOL_DATA_DIR" => @a }.merge(environment)
+    env["ACT_APPLY_TEST_PATH"] = environment["PATH"] if environment.key?("PATH")
+    approval = ChildProcesses.permit('apply_cli', arguments: public_arguments || ['apply', @json],
+      environment: env, endpoint: broker.endpoint, options: { chdir: @root })
+    unless terminal
+      return NoGitExecution.with_permit(approval) do
+        Open3.capture3(approval.environment, *approval.argv, **approval.options,
+          binmode: true, stdin_data: responses.join("\n"))
+      end
+    end
 
     PTY.open do |master, slave|
       Tempfile.create("apply-stdout") do |stdout|
         Tempfile.create("apply-stderr") do |stderr|
-          pid = Process.spawn(env, RbConfig.ruby, CLI, "apply", @json, chdir: @root, in: slave, out: stdout, err: stderr)
+          pid = NoGitExecution.with_permit(approval) do
+            Process.spawn(approval.environment, *approval.argv, **approval.options, in: slave, out: stdout, err: stderr)
+          end
           begin
             Timeout.timeout(20) do
               prompts = ["Apply patch?", "Run validation?", "Stage these files and commit?"]
@@ -55,6 +106,8 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         end
       end
     end
+  ensure
+    broker&.close
   end
 
   # Exercises exact baseline, drift, untracked files and both through real
@@ -101,7 +154,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
         if drift
           [@a, @b].each do |repo|
             File.write(File.join(repo, "current-only.txt"), "actual initial tree\n")
-            git(repo, "add", "current-only.txt")
+            git(repo, "add", "--", "current-only.txt")
             git(repo, "commit", "-m", "advance actual HEAD")
           end
           unless untracked
@@ -251,15 +304,15 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
   def test_preflight_artifact_git_and_symlink_refusals_are_read_only
     mutations = [
       -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "dirty\n") },
-      -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "file.txt") },
-      -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "file.txt"); File.write(File.join(@a, "file.txt"), "base\n") },
-      -> { git(@a, "update-index", "--index-info", input: "100644 #{git(@a, 'rev-parse', 'HEAD:file.txt').strip} 1\tfile.txt\n") },
-      -> { git(@a, "update-index", "--assume-unchanged", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
-      -> { git(@a, "update-index", "--skip-worktree", "file.txt"); File.write(File.join(@a, "file.txt"), "hidden edit") },
+      -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "--", "file.txt") },
+      -> { overlapping_proposal; File.write(File.join(@a, "file.txt"), "staged\n"); git(@a, "add", "--", "file.txt"); File.write(File.join(@a, "file.txt"), "base\n") },
+      -> { @memory_world.index_refusal = :unmerged },
+      -> { @memory_world.index_refusal = :assume; File.write(File.join(@a, "file.txt"), "hidden edit") },
+      -> { @memory_world.index_refusal = :skip; File.write(File.join(@a, "file.txt"), "hidden edit") },
       -> { File.write(@task, "occupied") },
       -> { FileUtils.rmdir(File.dirname(@task)); File.write(File.dirname(@task), "occupied parent") },
       -> { FileUtils.mkdir_p(@task); File.write(File.join(@task, "nested.txt"), "occupied child") },
-      -> { File.write(File.join(@a, ".git", "info", "exclude"), "tasks/NEW.yml\n") },
+      -> { @apply_checkouts.fetch(@a).ignored << "tasks/NEW.yml" },
       -> { @patch = @patch.sub("@@ -0,0 +1,9 @@", "@@ -0,0 +1,99 @@"); File.binwrite(@patch_path, @patch); @manifest["patch"]["sha256"] = Digest::SHA256.hexdigest(@patch); save_manifest },
     ]
     mutations.each_with_index do |mutation, index|
@@ -344,7 +397,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     end
     fixture do
       File.write(File.join(@b, ".gitignore"), "/tmp/\n")
-      git(@b, "add", ".gitignore")
+      git(@b, "add", "--", ".gitignore")
       git(@b, "commit", "-m", "ignore generated temporary output")
       @manifest["repositories"]["tool"]["baseline"] = git(@b, "rev-parse", "HEAD").strip
       cwd = File.join(@b, "tmp", "checks")
@@ -375,7 +428,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     end
     fixture(script: 'Dir.mkdir("coverage"); File.write("coverage/output", "generated")') do
       File.write(File.join(@b, ".gitignore"), "/coverage/\n")
-      git(@b, "add", ".gitignore")
+      git(@b, "add", "--", ".gitignore")
       git(@b, "commit", "-m", "ignore generated coverage")
       @manifest["repositories"]["tool"]["baseline"] = git(@b, "rev-parse", "HEAD").strip
       save_manifest
@@ -392,9 +445,11 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
     fixture(nonportable: true) do
       dirty_repositories
       initial, sibling = state(@a), state(@b)
-      hook = File.join(@a, ".git", "hooks", "pre-commit")
-      File.write(hook, "#!/bin/sh\necho 'fixture hook refused' >&2\nexit 1\n")
-      File.chmod(0o755, hook)
+      @memory_world.fault(argv: ['git', 'commit', '--only', '-m', @manifest.fetch('commit_message'), '--', *@manifest.fetch('paths')],
+        cwd: @a, env: { 'GIT_TERMINAL_PROMPT' => '0', 'GIT_PAGER' => 'cat' }, options: { pgroup: true }, phase: :before_effect, effect: :commit, skip: true)
+      @memory_world.fault(argv: ['git', 'commit', '--only', '-m', @manifest.fetch('commit_message'), '--', *@manifest.fetch('paths')],
+        cwd: @a, env: { 'GIT_TERMINAL_PROMPT' => '0', 'GIT_PAGER' => 'cat' }, options: { pgroup: true }, phase: :after,
+        result: AgentCodingTool::CommandResult.new(stdout: '', stderr: "fixture hook refused\n", exitstatus: 1), required: true)
       stdout, stderr, status = cli(%w[y y y])
       assert_equal 1, status.exitstatus, stdout
       assert_includes stderr, "fixture hook refused"
@@ -406,9 +461,10 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       assert_equal @bases[0], git(@a, "rev-parse", "HEAD").strip
     end
     fixture do
-      hook = File.join(@a, ".git", "hooks", "pre-commit")
-      File.write(hook, "#!/bin/sh\nprintf 'hook edit\\n' > tasks/NEW.yml\ngit add -- tasks/NEW.yml\n")
-      File.chmod(0o755, hook)
+      @memory_world.fault(argv: ['git', 'commit', '--only', '-m', @manifest.fetch('commit_message'), '--', *@manifest.fetch('paths')],
+        cwd: @a, env: { 'GIT_TERMINAL_PROMPT' => '0', 'GIT_PAGER' => 'cat' }, options: { pgroup: true }, phase: :before) do
+        File.write(File.join(@a, 'tasks/NEW.yml'), "hook edit\n")
+      end
       stdout, stderr, status = cli(%w[y y y])
       assert_equal 2, status.exitstatus, stdout
       assert_includes stderr, "committed proposal differs from validated index"
@@ -424,7 +480,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       @manifest["validation"][0] = { "action" => "bundle_rake", "repository" => "tool", "cwd" => ".", "env" => {}, "tasks" => ["test"] }
       save_manifest
       only_git = File.join(@root, "only-git")
-      FileUtils.mkdir_p(only_git)
+      Dir.mkdir(only_git, 0o700)
       git_path = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "git") }.find { |path| File.executable?(path) }
       File.symlink(git_path, File.join(only_git, "git"))
       stdout, stderr, status = cli(%w[y y y], environment: { "PATH" => only_git })
@@ -486,7 +542,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
           end
         end
       RUBY
-      git(@b, "add", ".")
+      git(@b, "add", "-A", "--", ".")
       git(@b, "commit", "-m", "rake fixture")
       @manifest["repositories"]["tool"]["baseline"] = git(@b, "rev-parse", "HEAD").strip
       # Produce a real binary/modification diff without staging; restore fixture
@@ -506,11 +562,11 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       assert_equal "modified\x00\xff".b, git(@a, "show", "HEAD:file.txt").b
       refute File.exist?(File.join(@a, "state", "ACT-UX-02.yml"))
       assert_empty git(@a, "status", "--porcelain")
-      stdout, stderr, status = Open3.capture3(RbConfig.ruby, CLI, "help", chdir: @root)
+      stdout, stderr, status = ChildProcesses.capture("evidence_cli", arguments: ["help_no_dotenv"])
       assert_equal 0, status.exitstatus, stderr
       assert_includes stdout, "apply FILE.json"
       assert_includes stdout, "each defaults to no"
-      _stdout, _stderr, status = Open3.capture3(RbConfig.ruby, CLI, "apply", @json, "--yes", chdir: @root)
+      _stdout, _stderr, status = cli([], terminal: false, public_arguments: ["apply", @json, "--yes"])
       assert_equal 2, status.exitstatus
     end
   end

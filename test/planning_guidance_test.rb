@@ -112,7 +112,6 @@ class PlanningGuidanceTest < Minitest::Test
         definition = YAML.safe_load_file(path).merge("goal" => "Define implementation task definitions and dependency graphs.")
         File.write(path, YAML.dump(definition))
         renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin)
-        capture = Open3.method(:capture3)
         calls = []
         # Complete prompt digests include checkpoint/handoff guidance and ACT-31's
         # pinned continuation policy for every access/checkpoint combination.
@@ -129,10 +128,7 @@ class PlanningGuidanceTest < Minitest::Test
             policy ? definition["checkpoint"] = policy : definition.delete("checkpoint")
             File.write(path, YAML.dump(definition))
             coordinator = coordinator_with_renderer(dir, renderer)
-            prepared = Open3.stub(:capture3, lambda { |*args, **options|
-              calls << [args, options]
-              capture.call(*args, **options)
-            }) { coordinator.prepare("PLANNING-REGISTER") }
+            prepared = observe_source_reads(calls) { coordinator.prepare("PLANNING-REGISTER") }
             prompt = prepared.fetch("prompt")
             refute_includes prompt, "## Canonical planning guidance"
             assert_equal 1, prompt.scan(CodingSkillSupport::TEXT).length
@@ -146,17 +142,17 @@ class PlanningGuidanceTest < Minitest::Test
         end
         assert_equal 4, calls.length
         calls.each do |args, options|
-          assert_equal({ stdin_data: '' }, options)
+          assert_equal({ cwd: nil, env: SkillObservations::ENVIRONMENT, input: '', timeout: nil }, options)
           assert args.last.end_with?(AgentCodingTool::PromptRenderer::SKILL_PATH)
         end
         corrupt = "corrupt\xff".b
+        FileUtils.mkdir_p(File.dirname(File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH)))
         File.binwrite(File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH), corrupt)
         commit_source(root)
-        revision, error, status = Open3.capture3("git", "-C", root, "rev-parse", "HEAD")
-        raise error unless status.success?
+        revision = @planning_checkout.head
 
         renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: {
-          "revision" => revision.strip, "sha256" => Digest::SHA256.hexdigest(corrupt)
+          "revision" => revision, "sha256" => Digest::SHA256.hexdigest(corrupt)
         })
         control = coordinator_with_renderer(dir, renderer)
         prompt = control.prepare("PLANNING-REGISTER").fetch("prompt")
@@ -220,12 +216,10 @@ class PlanningGuidanceTest < Minitest::Test
         File.binwrite(File.join(evidence, "current.json"), "historical checkpoint\x00".b)
         store = AgentCodingTool::StateStore.new(File.join(dir, "state"))
         store.write("T", prepared.fetch("state").merge("checkpoint" => { "status" => "verified", "record_path" => evidence }))
-        blob, error, status = Open3.capture3("git", "-C", root, "rev-parse",
-                                            "#{pin.fetch('revision')}:#{AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH}")
-        raise error unless status.success?
-
-        # Remove only this fixture's pinned planning blob. Coding remains valid.
-        File.unlink(File.join(root, ".git", "objects", blob.strip[0, 2], blob.strip[2..]))
+        # Remove only the modeled pinned planning blob; coding history survives.
+        commit = @planning_checkout.repository.objects.fetch(pin.fetch('revision'))
+        blob = commit.tree.entries.fetch(AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH).blob
+        @planning_checkout.repository.objects.delete(blob.oid)
         before = directory_bytes(dir).merge(directory_bytes("#{dir}-runs"))
         assert_raises(AgentCodingTool::InvalidState) { coordinator.start("T") }
         _out, error, status = cold_consume(dir, root: root, pin: pin)
@@ -305,16 +299,13 @@ class PlanningGuidanceTest < Minitest::Test
         write_task(dir, id: "T")
         designate(dir, "T")
         renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: pin)
-        capture, calls = Open3.method(:capture3), []
-        prepared = Open3.stub(:capture3, lambda { |*args, **options|
-          calls << [args, options]
-          capture.call(*args, **options)
-        }) { coordinator_with_renderer(dir, renderer).prepare("T") }
+        calls = []
+        prepared = observe_source_reads(calls) { coordinator_with_renderer(dir, renderer).prepare("T") }
         assert_equal 2, calls.length
         calls.each do |args, options|
-          assert_equal({ stdin_data: '' }, options)
-          assert_equal({ "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }, args.first)
-          assert_equal ["git", "--no-replace-objects", "-C", root, "cat-file", "blob"], args[1, 6]
+          assert_equal({ cwd: nil, input: '', timeout: nil }, options.reject { |key, _value| key == :env })
+          assert_equal({ "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0" }, options.fetch(:env))
+          assert_equal ["git", "--no-replace-objects", "-C", root, "cat-file", "blob"], args.first(6)
         end
         path = File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH)
         File.write(path, CodingSkillSupport::PLANNING_TEXT + "New branch text\n")
@@ -336,7 +327,7 @@ class PlanningGuidanceTest < Minitest::Test
       coordinator.prepare("T")
       renderer = AgentCodingTool::PromptRenderer.new(skill_root: File.join(dir, "missing"))
       before = directory_bytes(dir)
-      Open3.stub(:capture3, ->(*) { flunk "status retrieved a skill" }) do
+      MemoryGit::Session.with_capture(->(*) { flunk "status retrieved a skill" }) do
         assert_equal "PREPARED", coordinator_with_renderer(dir, renderer).status("T").fetch("status")
       end
       assert_equal before, directory_bytes(dir)
@@ -417,22 +408,12 @@ class PlanningGuidanceTest < Minitest::Test
   # failures classified as InvalidState. It uses inherited hermetic fixture pins.
   def cold_consume(dir, root: AgentCodingTool::PromptRenderer::SKILL_ROOT,
                    pin: AgentCodingTool::PromptRenderer::PLANNING_SKILL_IDENTITY)
-    script = <<~'RUBY'
-      require "agent_coding_tool"
-      dir, root, pin = ARGV
-      renderer = AgentCodingTool::PromptRenderer.new(skill_root: root, planning_skill_identity: JSON.parse(pin))
-      coordinator = AgentCodingTool::Coordinator.new(
-        task_store: AgentCodingTool::TaskStore.new(File.join(dir, "tasks")),
-        state_store: AgentCodingTool::StateStore.new(File.join(dir, "state")),
-        repo_inspector: nil, prompt_renderer: renderer, prompt_root: File.join(dir, "state", "prompts"))
-      begin
-        STDOUT.binmode.write(coordinator.launch_prompt("T"))
-      rescue AgentCodingTool::InvalidState => error
-        warn error.message
-        exit 2
-      end
-    RUBY
-    Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script, dir, root, JSON.generate(pin))
+    if @planning_world
+      @planning_broker ||= MemoryGit::Broker.new(world: @planning_world,
+        directory: @planning_world.root, case_id: "planning-#{root}")
+    end
+    ChildProcesses.capture("planning_consumer", arguments: [dir, root, JSON.generate(pin)],
+      endpoint: @planning_broker&.endpoint, seconds: 5)
   end
 
   # Verifies all unsupported adoption/consumption paths leave saved bytes intact.
@@ -455,27 +436,53 @@ class PlanningGuidanceTest < Minitest::Test
        .to_h { |path| [path, File.binread(path)] }
   end
 
-  # Yields a disposable checkout with supplied planning bytes (nil removes the
-  # path) and its matching pin. Genuine Git errors raise without fallback.
+  # Records exactly the source transport calls made inside the block and returns
+  # its result. Native Open3 is no longer the modeled source boundary; exceptions
+  # propagate while observations still remain available to the caller.
+  def observe_source_reads(calls)
+    offset = @planning_world.requests.length
+    yield
+  ensure
+    calls.concat(@planning_world.requests.drop(offset))
+  end
+
+  # Yields independent modeled immutable history and a matching planning pin.
+  # Coding remains at its original commit; nil means an absent planning path.
+  # Object/model failures propagate and no source checkout is copied or executed.
   def with_planning_source(text)
-    Dir.mktmpdir("act-planning-source-") do |root|
-      FileUtils.cp_r(File.join(AgentCodingTool::PromptRenderer::SKILL_ROOT, "."), root)
-      path = File.join(root, AgentCodingTool::PromptRenderer::PLANNING_SKILL_PATH)
+    Dir.mktmpdir("act-planning-source-") do |directory|
+      @planning_world = MemoryGit::PatchWorld.new(root: directory)
+      renderer = AgentCodingTool::PromptRenderer
+      files = { renderer::SKILL_PATH => CodingSkillSupport::TEXT,
+        renderer::PLANNING_SKILL_PATH => CodingSkillSupport::PLANNING_TEXT }
+      commit = MemoryGit::Commit.new(tree: MemoryGit::Tree.new(files), oid: renderer::SKILL_IDENTITY.fetch('revision'))
+      template = MemoryGit::Template.new(commits: [commit])
+      @planning_checkout = @planning_world.repository(path: "source", template: template)
+      root = @planning_checkout.path
+      path = File.join(root, renderer::PLANNING_SKILL_PATH)
       text ? File.binwrite(path, text) : File.unlink(path)
       commit_source(root) unless text == CodingSkillSupport::PLANNING_TEXT
-      revision, error, status = Open3.capture3("git", "-C", root, "rev-parse", "HEAD")
-      raise error unless status.success?
-
-      yield root, { "revision" => revision.strip, "sha256" => Digest::SHA256.hexdigest(text || "") }
+      transport = ->(argv, **fields) { (@planning_broker || @planning_world).call(argv, **fields) }
+      MemoryGit::Session.with(transport) do
+        yield root, { "revision" => @planning_checkout.head, "sha256" => Digest::SHA256.hexdigest(text || "") }
+      end
+    ensure
+      begin
+        @planning_broker&.close
+      ensure
+        @planning_broker = nil
+        @planning_world&.verify!
+        @planning_world = @planning_checkout = nil
+      end
     end
   end
 
-  # Commits fixture-only source changes; returns nil or raises on Git failure.
+  # Stores the fixture's physical files as a new immutable descendant. Returns
+  # the commit; unknown roots or mutation after broker startup raise a mismatch.
   def commit_source(root)
-    [%w[add -A], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "planning fixture"]].each do |args|
-      _out, error, status = Open3.capture3("git", "-C", root, *args)
-      raise error unless status.success?
-    end
-    nil
+    raise MemoryGit::Mismatch, "wrong or live planning authority" unless
+      @planning_checkout.path == root && !@planning_broker
+    @planning_world.build_commit(@planning_checkout, files: @planning_world.scan(@planning_checkout),
+      message: "planning fixture", advance: true)
   end
 end

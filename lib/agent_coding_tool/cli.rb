@@ -71,6 +71,7 @@ module AgentCodingTool
       command = argv.shift
       case command
       when "apply" then return apply_command(argv)
+      when "manage" then return manage_command(argv)
       when "evidence" then return evidence_command(argv)
       when "status" then status_command(argv)
       when "next" then next_command(argv)
@@ -102,6 +103,38 @@ module AgentCodingTool
     end
 
     private
+
+    # Copies a source-bound reminder through macOS pbcopy, or writes only its
+    # text with --stdout. No task/repository state is changed. Parsing/source
+    # errors raise Error; failed/missing clipboard commands return nonzero with
+    # an explicit stdout recovery command, never a false copy-success message.
+    def manage_command(argv)
+      stdout = false
+      parser = OptionParser.new do |opts|
+        opts.on("--stdout", "print the reminder without changing the clipboard") { stdout = true }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      id = argv.shift
+      raise Error, "usage: agent-coding-tool manage TASK [--stdout]" unless id && argv.empty?
+
+      require_relative "manager_reminder"
+      reminder = ManagerReminder.render(@data_root, id)
+      if stdout
+        @out.write(reminder)
+        return 0
+      end
+      result = @transport.call(["pbcopy"], input: reminder, timeout: 5)
+      unless result.success?
+        @err.puts "ERROR: manage: pbcopy failed (status #{result.shell_status}); use act manage #{id} --stdout"
+        return result.shell_status
+      end
+      @out.puts "Copied manager reminder for #{id}; paste it above your update."
+      0
+    rescue SystemCallError, IOError, Timeout::Error => error
+      @err.puts "ERROR: manage: clipboard unavailable (#{error.class}); use act manage #{id} --stdout"
+      2
+    end
 
     # Opens finite operator-granted read sessions; select/read use the same closed
     # reader as MCP. Returns zero or a fixed refusal, never executes evidence.
@@ -1712,6 +1745,9 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          manage TASK [--stdout]
+                              copy a local task-goal reminder with pbcopy; --stdout prints only
+                              source path/hash included; no progress claims or task-state writes
           evidence open --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY --env-file /CANONICAL/ACT/.env
                         --client /CANONICAL/tunnel-client --runtime-dir SHARED_PRIVATE_DIRECTORY
                               foreground finite owner-approved tunnel; explicit canonical paths

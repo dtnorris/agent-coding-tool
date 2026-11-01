@@ -114,6 +114,37 @@ liveness and integration gates, and uses a temporary command-local Finder exclud
 for native Git removal after rechecking cleanliness. It uses no force removal,
 individual metadata deletion, persistent ignore change or system setting.
 
+## Remind a task manager of the outcome
+
+```sh
+act manage ACT-33
+act manage ACT-33 --stdout
+```
+
+`manage TASK` replaces the current clipboard with a deterministic reminder using
+macOS `pbcopy`, then confirms success. Paste it above your update to the manager.
+`--stdout` prints exactly the same reminder without touching the clipboard and
+works on other platforms. Missing, failed or timed-out `pbcopy` returns nonzero
+with the stdout recovery command; it never reports a successful copy.
+
+The four-sentence scaffold quotes the current local `tasks/TASK.yml` goal in
+full, normalizing whitespace only; a goal may itself contain multiple sentences.
+It includes the task path and SHA-256 of the exact source bytes, asks the manager
+to read that source's complete acceptance criteria and constraints, reconcile
+your update with established evidence, choose the smallest necessary next step,
+and stop at accepted completion. Acceptance and constraints are referenced, not
+automatically summarized or pasted in full. The manager still needs access to
+the identified source; the hash proves neither remote freshness nor acceptance.
+
+Only that task file is read: no state, prepared prompt, logs, other tasks,
+repository inspection, network or model calls. Local edits affect the next
+reminder; it does not represent an active worker's pinned preparation. No task,
+lifecycle, checkpoint or repository data is written. Unknown/traversing IDs,
+mismatched IDs, malformed YAML, missing goals/acceptance, symlinks, nonregular
+files, invalid UTF-8/control bytes, sources over 64 KiB and reminders over 8 KiB
+refuse before copying; content is never silently truncated. Clipboard replacement
+is the requested side effect, not repository or publication authorization.
+
 ## Apply a worker handoff
 
 A worker supplies a handoff with two download links, for example:

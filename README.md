@@ -2361,8 +2361,9 @@ The verified tasks reject a missing or unexpected suite file,
 an empty inventory, omitted or unregistered case, duplicate execution, failed process,
 missing/malformed summary or case evidence, inconsistent counts, zero assertions,
 and any skip. Each child uses the current Ruby, `-Ilib:test`, repository cwd and
-the passive `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
-replayed unchanged; a child's nonzero exit status is preserved (signals map to
+the `test/suite_reporter.rb` Minitest reporter. Raw stdout/stderr are
+retained in the feedback evidence directory and replayed unchanged on failure;
+a child's nonzero exit status is preserved (signals map to
 128 plus signal number). Evidence binds the fresh invocation and exact selection
 to completed `Class#test_method` identities, observed Minitest seed and assertion
 counts, independently of the human-readable summary. The complete default
@@ -2374,6 +2375,26 @@ integrations and Git-contract files run separately to avoid Minitest class
 collisions. Existing fixture deadlines remain authoritative. The reviewed
 feedback policy supplies a separate, generous hard hang deadline; this is not
 the completed ordinary-run budget or an advisory growth threshold.
+
+The runner prints a plan for the actual requested Rake tasks, followed by live
+phase/suite numbers, completed/total case counts, remaining cases, the active
+test and monotonic elapsed time. Updates are flushed newline-delimited messages
+on stderr, including when piped to `tee` or captured by Buildkite; active slow
+tests produce an update about once a second. Counts describe cases, not time
+remaining. Start/result events travel through a private regular file; no child
+pipe or new process is introduced. Progress is advisory and cannot establish
+acceptance: the existing summary, independent case evidence, coverage and policy
+checks still decide the outcome. A verified suite is labelled with its seed;
+the final complete-acceptance marker is unchanged. Success prints the checked
+summary without replaying dots or the internal selection regex. Full raw logs
+remain under the printed feedback evidence directory (`<layer>/<index>/stdout`
+and `stderr`). A direct `TestSuiteRunner` call uses temporary logs and replays
+them on failure. An outer caller that captures all output (including the current
+`act apply` validation transport) can still delay these messages; run the Rake
+command directly to observe live feedback in that situation.
+
+`ruby -Ilib:test test/support/verify_suite_progress.rb` exercises live progress,
+selection counts and failure behavior through the guarded suite loader.
 
 The ordinary runner puts `test/ordinary_execution.rb` first among command-line
 preloads, followed by coverage, before helpers and setup. It also prepends the

@@ -6,6 +6,7 @@ require "tmpdir"
 require "shellwords"
 require "securerandom"
 require_relative "support/suite_processes"
+require_relative "suite_progress"
 
 # Runs fixed behavior inventories against independent child-test evidence.
 # Feedback supplies source coverage separately; case names are not that measure.
@@ -23,7 +24,19 @@ module TestSuiteRunner
   # Runs a named suite at root; returns true only for complete passing case evidence.
   # Exits with a child's exact nonzero status (128+signal for signals), or 1 for
   # missing/invalid coverage evidence. JSON, filesystem and spawn errors propagate.
-  def self.run(suite, root:, feedback: nil)
+  def self.run(suite, root:, feedback: nil, progress: nil)
+    groups = execution_groups(suite, root: root)
+    progress ||= SuiteProgress.new(groups)
+    groups.each do |group|
+      run_process(group.fetch(:paths), group.fetch(:cases), root: root,
+        ordinary: group.fetch(:ordinary), selected: group.fetch(:selected), feedback: feedback, progress: progress)
+    end
+    true
+  end
+
+  # Returns the validated groups used for both planning and execution. Invalid
+  # inventories abort before any child starts; JSON/filesystem errors propagate.
+  def self.execution_groups(suite, root:)
     manifest_path = suite == :git_contract ? "test/git_contract/required_cases.json" : "test/required_cases.json"
     abort "#{suite}: missing required inventory #{manifest_path}" unless File.file?(File.join(root, manifest_path))
     inventory = JSON.parse(File.binread(File.join(root, manifest_path)))
@@ -59,28 +72,26 @@ module TestSuiteRunner
         (ordinary.fetch(path, {}).keys + native.fetch(path, [])).sort == cases.sort }
         abort "default: ordinary/native scopes must exactly partition required cases"
       end
-      unless suite == :native_default
-        run_process(ordinary.keys.sort, ordinary.values.flat_map(&:keys), root: root, ordinary: true, selected: true, feedback: feedback)
-      end
-      return true if suite == :ordinary
-
-      run_process(native.keys.sort, native.values.flatten, root: root, selected: true, feedback: feedback) unless native.empty?
-      return true
+      groups = []
+      groups << { layer: "ordinary", paths: ordinary.keys.sort, cases: ordinary.values.flat_map(&:keys), ordinary: true, selected: true } unless suite == :native_default
+      groups << { layer: "native_default", paths: native.keys.sort, cases: native.values.flatten, ordinary: false, selected: true } unless suite == :ordinary
+      return groups
     end
-    groups = files.map { |path| [path] }
-    groups.each { |paths| run_process(paths, required.values_at(*paths).flatten, root: root, feedback: feedback) }
-    true
+    files.map { |path| { layer: suite.to_s, paths: [path], cases: required.fetch(path), ordinary: false, selected: false } }
   end
 
-  # Executes selected root-relative files in one Ruby process with raw output.
+  # Executes selected root-relative files with live advisory progress and raw logs.
   # Returns true on matching positive results; exits on failed process/evidence.
   # ordinary preloads the execution guard before setup; selected filters only
   # the declared identities. SEED retains Minitest's standard environment control.
   # Feedback supplies a separately accepted hang deadline and fresh coverage.
-  # Filesystem/spawn errors propagate after raw output is replayed unchanged.
-  def self.run_process(paths, required_cases, root:, ordinary: false, selected: false, feedback: nil)
+  # Failures replay raw output unchanged; success prints only the checked summary.
+  # Filesystem/spawn errors propagate after the observer stops and logs are read.
+  def self.run_process(paths, required_cases, root:, ordinary: false, selected: false, feedback: nil, progress: nil)
+    progress ||= SuiteProgress.new([{ layer: "selected", paths: paths, cases: required_cases }])
     Dir.mktmpdir("act-suite-") do |directory|
       evidence_path = File.join(directory, "results.json")
+      progress_path = File.join(directory, "progress.jsonl")
       stdout_path, stderr_path = %w[stdout stderr].map { |name| File.join(directory, name) }
       entry = File.join(root, "test/support/fixtures/suite_entry.rb")
       arguments = [paths.length.to_s, *paths]
@@ -91,7 +102,7 @@ module TestSuiteRunner
       selection = required_cases.sort.join("\n")
       environment = { "ACT_SUITE_EVIDENCE" => evidence_path, "ACT_ORDINARY_SUITE" => nil,
                       "ACT_TEST_CODING_SKILL" => nil, "ACT_SUITE_INVOCATION" => invocation,
-                      "ACT_SUITE_SELECTION" => selection }
+                      "ACT_SUITE_SELECTION" => selection, "ACT_SUITE_PROGRESS" => progress_path }
       record = nil
       if feedback
         additions, record = TestFeedback.child(feedback, paths, required_cases)
@@ -103,7 +114,9 @@ module TestSuiteRunner
       preloads[bundler] = Digest::SHA256.file(bundler).hexdigest if bundler
       preload_paths = []
       preload_paths << File.join(root, "test/ordinary_execution.rb") if ordinary
-      preload_paths << File.join(root, "test/feedback_coverage.rb") if feedback
+      # Nested verifier suites inherit the real coverage context and must retain
+      # its bootstrap even when they do not own an outer feedback stage.
+      preload_paths << File.join(root, "test/feedback_coverage.rb") if feedback || ENV["ACT_COVERAGE_CONTEXT"]
       preload_paths << File.join(root, "test/ordinary_support.rb") if ordinary
       preload_paths << File.join(root, "test/suite_reporter.rb")
       preload_paths.each { |path| preloads[path] = Digest::SHA256.file(path).hexdigest }
@@ -115,7 +128,9 @@ module TestSuiteRunner
         options: { chdir: root, pgroup: true })
       argv, environment = approval.argv, approval.environment
       record["argv"], record["cwd"] = argv, root if record
+      verified = false
       begin
+        progress.start(progress_path, required_cases, invocation: invocation)
         if feedback
           remaining = TestFeedback.context(root).fetch("hard_deadline_seconds") - FeedbackRuntime.elapsed(TestFeedback.timer)
           abort "feedback: hard deadline reached before next suite" unless remaining.positive?
@@ -144,9 +159,8 @@ module TestSuiteRunner
         record["exception"] = { "class" => exception.class.name, "message" => exception.message } if record
         raise
       ensure
+        progress.stop
         stdout, stderr = [stdout_path, stderr_path].map { |path| File.file?(path) ? File.binread(path) : "".b }
-        $stdout.write(stdout)
-        $stderr.write(stderr)
         if record && File.file?(evidence_path)
           retained = File.join(record.fetch("coverage_context").fetch("directory"), "cases.result")
           File.write(retained, File.binread(evidence_path), mode: "wx")
@@ -165,6 +179,16 @@ module TestSuiteRunner
           JSON.parse(File.binread(path)).merge("complete" => File.file?("#{prefix}.json"), "executed_production" => File.file?("#{prefix}.active"))
         end
         record["complete"] = true
+      end
+      progress.verified(evidence)
+      $stdout.puts(stdout.lines.find { |line| SUMMARY.match?(line.chomp) })
+      $stdout.flush
+      verified = true
+    ensure
+      unless verified
+        progress.incomplete
+        $stdout.write(stdout || "")
+        $stderr.write(stderr || "")
       end
     end
     true

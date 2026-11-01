@@ -19,6 +19,25 @@ module TestFeedback
                     AGENT_CODING_TOOL_DATA_DIR ACT_GIT_CONTRACT_TMPDIR].freeze
   REQUIRED_LAYERS = %w[ordinary git_contract native_default native_integration].freeze
 
+  # Resolves the actual Rake prerequisite graph in execution order, including
+  # aliases and multiple requested tasks. Returns only selected test layers;
+  # direct runner callers plan their own selection. Unknown tasks still raise.
+  def self.planned_layers
+    return [] unless defined?(Rake)
+
+    mapping = { "test" => :ordinary, "test:git_contract" => :git_contract,
+      "test:native_default" => :native_default, "test:native_integration" => :native_integration }
+    seen, layers = [], []
+    visit = lambda do |task|
+      return if seen.include?(task.name)
+      seen << task.name
+      task.prerequisite_tasks.each { |prerequisite| visit.call(prerequisite) }
+      layers << mapping.fetch(task.name) if mapping.key?(task.name)
+    end
+    Rake.application.top_level_tasks.each { |name| visit.call(Rake::Task[name.split('[', 2).first]) }
+    layers
+  end
+
   # Lazily qualifies the current command's kernel birth, so listing Rake tasks
   # and ACTD YAML validation do not require native test-process instrumentation.
   # Returns a timer or raises when the execution platform is unqualified.
@@ -69,6 +88,7 @@ module TestFeedback
       "contention" => "not observed", "workers" => 1, "stages" => [] }
     at_exit { report }
     puts "ACT feedback evidence: #{directory}"
+    $stdout.flush
     @context
   end
 
@@ -76,6 +96,12 @@ module TestFeedback
   # true, or propagates runner failures/exceptions; coverage never blesses them.
   def self.run(layer, root:)
     current = context(root)
+    layers = planned_layers
+    progress = if layers.empty?
+                 SuiteProgress.new(TestSuiteRunner.execution_groups(layer, root: root))
+               else
+                 @progress ||= SuiteProgress.new(layers.flat_map { |selected| TestSuiteRunner.execution_groups(selected, root: root) })
+               end
     name = layer.to_s
     raise "feedback: duplicate layer #{name}" if current.fetch("stages").any? { |stage| stage.fetch("layer") == name }
 
@@ -84,7 +110,7 @@ module TestFeedback
     stage = { "layer" => name, "complete" => false, "processes" => [], "directory" => directory }
     current.fetch("stages") << stage
     begun = FeedbackRuntime.clock
-    TestSuiteRunner.run(layer, root: root, feedback: stage)
+    TestSuiteRunner.run(layer, root: root, feedback: stage, progress: progress)
     stage["seconds"] = FeedbackRuntime.clock - begun
     stage["complete"] = true
     if layer == :ordinary && !current.fetch("qualification")
@@ -247,6 +273,8 @@ module TestFeedback
       puts "ACT complete offline acceptance: PASS"
     end
     failures.each { |failure| warn failure }
+    puts "ACT selected feedback: #{current['accepted'] ? 'PASS' : 'INCOMPLETE / NOT ACCEPTED'}; evidence: #{current.fetch('directory')}"
+    $stdout.flush
     exit 1 if !failures.empty? && (original_exception.nil? || (original_exception.is_a?(SystemExit) && original_exception.success?))
   rescue StandardError => exception
     warn "feedback report could not be preserved: #{exception.class}: #{exception.message}"

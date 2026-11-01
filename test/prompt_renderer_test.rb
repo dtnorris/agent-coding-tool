@@ -31,6 +31,8 @@ class PromptRendererTest < Minitest::Test
     end
   end
 
+  # Checks shared handoff/performance instructions and explicit task checks through
+  # preparation and launch; assertion failures identify missing or duplicated text.
   def test_preparation_and_launch_share_performance_policy_and_preserve_task_rules
     with_workspace do |dir|
       write_task(dir, id: "T")
@@ -38,13 +40,28 @@ class PromptRendererTest < Minitest::Test
       task = YAML.safe_load_file(path)
       rules = ["Complete rake under 30 seconds with coverage >= 95%.", "Preserve real-process safety tests."]
       task["constraints"] = rules
+      task_check = "Run bundle exec ruby -Ilib:test test/prompt_renderer_test.rb."
+      task["acceptance"] = [task_check]
       File.write(path, YAML.dump(task))
       coordinator = coordinator_for(dir, "alpha" => "a" * 40)
       prepared = coordinator.prepare("T")
       prompt = prepared.fetch("prompt")
       coordinator.start("T")
       assert_equal prompt, File.read(prepared.fetch("state").fetch("prompt_path"))
-      assert_equal prompt, coordinator.launch_prompt("T")
+      launch_prompt = coordinator.launch_prompt("T")
+      assert_equal prompt, launch_prompt
+      [prompt, launch_prompt].each do |rendered|
+        assert_equal 1, rendered.scan(/^## Operator handoffs$/).length
+        instruction = "For a routine patch handoff, give David links to the complete root-relative patch and matching act apply JSON, plus one paste-ready native `act apply PATH_TO_JSON` invocation for his actual shell."
+        assert_equal 1, rendered.scan(instruction).length
+        assert_includes rendered, "Explain the outcome, validation results and remaining owner steps outside the paste box."
+        assert_includes rendered, "Let native tools perform their own checks and preserve separate consent for application, validation and commit."
+        assert_includes rendered, "Add a wrapper only for a named prerequisite the native command does not cover."
+        assert_includes rendered, "If a command refuses or fails, report the reason and stop dependent actions; do not silently switch to manual Git."
+        assert_includes rendered, "Keep host-owned checkpoint record, verify and gate steps separate"
+        assert_includes rendered, "worker exports and apply manifests do not establish host verification, acceptance or publication authority."
+        assert_equal 1, rendered.scan("- #{task_check}\n").length
+      end
       assert_equal 1, prompt.scan(/^## Test performance$/).length
       assert_operator prompt.index("## Test performance"), :>, prompt.index("## Implementation checkpoint")
       rules.each { |rule| assert_includes prompt, "- #{rule}\n" }

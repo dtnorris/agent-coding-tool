@@ -573,11 +573,11 @@ class FamilyStatusTest < Minitest::Test
         ["OS-MD-02:", "COMPLETE"],
         ["CL-AFDP-02:", "IN_FLIGHT"],
         ["ACT-29:", "READY (NEXT)"],
-        ["REF-AFW-01:", "PREPARED [write collision]"],
+        ["REF-AFW-01:", "PREPARED [write collis.."],
         ["WAIT:", "BLOCKED"]
       ]
       expected = labels.map do |identity, label|
-        identity.ljust(11) + " " + label.ljust(26) + "  界e\u0301 — Title #{identity.delete_suffix(':')} literal\n"
+        identity.ljust(11) + " " + label.ljust(24) + "  界e\u0301 — Title #{identity.delete_suffix(':')} literal\n"
       end.join
       previous_color, previous_columns = ENV.delete("NO_COLOR"), ENV.delete("COLUMNS")
       begin
@@ -591,7 +591,7 @@ class FamilyStatusTest < Minitest::Test
         assert_equal plain, output(coordinator, %w[status], out: Terminal.new(100))
         assert_equal "ACT-29: READY  界e\u0301 — Title ACT-29 literal\n", output(coordinator, %w[status ACT-29])
         assert_equal "ACT-29: READY (NEXT)  界e\u0301 — Title ACT-29 literal\n", output(coordinator, %w[status --fam ACT])
-        [1, 2, 3, 38, 39, 40, 41, 80, 100].each do |width|
+        [1, 2, 3, 36, 37, 38, 39, 80, 100].each do |width|
           ENV["COLUMNS"] = width.to_s
           text = output(coordinator, %w[status])
           assert_equal text, output(coordinator, %w[status --min])
@@ -599,9 +599,9 @@ class FamilyStatusTest < Minitest::Test
             assert_operator AgentCodingTool::CLI.allocate.send(:display_width, line.chomp), :<=, width
             refute_match(/ +$/, line.chomp)
           end
-          if width == 41
-            assert_equal labels.map { |identity, label| identity.ljust(11) + " " + label.ljust(26) + "  .\n" }.join, text
-          elsif width == 40
+          if width == 39
+            assert_equal labels.map { |identity, label| identity.ljust(11) + " " + label.ljust(24) + "  .\n" }.join, text
+          elsif width == 38
             assert_match(/^ACT-29: READY \(NEXT\)  /, text)
           end
         end

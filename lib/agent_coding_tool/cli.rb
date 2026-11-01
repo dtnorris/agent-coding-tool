@@ -1171,7 +1171,8 @@ module AgentCodingTool
 
     # Returns the colored effective status, NEXT and ordered safety annotations
     # for one projected item. Missing fields raise KeyError; no probes or writes
-    # occur, and indicators grant no freshness, isolation, liveness or authority.
+    # occur. Compact status is capped at 24 cells with two dots; --full retains
+    # complete annotations. Indicators grant no freshness or execution authority.
     def minimal_status(item, next_id:)
       indicators = []
       if item["external_activity"]
@@ -1187,7 +1188,7 @@ module AgentCodingTool
       status = human_status(item)
       status += " (NEXT)" if item.fetch("id") == next_id
       status += " #{indicators.uniq.join(' ')}" unless indicators.empty?
-      status
+      truncate_display_line(status, 24, omission: "..")
     end
 
     # Prints normalized [ID-with-colon, colored status, title] cells using widths
@@ -1417,11 +1418,13 @@ module AgentCodingTool
       text.to_s.gsub(/[[:space:]]+/, " ").strip
     end
 
-    def truncate_display_line(text, width)
+    # Truncates visible cells without splitting ANSI sequences or graphemes.
+    # The omission marker consumes width; short cells contain only dots.
+    def truncate_display_line(text, width, omission: "...")
       return text if display_width(text) <= width
-      return "." * width if width < 3
+      return "." * width if width < display_width(omission)
 
-      available = width - 3
+      available = width - display_width(omission)
       prefix = +""
       used = 0
       text.scan(DISPLAY_TOKEN).each do |token|
@@ -1432,7 +1435,7 @@ module AgentCodingTool
         used += token_width
       end
       prefix << ANSI_RESET if prefix.match?(ANSI_SEQUENCE)
-      "#{prefix}..."
+      "#{prefix}#{omission}"
     end
 
     def display_width(text)

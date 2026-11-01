@@ -47,6 +47,8 @@ class FeedbackContract < Minitest::Test
   # An actual failed spawn raises ENOENT and never becomes an exit/status pass.
   def test_spawn_exception_and_invalid_deadline
     Dir.mktmpdir("act-feedback-spawn-") do |root|
+      # Match the canonical directory required by the missing-executable permit.
+      root = File.realpath(root)
       options = { environment: {}, root: root, seconds: 1,
                   stdout_path: File.join(root, "out"), stderr_path: File.join(root, "err") }
       permit = NoGitExecution::MissingExecutablePermit.new(directory: File.realpath(root),
@@ -108,6 +110,8 @@ class FeedbackContract < Minitest::Test
   # Yields the context and map; fixture/hook failures are assertion failures.
   def with_coverage(cold: nil)
     Dir.mktmpdir("act-feedback-coverage-") do |root|
+      # Keep probe roots consistent with real paths emitted by Ruby coverage.
+      root = File.realpath(root)
       FileUtils.mkdir_p([File.join(root, "lib"), File.join(root, "bin"), File.join(root, "results")])
       File.write(File.join(root, "lib/loaded.rb"), "module CoveredExample\n def self.choose(value)\n if value\n 1\n else\n 2\n end\n end\nend\n")
       File.write(File.join(root, "lib/unloaded.rb"), "module UnloadedExample\n def self.value\n 3\n end\nend\n")

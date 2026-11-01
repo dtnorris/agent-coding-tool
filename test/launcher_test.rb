@@ -96,19 +96,19 @@ class LauncherTest < Minitest::Test
         { cwd: workspace, binmode: true },
         { cwd: @ordinary }
       ].each do |fields|
-        assert_raises(RuntimeError) { transport.call(%w[git rev-parse HEAD], **fields) }
+        assert_raises(GitContract::UnexpectedObservation) { transport.call(%w[git rev-parse HEAD], **fields) }
       end
-      assert_raises(RuntimeError) { transport.call(%w[git status], cwd: workspace) }
-      assert_raises(RuntimeError) do
+      assert_raises(GitContract::UnexpectedObservation) { transport.call(%w[git status], cwd: workspace) }
+      assert_raises(GitContract::UnexpectedObservation) do
         transport.call(%w[git rev-parse --path-format=absolute --git-common-dir], cwd: @ordinary, binmode: true)
       end
       # A changed Git envelope must not weaken the separate preflight allowlist.
-      assert_raises(RuntimeError) do
+      assert_raises(GitContract::UnexpectedObservation) do
         unit_capture({ 'OPENAI_API_KEY' => 'forbidden' }, File.realpath(@fake), '--version', unsetenv_others: true)
       end
-      assert_raises(RuntimeError) { unit_capture({}, File.realpath(@fake), '--version') }
-      assert_equal [0, nil, true], [Status.new(true).exitstatus, Status.new(true).termsig, Status.new(true).success?]
-      assert_equal [1, nil, false], [Status.new(false).exitstatus, Status.new(false).termsig, Status.new(false).success?]
+      assert_raises(GitContract::UnexpectedObservation) { unit_capture({}, File.realpath(@fake), '--version') }
+      assert_equal [0, nil, true], [status_result(true).exitstatus, status_result(true).termsig, status_result(true).success?]
+      assert_equal [1, nil, false], [status_result(false).exitstatus, status_result(false).termsig, status_result(false).success?]
       task_path = File.join(@data, "tasks", "T.yml")
       task = YAML.safe_load_file(task_path)
       task['worker_recommendation'] = { 'model' => 'Human UI Model', 'thinking' => 'ultra' }

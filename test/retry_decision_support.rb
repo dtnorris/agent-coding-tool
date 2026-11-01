@@ -7,6 +7,16 @@ require_relative "recovery_observations"
 module RetryDecisionSupport
   include RecoveryObservations
 
+  # Native contracts retain actual ownership metadata; ordinary decisions use
+  # their finite world. Yields nil or the scoped world; fixture errors propagate.
+  def with_retry_authority(root, &block)
+    if ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
+      yield nil
+    else
+      with_memory_world(root, &block)
+    end
+  end
+
   # Returns the recovery fields of a reserved child-start failure, using original
   # preparation/execution states and an actually created inventory. No worker is
   # claimed. Callers persist prompt/report bytes; missing input keys raise.
@@ -45,11 +55,18 @@ module RetryDecisionSupport
       @decision_root = File.realpath(temporary)
       @decision_data = File.join(@decision_root, "data")
       FileUtils.mkdir_p(File.join(@decision_data, "tasks"))
-      with_memory_world(@decision_root) do |world|
+      with_retry_authority(@decision_root) do |world|
         repositories = %w[writer reader].to_h do |name|
           parent = File.join(@decision_root, name)
           remote = File.join(@decision_root, "#{name}.git")
-          memory_repository(world, path: parent, remote: remote)
+          if world
+            memory_repository(world, path: parent, remote: remote)
+          else
+            seed = TestHelpers.git_seed
+            FileUtils.cp_r(File.join(seed.fetch(:root), 'ordinary'), parent)
+            FileUtils.cp_r(File.join(seed.fetch(:root), 'remote.git'), remote)
+            TestHelpers.native_git(parent, 'remote', 'set-url', 'origin', remote)
+          end
           [name, { "path" => parent, "access" => name == "writer" ? "write" : "read_only" }]
         end
         write_task(@decision_data, id: "T", repositories: repositories)

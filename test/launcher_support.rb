@@ -73,7 +73,8 @@ module LauncherSupport
   # Returns one immutable reviewed fake worker script. Each invocation reads its
   # case settings through the final-output path; it never initializes Git.
   def fake_executable
-    File.expand_path('support/fixtures/launcher_worker.rb', __dir__)
+    name = @native_fixture ? 'native_launcher_worker.rb' : 'launcher_worker.rb'
+    File.expand_path("support/fixtures/#{name}", __dir__)
   end
 
   # Adapts only the declared fake worker boundary to a guarded Ruby invocation.
@@ -81,6 +82,9 @@ module LauncherSupport
   # evidence. Other executables/options fail before any process is created.
   def spawn_fake_worker(environment, *command, **options)
     raise GitContract::UnexpectedObservation, 'unknown fake worker' unless command.shift == File.realpath(@fake)
+    if @native_fixture
+      return Process.spawn(environment, RbConfig.ruby, fake_executable, *command, **options)
+    end
     pipes = options.select { |key, _value| [:in, :out, :err].include?(key) }
     settings = options.reject { |key, _value| pipes.key?(key) }
     forwarded = environment.dup
@@ -107,6 +111,7 @@ module LauncherSupport
   # Executes bounded fixture commands against this case's authority only.
   # Unknown setup forms fail rather than fall back to a captured native method.
   def setup_git(*args, chdir: nil)
+    return TestHelpers.native_git(chdir || @root, *args).strip if @native_fixture
     raise MemoryGit::Mismatch, "missing launcher world" unless @memory_world
     result = @memory_world.call(["git", *args], cwd: chdir)
     raise "Git fixture failed: #{result.stderr}" unless result.success?
@@ -124,8 +129,15 @@ module LauncherSupport
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
-      @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
-      if git
+      @native_fixture = ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
+      @memory_world = git && !@native_fixture ? MemoryGit::PatchWorld.new(root: @root) : nil
+      if git && @native_fixture
+        seed = TestHelpers.git_seed
+        FileUtils.cp_r(File.join(seed.fetch(:root), 'ordinary'), @ordinary)
+        FileUtils.cp_r(File.join(seed.fetch(:root), 'remote.git'), @remote)
+        TestHelpers.native_git(@ordinary, 'remote', 'set-url', 'origin', @remote)
+        @base = seed.fetch(:base)
+      elsif git
         checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
         @base = checkout.head
       else
@@ -163,6 +175,10 @@ module LauncherSupport
   # Exact external preflight observations for existing ordinary decision cases.
   # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
+    if @native_fixture && (@real_git || command.first == RbConfig.ruby ||
+        (command.first.is_a?(Hash) && command[1] == 'git' && (@real_git || command[2] == '--no-replace-objects')) || command.first == '/usr/sbin/sysctl')
+      return NativeTestCapture.call(*command, **options)
+    end
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
       return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
     end
@@ -189,7 +205,7 @@ module LauncherSupport
       env = command.shift
       allowed_options = [{ unsetenv_others: true },
                          { chdir: File.join(@root, 'worktrees', 'T', 'repo'), unsetenv_others: true }]
-      raise GitContract::UnexpectedObservation, 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
+      raise GitContract::UnexpectedObservation, "unsafe preflight environment keys=#{env.keys.inspect} options=#{options.inspect}" unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
                                                     allowed_options.include?(options)
       raise GitContract::UnexpectedObservation, "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
       case command

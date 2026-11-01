@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+if ENV["ACT_NATIVE_SUITE"] == "1" && ENV["ACT_ORDINARY_SUITE"] != "1"
+  require_relative "native_child_processes"
+else
 require_relative "no_git_execution"
 require "json"
 require_relative "../git_contract/observations"
@@ -47,4 +50,6 @@ module ChildProcesses
       GitContract::Native.new(seconds: seconds).capture3(approval.environment, *approval.argv, stdin_data: input)
     end
   end
+end
+
 end

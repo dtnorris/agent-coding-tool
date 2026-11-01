@@ -89,7 +89,7 @@ module TestSuiteRunner
       invocation = SecureRandom.uuid
       selection = required_cases.sort.join("\n")
       environment = { "ACT_SUITE_EVIDENCE" => evidence_path, "ACT_ORDINARY_SUITE" => nil,
-                      "ACT_TEST_CODING_SKILL" => nil, "ACT_SUITE_INVOCATION" => invocation,
+                      "ACT_TEST_CODING_SKILL" => nil, "ACT_NATIVE_SUITE" => ordinary ? nil : "1", "ACT_SUITE_INVOCATION" => invocation,
                       "ACT_SUITE_SELECTION" => selection }
       record = nil
       if feedback

@@ -186,6 +186,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       %w[lib bin].each { |path| FileUtils.cp_r(File.expand_path("../../#{path}", __dir__), @tool) }
       FileUtils.mkdir_p(File.join(@tool, "test"))
       FileUtils.cp(File.expand_path("../coding_skill_support.rb", __dir__), File.join(@tool, "test"))
+      FileUtils.cp(File.expand_path("../native_coding_skill_support.rb", __dir__), File.join(@tool, "test"))
       # B has an independent local authority, so A's preparation cannot reserve it.
       second = File.join(@root, "second")
       second_remote = File.join(@root, "second.git")

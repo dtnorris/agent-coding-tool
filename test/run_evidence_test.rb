@@ -725,7 +725,7 @@ class RunEvidenceTest < Minitest::Test
       begin
         assert IO.select([output], [], [], 5), "public tunnel startup did not finish"
         line = output.gets
-        assert line, "public tunnel startup refused before READY"
+        assert line, "public tunnel startup refused before READY: #{error.read unless line}"
         assert_equal "ready", JSON.parse(line)["status"]
         wire = Dir.chdir(path) { UNIXSocket.new("wire") }
         yield wire, waiter, path

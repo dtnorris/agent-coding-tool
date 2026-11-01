@@ -15,8 +15,12 @@ module ManualOverlapSupport
     responses = [[@fake_version, "", 0], [@fake_help, "", 0],
                  ["status Show login status", "", 0], ["", @fake_auth, @fake_auth.empty? ? 1 : 0]]
     PREFLIGHT.zip(responses).map do |arguments, (stdout, stderr, code)|
-      result = AgentCodingTool::CommandResult.new(stdout: stdout, stderr: stderr, exitstatus: code)
-      GitContract::Observation.new(argv: [environment, executable, *arguments], cwd: nil, result: result.to_ary)
+      result = if @native_fixture
+                 NativeTestCapture.call(environment, executable, *arguments, unsetenv_others: true)
+               else
+                 AgentCodingTool::CommandResult.new(stdout: stdout, stderr: stderr, exitstatus: code).to_ary
+               end
+      GitContract::Observation.new(argv: [environment, executable, *arguments], cwd: nil, result: result)
     end
   end
 
@@ -73,10 +77,16 @@ module ManualOverlapSupport
     ready_read, ready_write = IO.pipe
     worker = { reaped: false }
     null = File.open(File::NULL, "w")
-    approval = ChildProcesses.permit("manual_worker", arguments: [path, lease.to_s], options: { pgroup: true })
-    worker[:pid] = NoGitExecution.with_permit(approval) do
-      Process.spawn(approval.environment, *approval.argv, **approval.options,
+    if ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
+      script = File.expand_path('support/fixtures/manual_worker.rb', __dir__)
+      worker[:pid] = Process.spawn(RbConfig.ruby, script, path, lease.to_s, pgroup: true,
         in: release_read, out: ready_write, err: null)
+    else
+      approval = ChildProcesses.permit("manual_worker", arguments: [path, lease.to_s], options: { pgroup: true })
+      worker[:pid] = NoGitExecution.with_permit(approval) do
+        Process.spawn(approval.environment, *approval.argv, **approval.options,
+          in: release_read, out: ready_write, err: null)
+      end
     end
     null.close
     release_read.close

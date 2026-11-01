@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "support/no_git_execution"
+require_relative "support/no_git_execution" unless ENV["ACT_NATIVE_SUITE"] == "1" && ENV["ACT_ORDINARY_SUITE"] != "1"
 require_relative "support/memory_git/session"
 require "fileutils"
 require "minitest/autorun"
@@ -102,3 +102,4 @@ module TestHelpers
 end
 
 require_relative "coding_skill_support"
+require_relative "native_test_support" if ENV["ACT_NATIVE_SUITE"] == "1" && ENV["ACT_ORDINARY_SUITE"] != "1"

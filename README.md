@@ -924,7 +924,18 @@ paths and conflicting branches require operator inspection. Project or ancestor
 and submodules require operator judgment and are not
 supported in V1. Read-only snapshots may move and are disclosed in launch/exit
 provenance for reconciliation; writable movement before spawn blocks launch.
-Required external freshness failures block prompt handoff.
+Required external freshness failures before launch block prompt handoff.
+After valid admission, external remote main, an ordinary checkout's local main,
+or unrelated remote-tracking ref movement does not change the isolated worker's
+baseline or end its authorized implementation, diagnosis, local checks or
+candidate export. Read-only inputs remain pinned. Final lookup failure leaves
+freshness unknown and does not discard a candidate or replace the child's exit
+status. STALE describes integration eligibility separately from execution.
+This continuation rule requires verified isolation and stable bound inputs;
+unexpected worker HEAD, origin, index, ownership or input changes require
+inspection and pausing affected unsafe operations. Expected authored edits are
+normal. Verify live mutable dependencies where used; missing prerequisites and
+explicit task-specific stop rules still block their dependent actions.
 For example, `act launch FO-25 --codex --allow-write-collision --reasoning high`
 can develop independently alongside a manually started `IG-19E-F2`. The older
 task's lifecycle, prompt, unfinished files, branch and evidence are untouched.
@@ -976,13 +987,31 @@ there is no automatic fallback or retry.
 
 The exact generated prompt bytes go to stdin, followed by a clearly separated
 execution envelope binding each writable repository to its isolated checkout.
-The envelope identifies host `git ls-remote` checks, discloses the absent
-ChatGPT GitHub connector and disabled sandbox network, and requires a limitation
-report when required reads, prerequisites or final freshness cannot be proved.
+The envelope identifies host `git ls-remote` checks and disabled sandbox network;
+worker-only connector availability must be observed at startup. It requires a
+limitation report naming actions blocked by missing required reads/prerequisites,
+while unavailable final freshness alone permits baseline-local completion.
 Host checks are never represented as CLI checks. Tasks that require that
 connector cannot complete those requirements in this worker. The host checks
 refs again at exit, recording movement or an unavailable check; this neither
 proves worker reconciliation nor grants publication authority.
+
+Preserve the original base, complete candidate/hash, focused evidence and observed
+refs or lookup limitations in the handoff. Existing checkpoint export and host
+record/verify/gate operations bind to the prepared baseline and can preserve and
+locally validate that candidate after external main advances; no close, retry or
+re-preparation is required solely for drift. Host checkpoint writes remain with
+the operator. Before authorized integration/publication, the integration owner
+must reconcile with the actual target and rerun affected acceptance and existing
+gates, including delivery's `fresh_at_exit` requirement. Do not automatically
+fetch/rebase/reset/merge, mark stale work current or fabricate acceptance.
+
+New preparations embed the published ACT-30 coding/planning guidance at immutable
+agent-skills revision `8ac096dd81865ea9e30ef84c6a8127db68e159bb`, with strict
+SHA-256 and offline source-object verification. Manager guidance is not embedded.
+Upgrading ACT does not rewrite historical prompts or running workers. Existing
+task-specific drift stops still govern their attempts until the authorized owner
+revises them; report those conflicts without changing task data or active evidence.
 
 Evidence lives in a private sibling `<canonical-data-directory>-runs/TASK/`
 directory, outside ACTD and public source, so even `publish --all` does not
@@ -1295,9 +1324,9 @@ exemptions and read-only work do not introduce a separate task classification.
 Task-specific requirements, safety constraints, Git restrictions and acceptance
 criteria take precedence. Existing task YAML needs no changes.
 
-ACT reads the Git blob at commit `e4e92e678b567ceaabe9c9d9c94215f6729099ba`
+ACT reads the Git blob at commit `8ac096dd81865ea9e30ef84c6a8127db68e159bb`
 from the `agent-skills` checkout beside the ACT source checkout. Its SHA-256 is
-`5337876cc23dfc7961d21fba3ed01dab50adef98991e02e244b3512f19198982`.
+`b9eb959fa47d4627eafaae285248be9ccb0becfdf5bb0e0a481d06f14569cc27`.
 The prompt records both values. The checkout must contain that commit and blob;
 its current branch and working-file contents do not affect rendering. ACT
 does not fetch, use replacement objects, or fall back to a moving branch.
@@ -1356,12 +1385,12 @@ and planning guidance are independent. The ordinary implementation control is
 Opted-in prompts retain complete universal coding guidance exactly once and add
 the complete unchanged `skills/agentic-task-planning/SKILL.md`, including metadata,
 exactly once before the assignment's goal, constraints and acceptance. ACT pins
-planning commit `358f7f28ac6f9205227c0378cbf6bb99ad63a179`, SHA-256
-`8a726b39a53bb43deebfc3ae81bd70cb657bada4ad69ac83afe35d88539fc009`, in
+planning commit `8ac096dd81865ea9e30ef84c6a8127db68e159bb`, SHA-256
+`d5c38f942a97b7adf0ee0007351aded95fa54414510066d01fea99446be3e66b`, in
 `dtnorris/agent-skills`. The same offline Git-object verification used for coding
 guidance checks the full bytes, UTF-8 and required metadata. Neither pin follows
 the source branch or working tree, uses replacement objects/lazy fetch, or falls
-back to cached, summarized or substitute guidance. The coding pin remains unchanged.
+back to cached, summarized or substitute guidance.
 
 The prompt requires substantive application before producing plans, task
 definitions, dependency graphs, acceptance requirements, ownership/integration

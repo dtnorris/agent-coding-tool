@@ -54,6 +54,16 @@ passing result.
    assumptions, unexecuted tests, environmental blockers, and pre-existing
 failures. Disclose unrelated changes.
 
+7. **Preserve isolated candidates across external drift.** After valid admission
+   to verified isolated work with stable bound inputs, continue authorized local
+   work and candidate export at the original baseline when external local/remote
+   main moves or final freshness is unknown. Keep read-only inputs pinned; inspect
+   unexpected workspace/input changes and pause affected unsafe operations.
+   Required inputs and explicit task-specific stops still control dependent
+   actions. Record base, observed refs or lookup limits, candidate hash and pending
+   integration. Host checkpoint writes remain operator-owned; reconcile and
+   revalidate against the actual target before authorized integration/publication.
+
 ## Git and Handoff Safety
 
 - Do not commit, push, merge, create PRs, or modify GitHub unless explicitly

@@ -17,6 +17,11 @@ class CodingSkillTest < Minitest::Test
   # Verifies complete byte-preserving inclusion, pin identity and offline-only
   # object access. Local Git errors propagate rather than bypassing verification.
   def test_complete_skill_once_with_identity_and_only_offline_git_reads
+    # Production adoption remains observable alongside hermetic source checks.
+    coding, planning = CodingSkillSupport::PUBLISHED_CODING, CodingSkillSupport::PUBLISHED_PLANNING
+    assert_equal ["8ac096dd81865ea9e30ef84c6a8127db68e159bb"] * 2, [coding.fetch("revision"), planning.fetch("revision")]
+    assert_equal "b9eb959fa47d4627eafaae285248be9ccb0becfdf5bb0e0a481d06f14569cc27", coding.fetch("sha256")
+    assert_equal "d5c38f942a97b7adf0ee0007351aded95fa54414510066d01fea99446be3e66b", planning.fetch("sha256")
     runner = SkillObservations.defaults(%w[coding coding])
     renderer = AgentCodingTool::PromptRenderer.new(runner: runner)
     prompt = renderer.render(task, {})

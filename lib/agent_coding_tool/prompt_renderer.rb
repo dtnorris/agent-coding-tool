@@ -8,13 +8,13 @@ module AgentCodingTool
   class PromptRenderer
     SKILL_PATH = "skills/karpathy-manning-dtnorris-guidelines/SKILL.md"
     SKILL_IDENTITY = {
-      "revision" => "e4e92e678b567ceaabe9c9d9c94215f6729099ba",
-      "sha256" => "5337876cc23dfc7961d21fba3ed01dab50adef98991e02e244b3512f19198982"
+      "revision" => "8ac096dd81865ea9e30ef84c6a8127db68e159bb",
+      "sha256" => "b9eb959fa47d4627eafaae285248be9ccb0becfdf5bb0e0a481d06f14569cc27"
     }.freeze
     PLANNING_SKILL_PATH = "skills/agentic-task-planning/SKILL.md"
     PLANNING_SKILL_IDENTITY = {
-      "revision" => "358f7f28ac6f9205227c0378cbf6bb99ad63a179",
-      "sha256" => "8a726b39a53bb43deebfc3ae81bd70cb657bada4ad69ac83afe35d88539fc009"
+      "revision" => "8ac096dd81865ea9e30ef84c6a8127db68e159bb",
+      "sha256" => "d5c38f942a97b7adf0ee0007351aded95fa54414510066d01fea99446be3e66b"
     }.freeze
     SKILL_ROOT = File.expand_path("../../../agent-skills", __dir__)
 
@@ -62,9 +62,11 @@ module AgentCodingTool
       lines << "If a required GitHub operation is unavailable through the connected tooling, report that limitation rather than silently switching to the browser."
       lines << "Unless a task-specific constraint explicitly restricts reads, you may inspect other connected GitHub repositories for prerequisites and context. The repository lists below are not an exhaustive read allowlist."
       lines << ""
-      lines << "The pushed branch heads recorded below are the preparation snapshot. Refresh these pushed heads before doing any work and again before finalizing."
-      lines << "Writable repositories: if any pushed head differs from the preparation snapshot, stop and report STALE INPUT rather than silently continuing. A new preparation (with explicit retry if an outcome was recorded) is required."
-      lines << "Read-only repositories: if a pushed head differs, refresh that repository to the new pushed head and re-inspect and reconcile any materially affected findings before finalizing. Unrelated read-only head movement alone does not require an abort. Preserve the preparation snapshot as provenance and report the refreshed heads and any effect on your conclusions in the handoff."
+      lines << "The pushed branch heads recorded below are the immutable preparation snapshot. Before editing, verify the authorized execution root/realpath, origin, actual HEAD, index/worktree, ownership and bound input identities. Launch admission retains its required freshness checks."
+      lines << "Once validly admitted to verified isolated work with stable bound inputs, continue authorized implementation, diagnosis, local checks and candidate export on the original baseline when external remote main, an ordinary checkout's local main or unrelated remote-tracking refs advance. External drift alone does not require restart, retry or re-preparation. STALE describes integration eligibility, not worker termination or implementation failure."
+      lines << "Read-only inputs remain pinned to their bound identities; do not silently switch them to latest source because their repository main moved. Verify live mutable dependencies where actually used. Expected authored changes are normal; unexplained changes to the worker's HEAD, index, source bytes, origin, ownership or required inputs require inspection and pausing affected unsafe operations."
+      lines << "Observe external refs before handoff where available; if final remote lookup is unavailable, record freshness as unknown and continue work supported by verified local inputs. Preserve the original base, observed refs or lookup limitation, complete candidate SHA-256 and focused evidence, with integration pending. Missing required inputs, genuine safety/semantic dependencies, revoked authority and explicit task-specific stop rules still block dependent actions; state the exact blocked action and continue independent authorized work."
+      lines << "Before authorized integration/publication, reconcile against the actual integration target and rerun affected acceptance and existing gates. Do not silently fetch, rebase, reset or merge, label stale work current, mark COMPLETE or bypass host ownership, sandbox or delivery checks. Preserve the candidate without requiring re-preparation solely for external drift. Historical prompts and task-specific restrictions remain controlling until their authorized owner revises them."
       lines << "Repository names below are logical task keys / local checkout identities, not necessarily GitHub repository names. Verify each pushed head using its recorded remote_url and branch; do not infer the remote repository from the logical key or local path."
       lines << ""
       snapshot.each do |name, repo|

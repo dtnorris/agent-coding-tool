@@ -154,10 +154,19 @@ module LauncherSupport
       end
       File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
       File.write('worker-change.txt', 'worker')
+      if mode.start_with?('journey-drift-')
+        # The parent advances only external fixture refs after this real child
+        # consumes stdin; the worker must then edit/check/export at its old HEAD.
+        File.write(File.join(root, 'worker-ready'), Dir.pwd)
+        require 'timeout'
+        Timeout.timeout(10) { sleep 0.01 until File.file?(File.join(root, 'worker-continue')) }
+        File.binwrite('worker-change.txt', "after drift\\n\\x00\\xff".b)
+        abort 'post-drift focused check failed' unless File.binread('worker-change.txt') == "after drift\\n\\x00\\xff".b
+      end
       if mode.start_with?('journey-')
         # Finite external worker boundary: consume the real envelope command,
         # check the fake implementation and export through the public CLI.
-        abort 'focused check failed' unless File.binread('worker-change.txt') == 'worker'
+        abort 'focused check failed' unless mode.start_with?('journey-drift-') || File.binread('worker-change.txt') == 'worker'
         command = input.lines.find { |line| line.start_with?('After focused checks, export using') }
         abort 'missing candidate handoff' unless command
         output, error, status = Open3.capture3(*Shellwords.split(command.split(': ', 2).last))
@@ -166,7 +175,7 @@ module LauncherSupport
         result['focused_checks'] = [{ 'command' => 'finite fake worker content check', 'result' => 'PASS' }]
         result['startup_tools'] = mode.delete_prefix('journey-')
         File.write(path, JSON.generate(result))
-        exit
+        exit(mode == 'journey-drift-remote' ? 7 : 0)
       end
       puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
       puts 'progress'

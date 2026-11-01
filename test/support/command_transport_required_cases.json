@@ -1,4 +1,6 @@
 [
+  "CommandTransportVerifier#test_apply_observation_exact_request_and_consumption",
+  "CommandTransportVerifier#test_apply_observation_exit_and_signal_translation",
   "CommandTransportVerifier#test_apply_request_and_signal_translation",
   "CommandTransportVerifier#test_checkpoint_staged_refusal_and_raw_bytes",
   "CommandTransportVerifier#test_cli_status_continuous_journey_and_malformed_ref",

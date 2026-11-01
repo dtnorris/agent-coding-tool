@@ -13,6 +13,7 @@ require "stringio"
 require "tmpdir"
 require_relative "command_boundary_audit"
 require_relative "../../lib/agent_coding_tool"
+require_relative "../apply_handoff_observations"
 
 # A finite raw transport double; mismatches escape product StandardError handlers.
 class ExpectedCommandTransport
@@ -437,6 +438,64 @@ class CommandTransportVerifier < Minitest::Test
     assert_raises(AgentCodingTool::Error) { handoff.send(:execute, %w[git status], cwd: "/repo") }
   ensure
     ENV.delete("GIT_DIR")
+  end
+
+  # The apply replay binds every declared request field, including process group.
+  # Mismatches, unknown options, ordering, omissions and reuse cannot cause effects.
+  def test_apply_observation_exact_request_and_consumption
+    record = { argv: %w[git apply], cwd: "/fixture",
+      env: { "GIT_TERMINAL_PROMPT" => "0", "GIT_PAGER" => "cat" },
+      input: "patch\x00\xff".b, pgroup: true, result: result("out\x00\xff".b, "err\x00\xfe".b, 23) }
+    arguments = record.slice(:cwd, :env, :input, :pgroup)
+    effects = []
+    replay = ApplyHandoffObservations::Transport.new([record]) { |item| effects << item }
+    [arguments.merge(cwd: "/wrong"), arguments.merge(env: {}),
+     arguments.merge(input: "wrong"), arguments.merge(pgroup: false),
+     arguments.merge(pgroup: nil)].each do |fields|
+      assert_raises(GitContract::UnexpectedObservation) { replay.call(record.fetch(:argv), **fields) }
+    end
+    assert_raises(GitContract::UnexpectedObservation) { replay.call(%w[git diff], **arguments) }
+    assert_raises(ArgumentError) { replay.call(record.fetch(:argv), **arguments.except(:pgroup)) }
+    assert_raises(ArgumentError) { replay.call(record.fetch(:argv), **arguments, close_others: false) }
+    assert_raises(GitContract::UnexpectedObservation) { replay.verify! }
+    assert_empty effects
+    assert_same record.fetch(:result), replay.call(record.fetch(:argv), **arguments)
+    assert_equal [record], effects
+    assert replay.verify!
+    assert_raises(GitContract::UnexpectedObservation) { replay.call(record.fetch(:argv), **arguments) }
+    assert_equal [record], effects
+
+    other = record.merge(argv: %w[git status])
+    ordered = ApplyHandoffObservations::Transport.new([record, other])
+    assert_raises(GitContract::UnexpectedObservation) { ordered.call(other.fetch(:argv), **arguments) }
+    assert_same record.fetch(:result), ordered.call(record.fetch(:argv), **arguments)
+    assert_raises(GitContract::UnexpectedObservation) { ordered.verify! }
+    assert_same other.fetch(:result), ordered.call(other.fetch(:argv), **arguments)
+    assert ordered.verify!
+    assert_raises(ArgumentError) do
+      ApplyHandoffObservations::Transport.new([record.merge(result: ["", "", 0])])
+    end
+  end
+
+  # The real apply workflow converts exit/signal facts only at its shell boundary.
+  # Replay retains the original binary streams, CommandResult and nil signal success.
+  def test_apply_observation_exit_and_signal_translation
+    [result("out\x00\xff".b, "err\x00\xfe".b), result("out", "err", 23),
+     result("out\x00\xff".b, "err\x00\xfe".b, signal: 15)].each do |response|
+      record = { argv: %w[git apply], cwd: "/fixture",
+        env: { "GIT_TERMINAL_PROMPT" => "0", "GIT_PAGER" => "cat" },
+        input: "patch\x00\xff".b, pgroup: true, result: response }
+      replay = ApplyHandoffObservations::Transport.new([record])
+      raw = replay.call(record.fetch(:argv), **record.slice(:cwd, :env, :input, :pgroup))
+      assert_same response, raw
+      assert_nil raw.success? if response.signaled?
+      assert replay.verify!
+      workflow = ApplyHandoffObservations::Transport.new([record])
+      handoff = AgentCodingTool::ApplyHandoff.new(config: nil, transport: workflow)
+      assert_equal [response.stdout, response.stderr, response.shell_status],
+        handoff.send(:execute, record.fetch(:argv), cwd: record.fetch(:cwd), input: record.fetch(:input))
+      assert workflow.verify!
+    end
   end
 
   # Launcher constructs its nested RepoInspector with the same transport. Raw

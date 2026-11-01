@@ -10,7 +10,7 @@ require 'shellwords'
 module TunnelProcesses
   ROOT = File.realpath(File.join(__dir__, '../..')).freeze
   SOURCE = File.join(ROOT, 'lib/agent_coding_tool/evidence_tunnel.rb').freeze
-  SOURCE_HASH = '77bf942db448060553de288afa1f9c268e3e7ad6092309ec112c02ea3895a785'
+  SOURCE_HASH = '557afed85e6c5e514aeea299afc5fdc64b48c6daf929ac0e9e8c22c06ce495b4'
   CLIENT = File.join(__dir__, 'fixtures/tunnel_client.rb').freeze
   CLIENT_HASH = 'a9c25a6b9394df6677dfb6f1fc803e07ef93f86b5ebd225afde72b81e9ef5d12'
   ENTRY = File.join(ROOT, 'bin/agent-coding-tool').freeze
@@ -133,7 +133,7 @@ module TunnelProcesses
       tunnel = Thread.current[:act_tunnel]
       return super unless tunnel && command[1] == tunnel.instance_variable_get(:@client)
       client, session = command[1], tunnel.instance_variable_get(:@path)
-      line = TunnelProcesses.site(SOURCE, SOURCE_HASH, 'pid = Process.spawn(environment, @client')
+      line = TunnelProcesses.site(SOURCE, SOURCE_HASH, 'pid = @spawn.call(environment, @client')
       NoGitExecution.refuse!('client callsite') unless caller_locations.any? { |location| location.absolute_path == SOURCE && location.lineno == line }
       NoGitExecution.refuse!('client bytes') unless Digest::SHA256.file(client).hexdigest == CLIENT_HASH
       expected = { unsetenv_others: true, pgroup: true, in: File::NULL, out: File::NULL, err: File::NULL, chdir: session }

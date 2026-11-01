@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require_relative "skill_observations"
+require_relative "support/child_processes"
 require "minitest/mock"
 require "rbconfig"
 require "shellwords"
@@ -38,6 +39,7 @@ class OrdinaryBoundaryTest < Minitest::Test
         assert_raises(OrdinaryExecution::ProhibitedExecution, &operation)
         refute File.exist?(marker)
       end
+      assert_ordinary_rejects_permitted_child
       File.binwrite(marker, "\x00\xff".b)
       assert_equal "\x00\xff".b, IO.binread(marker)
       # A Ruby-only observation stub is allowed, but its captured native fallback
@@ -49,6 +51,32 @@ class OrdinaryBoundaryTest < Minitest::Test
         refute File.exist?(marker)
       end
     end
+  end
+
+  # Proves the stronger ordinary boundary still refuses an otherwise permitted
+  # reviewed Ruby child. Returns after refusal; assertion/bootstrap errors fail.
+  def assert_ordinary_rejects_permitted_child
+    # Match the runner's fixed ordinary bootstrap; unknown RUBYOPT still refuses.
+    preloads = %w[ordinary_execution.rb ordinary_support.rb suite_reporter.rb].to_h do |name|
+      path = File.realpath(File.join(__dir__, name))
+      [path, Digest::SHA256.file(path).hexdigest]
+    end
+    if defined?(Bundler)
+      bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
+      preloads[bundler] = Digest::SHA256.file(bundler).hexdigest
+    end
+    if ENV["ACT_COVERAGE_CONTEXT"]
+      preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest
+    end
+    permit = NoGitExecution::Permit.new(script: File.join(ChildProcesses::FIXTURES, "status.rb"),
+      sha256: ChildProcesses::HASHES.fetch("status"), arguments: ["0"], preloads: preloads)
+    assert_raises(OrdinaryExecution::ProhibitedExecution) do
+      NoGitExecution.with_permit(permit) do
+        pid = Process.spawn(permit.environment, *permit.argv, **permit.options)
+        Process.waitpid(pid) # Reap the finite owned child if the negative control fails.
+      end
+    end
+    refute permit.used?, "ordinary refusal must precede selective permit consumption"
   end
 
   # Material environment, cwd, order, duplication and omissions fail before a

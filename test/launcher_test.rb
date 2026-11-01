@@ -693,8 +693,10 @@ class LauncherTest < Minitest::Test
       activity = @coordinator.external_activity
       document = activity.report("OTHER", reporter: "operator", kind: "fake", scope_complete: true)
       state = @store.load("T")
-      error = assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T", allow_write_collision: true) }
-      assert_includes error.message, "external activity conflict"
+      [false, true].each do |explicit|
+        error = assert_raises(AgentCodingTool::InvalidState) { launcher.launch("T", allow_write_collision: explicit) }
+        assert_includes error.message, "external activity conflict"
+      end
       assert_equal state, @store.load("T")
       refute File.exist?(File.join("#{@data}-runs", "T"))
       activity.end_activity("OTHER", document.fetch("active").fetch("observation_id"), disposition: "ended")

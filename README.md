@@ -909,19 +909,28 @@ Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch uses a collision override only for this invocation when
-`--allow-write-collision` is present. Managed siblings still require verified
+Launch admits compatible verified managed overlap by default, without
+`--allow-write-collision`. Managed siblings still require verified
 ACT-owned task/attempt evidence, distinct worktrees at the same prepared
 writable baseline, and known process state. A manual `IN_FLIGHT` reservation
-without managed run evidence may overlap even when its activity is unknown or
+without managed run evidence requires explicit `--allow-write-collision` and
+may then overlap even when its activity is unknown or
 active, or its historical preparation differs. The new task must be fresh and
 pass every normal native worktree, Git identity, prompt and sandbox check.
 The second worker's sandbox probe also denies writes to verified managed
-sibling worktrees. Ordinary launch still
-rejects a write/write collision; read-only overlap does not require the flag.
-The override records task, attempt, invocation, conflicts, authorities and
+sibling worktrees. Mixed managed/manual overlap also requires explicit permission.
+Read-only overlap does not require the flag. Failed ownership, baseline,
+sandbox or liveness checks refuse in either mode; repository overlap alone
+does not establish compatibility or semantic merge safety.
+The admission records task, attempt, invocation, conflicts, authorities and
 verified sibling ownership separately from unverified manual reservations in
-private handoff evidence and lifecycle state. Manual-overlap diagnostics say
+private handoff evidence and lifecycle state. `collision_authorization.admission_basis`
+is `default_verified_managed` or `explicit_permission`, reflecting whether the
+operator actually supplied the flag. The historical `write_collision_override.launch`
+container retains the same bound evidence for existing consumers, including
+default admission; its presence alone does not imply explicit permission.
+Historical records without the added basis retain their original meaning.
+Manual-overlap diagnostics say
 `operator_authorized_manual_overlap`; they never certify the external worker.
 It expires with that attempt. Manual `start --allow-write-collision` retains
 its human assertion contract and cannot be used to bypass launch checks.
@@ -2180,7 +2189,7 @@ For a bounded Mac-local parallel pilot, run
 `ruby -Ilib:test test/parallel_launch_test.rb` in the ACT checkout. It creates
 two disposable task definitions, a local bare remote and separate task-owned
 worktrees at one pinned commit. A fake Codex worker stays active while the
-second launches with the explicit flag. The test checks the collision record,
+second launches without an override flag. The test checks the admission record,
 distinct branches/results, denied sibling and ordinary-checkout writes,
 independent process-group cancellation, checkpoint identity and stale status
 after a local main push. It also checks that a manual IG-18C reservation remains

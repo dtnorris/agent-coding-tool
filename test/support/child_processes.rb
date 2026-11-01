@@ -26,7 +26,7 @@ module ChildProcesses
     "evidence_cli" => "5547775b775026b6c45271e7a95a63ee0aec50927dc36d79be13b4e79157cc2b",
     "state_reader" => "c79822d71b24b5147c081f6ac260c143e1de1d11adf55947540be7456ee31a42",
     "external_race" => "29d52f5928ee7cf892557524e177fbceb5ca2af7649642ca8d22c7ff12c78853",
-    "launcher_cli" => "4f0f2a31de7c889162c422e8aad8b1479050e9f7b6aa79a04730573d596d0874",
+    "launcher_cli" => "b1438e99ece26b9036010a0746a65ea8240860b9d6bbc0a5396e5cd5745bba0a",
     "planning_consumer" => "10952eb6feabb2aa3f106494e494f782e4049964b3ff3e13d145b66e56fdb851",
 
     "status" => "2b3b1ffc56c1774ddaf4c11329d6da73984e588cf95ed74049d97a13bc0beeee",

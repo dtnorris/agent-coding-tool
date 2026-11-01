@@ -312,16 +312,20 @@ class FeedbackContract < Minitest::Test
       summary = "1 runs, 1 assertions, 0 failures, 0 errors, 0 skips\n"
       options = { label: "control", invocation: "fresh", selection: "one" }
       assert_equal result, TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options)
-      ["", "malformed\n", "0 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n"].each do |output|
-        assert_raises(SystemExit) { TestSuiteRunner.validate(output, path, ["Example#test_one"], **options) }
+      _output, diagnostics = capture_io do
+        ["", "malformed\n", "0 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n"].each do |output|
+          assert_raises(SystemExit) { TestSuiteRunner.validate(output, path, ["Example#test_one"], **options) }
+        end
+        assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_missing"], **options) }
+        assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options.merge(invocation: "stale")) }
+        %w[skip failure error].each do |status|
+          result.fetch("results").first["status"] = status
+          File.write(path, JSON.generate(result))
+          assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options) }
+        end
       end
-      assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_missing"], **options) }
-      assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options.merge(invocation: "stale")) }
-      %w[skip failure error].each do |status|
-        result.fetch("results").first["status"] = status
-        File.write(path, JSON.generate(result))
-        assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options) }
-      end
+      assert_includes diagnostics, "control: missing or malformed test summary"
+      assert_includes diagnostics, "control: empty, failed, skipped or malformed case evidence"
     end
   end
 

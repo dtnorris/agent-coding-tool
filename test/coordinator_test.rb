@@ -308,7 +308,9 @@ class CoordinatorTest < Minitest::Test
       end
       assert_includes prompt, "## Writable repositories"
       assert_includes prompt, "## Read-only repositories"
-      assert_includes prompt, "report STALE INPUT"
+      assert_includes prompt, "External drift alone does not require restart, retry or re-preparation."
+      assert_includes prompt, "Launch admission retains its required freshness checks."
+      refute_includes prompt, "report STALE INPUT"
       assert_includes prompt, "Do not broaden write scope or override explicit task-specific read restrictions"
       assert File.file?(result.dig("state", "prompt_path"))
     end

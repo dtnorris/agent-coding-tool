@@ -8,6 +8,9 @@ require_relative "../lib/agent_coding_tool"
 # canonical text is not copied here: tests create their own valid skill and pin.
 # Production rendering, object reads, integrity and lifecycle checks still run.
 module CodingSkillSupport
+  # Preserve production adoption identities before installing hermetic sources.
+  PUBLISHED_CODING = AgentCodingTool::PromptRenderer::SKILL_IDENTITY
+  PUBLISHED_PLANNING = AgentCodingTool::PromptRenderer::PLANNING_SKILL_IDENTITY
   TEXT = "---\nname: karpathy-manning-dtnorris-guidelines\ndescription: Fixture coding instructions.\nlicense: MIT\n---\n\nFixture instructions: inspect, change, verify.\n"
   PLANNING_TEXT = "---\nname: agentic-task-planning\ndescription: Fixture planning instructions.\nlicense: MIT\n---\n\nFixture planning: outcomes, ownership, integration, recovery, acceptance.\n"
 

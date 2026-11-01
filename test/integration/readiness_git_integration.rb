@@ -4,6 +4,7 @@ require_relative "../test_helper"
 require_relative "../launcher_support"
 require "shellwords"
 require "stringio"
+require "timeout"
 
 # Public prepare/launch/export/host checkpoint journey; only Codex is a finite
 # fake executable. All Git, state, host commands and evidence are disposable.
@@ -177,6 +178,151 @@ class ReadinessTest < Minitest::Test
           assert_includes @err.string, "stale implementation"
           assert_nil @store.load("T")["result"]
           assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
+        end
+      end
+    end
+  end
+
+  # Real prepare/launch/worker/export/host commands retain the admitted base
+  # across three external changes. Only the finite Codex/provider boundary is
+  # fake; this proves mechanics and emitted policy, not universal LLM compliance.
+  def test_pinned_worker_finishes_after_external_drift_or_unavailable_exit_lookup
+    %w[remote local unavailable].each do |condition|
+      fixture(git: true, process: true, mutable_remote: true) do
+        public_entries do
+          write_fake("journey-drift-#{condition}")
+          assert_equal 0, cli("prepare", "T")
+          prepared = @store.load("T")
+          prompt = File.binread(prepared.fetch("prompt_path"))
+          # Legitimate ordinary and sibling work must survive the new attempt.
+          File.binwrite(File.join(@ordinary, "unfinished.bin"), "\x00\xffordinary".b)
+          sibling = File.join(@root, "sibling")
+          setup_git("worktree", "add", "--detach", sibling, @base, chdir: @ordinary)
+          File.binwrite(File.join(sibling, "unfinished.bin"), "\xff\x00sibling".b)
+          sibling_before = file_bytes(sibling)
+          launching = Thread.new do
+            Open3.capture3({ "AGENT_CODING_TOOL_DATA_DIR" => @data }, File.join(@root, "act"), "launch", "T", "--codex")
+          end
+          begin
+            ready = File.join(@root, "worker-ready")
+            Timeout.timeout(10) { sleep 0.01 until File.file?(ready) || !launching.alive? }
+            assert File.file?(ready), launching.value.inspect unless File.file?(ready)
+            workspace = File.read(ready)
+            assert_equal @base, setup_git("rev-parse", "HEAD", chdir: workspace)
+            assert_equal "worker", File.binread(File.join(workspace, "worker-change.txt"))
+            if condition == "unavailable"
+              File.rename(@remote, "#{@remote}-offline")
+            elsif condition == "local"
+              File.write(File.join(@ordinary, "file.txt"), "ordinary local main advanced\n")
+              setup_git("commit", "-am", "independent local advance", chdir: @ordinary)
+              refute_equal @base, setup_git("rev-parse", "HEAD", chdir: @ordinary)
+            else
+              # Independent remote producer; neither ordinary nor worker HEAD moves.
+              later = setup_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                "--git-dir", @remote, "commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "independent remote advance")
+              setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", later)
+            end
+            ordinary_before = file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
+            index_before = File.binread(File.join(@ordinary, ".git", "index"))
+          ensure
+            File.write(File.join(@root, "worker-continue"), "continue")
+            launching.join
+          end
+          _output, error, status = launching.value
+          expected_exit = condition == "remote" ? 7 : 0
+          assert_equal expected_exit, status.exitstatus, error
+          runs = Dir.glob("#{@data}-runs/T/*/handoff.json")
+          assert_equal 1, runs.length
+          report = JSON.parse(File.binread(runs.first))
+          assert_equal [1, "exited", expected_exit], report.values_at("attempt", "status", "exit_status")
+          assert_equal prepared, report.fetch("preparation_state")
+          assert_equal prepared.fetch("snapshot"), @store.load("T").fetch("snapshot")
+          assert_equal prompt, File.binread(prepared.fetch("prompt_path"))
+          assert_equal @base, setup_git("rev-parse", "HEAD", chdir: workspace)
+          consumed = File.binread(File.join(@root, "stdin"))
+          assert_equal File.binread(report.fetch("stdin_path")), consumed
+          assert_equal prompt, consumed.byteslice(0, prompt.bytesize)
+          assert_includes prompt, "continue authorized implementation, diagnosis, local checks and candidate export on the original baseline"
+          assert_includes consumed.byteslice(prompt.bytesize..), "unavailable final remote freshness alone permits continued authorized implementation"
+          [prompt, consumed].each do |instructions|
+            refute_includes instructions, "stop and report STALE INPUT"
+            refute_includes instructions, "refresh that repository to the new pushed head"
+            refute_includes instructions, "If required external reads, prerequisites or final freshness cannot be established, stop"
+            assert_includes instructions, "explicit task-specific stop"
+            assert_includes instructions, "pausing affected unsafe operations"
+          end
+          if condition == "unavailable"
+            assert_equal "unavailable", report.fetch("writable_freshness")
+            assert_includes report.fetch("exit_freshness_error"), "cannot resolve pushed"
+            refute report.key?("exit_heads")
+            # Only the test-owned remote is restored for later host status checks.
+            File.rename("#{@remote}-offline", @remote)
+          else
+            assert_equal condition == "remote" ? "stale" : "fresh_at_exit", report.fetch("writable_freshness")
+            assert_equal condition == "remote" ? later : @base, report.dig("exit_heads", "repo", "pushed_sha")
+          end
+          candidate = JSON.parse(File.binread(report.fetch("final_path")))
+          assert_equal ["canonical_format_checked", "pending", @base], candidate.values_at("status", "host_checkpoint", "base_sha")
+          assert_equal "PASS", candidate.fetch("focused_checks").first.fetch("result")
+          assert_equal Digest::SHA256.file(candidate.fetch("artifact")).hexdigest, candidate.fetch("sha256")
+          refute @store.load("T")["checkpoint"]
+          reconstruction = File.join(@root, "reconstruction")
+          setup_git("clone", @ordinary, reconstruction)
+          setup_git("checkout", "--detach", @base, chdir: reconstruction)
+          setup_git("apply", "--binary", candidate.fetch("artifact"), chdir: reconstruction)
+          assert_equal "after drift\n\x00\xff".b, File.binread(File.join(reconstruction, "worker-change.txt"))
+          assert_equal file_bytes(workspace).reject { |path, _bytes| path == ".git" },
+                       file_bytes(reconstruction).reject { |path, _bytes| path.start_with?(".git/") }
+          assert_equal sibling_before, file_bytes(sibling)
+          assert_equal ordinary_before, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
+          assert_equal index_before, File.binread(File.join(@ordinary, ".git", "index"))
+          assert_nil @store.load("T")["result"]
+          assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
+          next unless condition == "remote"
+
+          commands = candidate.fetch("host_commands")
+          recorded = JSON.parse(host(commands.fetch("record")))
+          assert_equal candidate.fetch("sha256"), recorded.fetch("sha256")
+          assert_equal "verified", JSON.parse(host(commands.fetch("verify"))).fetch("status")
+          # Synthetic host validation preserves binary output/status and never
+          # claims this fixture command is the product's required full gate.
+          validation = Shellwords.join([RbConfig.ruby, "-e", 'STDOUT.binmode.write("checked\x00\xff".b)'])
+          assert_includes host(commands.fetch("gate_prefix") + " " + validation).b, "checked\x00\xff".b
+          assert_equal prepared.fetch("snapshot"), @store.load("T").fetch("snapshot")
+          assert_equal "STALE", @coordinator.status("T").fetch("status")
+          File.write(File.join(workspace, "worker-change.txt"), "changed candidate")
+          assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          assert_includes @err.string, "stale implementation"
+          File.binwrite(File.join(workspace, "worker-change.txt"), "after drift\n\x00\xff".b)
+          assert_equal 0, cli("checkpoint", "record", "T", "--workspace", workspace)
+          assert_equal 0, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          # External drift cannot excuse changed artifact or worker identities.
+          artifact_bytes = File.binread(candidate.fetch("artifact"))
+          File.write(candidate.fetch("artifact"), "tampered export")
+          assert_equal 2, cli("checkpoint", "record", "T", "--workspace", workspace, "--artifact", candidate.fetch("artifact"))
+          assert_includes @err.string, "artifact differs from complete implementation"
+          File.binwrite(candidate.fetch("artifact"), artifact_bytes)
+          branch = setup_git("symbolic-ref", "HEAD", chdir: workspace)
+          unexpected = setup_git("commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "unexpected worker HEAD", chdir: workspace)
+          setup_git("update-ref", branch, unexpected, @base, chdir: workspace)
+          assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          assert_includes @err.string, "workspace HEAD differs from prepared baseline"
+          setup_git("update-ref", branch, @base, unexpected, chdir: workspace)
+          setup_git("remote", "set-url", "origin", sibling, chdir: workspace)
+          assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          assert_includes @err.string, "workspace remote differs from prepared authority"
+          setup_git("remote", "set-url", "origin", @remote, chdir: workspace)
+          ownership_path = report.fetch("worktrees_path")
+          ownership_bytes = File.binread(ownership_path)
+          ownership = JSON.parse(ownership_bytes)
+          ownership.fetch("entries").first["path"] = sibling
+          File.write(ownership_path, JSON.generate(ownership))
+          assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          assert_includes @err.string, "partial or conflicting ownership"
+          File.binwrite(ownership_path, ownership_bytes)
+          assert_equal 0, cli("checkpoint", "verify", "T", "--workspace", workspace)
+          assert_equal sibling_before, file_bytes(sibling)
+          assert_equal index_before, File.binread(File.join(@ordinary, ".git", "index"))
         end
       end
     end

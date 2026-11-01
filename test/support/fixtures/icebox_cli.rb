@@ -6,6 +6,7 @@
 require_relative '../child_processes'
 root = ARGV.fetch(0)
 if ENV['ACT19_REMOVE_PREPARE_GUARD']
+  # Removes only deferral refusal for the public negative-control journey.
   class AgentCodingTool::Coordinator
     # Negative control removes only the Icebox preparation refusal.
     def refuse_icebox!(_id, _state) = nil
@@ -14,6 +15,7 @@ end
 if ENV['ACT19_BARRIER']
   barrier = ENV.fetch('ACT19_BARRIER')
   raise 'foreign Icebox barrier' unless barrier == File.join(root, 'barrier')
+  # Holds the fixture state-write boundary until its owned release file arrives.
   module IceboxWriteBarrier
     # Waits at a real state write while its caller holds the reservation; returns
     # the original write result. A lost release raises after the existing lease.

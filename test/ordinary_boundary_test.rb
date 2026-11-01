@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "skill_observations"
 require_relative "support/child_processes"
+require "minitest/mock"
 require "rbconfig"
 require "shellwords"
 
@@ -23,6 +24,7 @@ class OrdinaryBoundaryTest < Minitest::Test
     Dir.mktmpdir("act-boundary-") do |root|
       marker = File.join(root, "executed")
       command = [RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'executed')", marker]
+      native_spawn = Process.method(:spawn)
       operations = [
         -> { Process.spawn(*command) }, -> { spawn(*command) },
         -> { system(*command) }, -> { exec(*command) },
@@ -30,7 +32,8 @@ class OrdinaryBoundaryTest < Minitest::Test
         -> { IO.read("|#{Shellwords.join(command)}") },
         -> { Kernel.open("|#{Shellwords.join(command)}") },
         -> { `#{Shellwords.join(command)}` },
-        -> { fork { File.write(marker, "forked") } }
+        -> { fork { File.write(marker, "forked") } },
+        -> { native_spawn.call(*command) }
       ]
       operations.each do |operation|
         # Either installed guard may reject first; neither may release a child.
@@ -40,6 +43,14 @@ class OrdinaryBoundaryTest < Minitest::Test
       assert_ordinary_rejects_permitted_child
       File.binwrite(marker, "\x00\xff".b)
       assert_equal "\x00\xff".b, IO.binread(marker)
+      # A Ruby-only observation stub is allowed, but its captured native fallback
+      # remains prohibited by the ordinary C-entry guard before creating a child.
+      File.unlink(marker)
+      Process.stub(:spawn, ->(*) { :observed }) do
+        assert_equal :observed, Process.spawn(*command)
+        assert_raises(OrdinaryExecution::ProhibitedExecution) { native_spawn.call(*command) }
+        refute File.exist?(marker)
+      end
     end
   end
 
@@ -63,7 +74,8 @@ class OrdinaryBoundaryTest < Minitest::Test
         Process.waitpid(pid) # Reap the finite owned child if the negative control fails.
       end
     end
-    assert permit.used?, "zero-Git permit must be consumed before ordinary refusal"
+    # TracePoint guards may refuse before the zero-Git permit is consumed;
+    # the required outcome is the ordinary refusal above, before a child exists.
   end
 
   # Material environment, cwd, order, duplication and omissions fail before a

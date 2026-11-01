@@ -450,7 +450,8 @@ class PlanningGuidanceTest < Minitest::Test
   # Coding remains at its original commit; nil means an absent planning path.
   # Object/model failures propagate and no source checkout is copied or executed.
   def with_planning_source(text)
-    Dir.mktmpdir("act-planning-source-") do |directory|
+    # Leave room for the broker socket under macOS's long temporary root.
+    Dir.mktmpdir("act-plan-") do |directory|
       @planning_world = MemoryGit::PatchWorld.new(root: directory)
       renderer = AgentCodingTool::PromptRenderer
       files = { renderer::SKILL_PATH => CodingSkillSupport::TEXT,

@@ -103,8 +103,8 @@ class ManualParallelLaunchTest < Minitest::Test
     [false, true].product([false, true]).each do |active, advance|
       fixture(git: true, process: true, mutable_remote: true) do
         manual_pair(advance: advance, checkpoint: true, cold: active && advance)
-        preserved = older_bytes
         journey = lambda do |worker|
+          preserved = older_bytes
           if active && advance
             _output, error, status = cli("launch", "T", "--codex", "--allow-write-collision", "--reasoning", "high")
             assert status.success?, error
@@ -124,7 +124,7 @@ class ManualParallelLaunchTest < Minitest::Test
           assert_equal [], report.fetch("collision_authorization").fetch("verified_conflicts")
           assert_equal ["A"], report.fetch("collision_authorization").fetch("unverified_manual_conflicts").map { |row| row.fetch("task_id") }
           assert_equal "operator_authorized_manual_overlap", @store.load("T").dig("write_overlap", "basis")
-          assert_equal preserved, older_bytes.slice(*preserved.keys)
+          assert_equal preserved, older_bytes
           assert_equal "external-A", setup_git("branch", "--show-current", chdir: @external)
           assert @store.load("A")["started_at"]
           assert @store.load("T")["started_at"]
@@ -158,7 +158,7 @@ class ManualParallelLaunchTest < Minitest::Test
       assert_match(/write collision/, error)
       refute File.exist?(File.join(@root, "worker-pid"))
       refute @store.load("T")["started_at"]
-      assert_equal before, older_bytes.slice(*before.keys)
+      assert_equal before, older_bytes
     end
   end
 
@@ -236,7 +236,7 @@ class ManualParallelLaunchTest < Minitest::Test
         refute File.exist?(File.join(@root, "worker-pid")), scenario
         refute @store.load(@target)["started_at"], scenario
         assert_equal originals.fetch(@store.state_path(@target)), File.binread(@store.state_path(@target)), scenario
-        assert_equal before, older_bytes.slice(*before.keys), scenario
+        assert_equal before, older_bytes, scenario
         assert_empty Dir.glob("#{@data}-runs/#{@target}/*"), scenario unless %w[occupied symlink branch].include?(scenario)
 
         # Restore only this row's fixture-authored task/prompt/state bytes and
@@ -246,7 +246,7 @@ class ManualParallelLaunchTest < Minitest::Test
         if %w[partial malformed missing contradictory].include?(scenario)
           FileUtils.remove_entry("#{@data}-runs/A")
         end
-        assert_equal preserved, older_bytes.slice(*preserved.keys), scenario
+        assert_equal preserved, older_bytes, scenario
       end
     end
   end
@@ -287,7 +287,7 @@ class ManualParallelLaunchTest < Minitest::Test
         end
         assert_match(/sandbox boundary unverified/, error.message)
         refute @store.load(@target)["started_at"]
-        assert_equal before, older_bytes.slice(*before.keys)
+        assert_equal before, older_bytes
       end
     end
   end
@@ -349,7 +349,7 @@ class ManualParallelLaunchTest < Minitest::Test
         assert_equal @target_base, setup_git("rev-parse", "HEAD", chdir: report.fetch("workspace"))
         assert_equal original_candidate, File.binread(File.join(report.fetch("workspace"), "worker-change.txt"))
         assert_nil @store.load("T")["result"]
-        assert_equal before, older_bytes.slice(*before.keys) if index.zero?
+        assert_equal before, older_bytes if index.zero?
       end
     end
   end
@@ -371,7 +371,7 @@ class ManualParallelLaunchTest < Minitest::Test
         else
           assert_raises(AgentCodingTool::InvalidState) { overlap_launch(allow_write_collision: true) }
         end
-        assert_equal before, older_bytes.slice(*before.keys)
+        assert_equal before, older_bytes
       end
     end
   end
@@ -440,7 +440,7 @@ class ManualParallelLaunchTest < Minitest::Test
       assert_equal @target_base, setup_git("rev-parse", "HEAD", chdir: report.fetch("workspace"))
       assert File.file?(File.join(report.fetch("workspace"), "worker-change.txt"))
       assert_nil @store.load("T")["result"]
-      assert_equal before, older_bytes.slice(*before.keys)
+      assert_equal before, older_bytes
     end
   end
 end

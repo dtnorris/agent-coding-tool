@@ -131,7 +131,7 @@ module LauncherSupport
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
       @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
       if git
-        @memory_checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @memory_checkout, @memory_remote = memory_repository(@memory_world, path: @ordinary, remote: @remote)
         @base = @memory_checkout.head
       else
         FileUtils.mkdir_p([@ordinary, @remote])
@@ -298,7 +298,9 @@ module LauncherSupport
   # group checks still run; unknown envelopes, missing evidence and dead workers
   # raise. This adapter does not establish native ps conformance.
   def worker_parent_observation(command, options)
-    path = File.join(@root, 'worker-process')
+    pid_argument = command.last
+    raise GitContract::UnexpectedObservation, 'invalid worker PID' unless pid_argument&.match?(/\A[1-9][0-9]*\z/)
+    path = File.join(@root, "worker-process-#{pid_argument}")
     unless @real_process && options.empty? && File.file?(path)
       raise GitContract::UnexpectedObservation, 'unbound worker process query'
     end

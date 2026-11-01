@@ -5,9 +5,11 @@ require_relative "../support/validation_processes"
 require "digest"
 require "open3"
 
+# Exercises coordinated delivery and cleanup across independent modeled repositories.
 class MultiDeliveryGitIntegration < Minitest::Test
   include TestHelpers
   include ValidationProcesses
+  # Records simulated remote publication effects; unknown repository reads raise.
   class Provider
     attr_reader :pushes, :prs
     attr_accessor :fail_remote, :integrations
@@ -18,6 +20,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
 
     def branch(remote, branch) = @refs[[remote, branch]]
     def set_branch(remote, branch, sha) = @refs[[remote, branch]] = sha
+    # Records a feature push after resolving its modeled remote; missing remotes raise.
     def push(workspace, remote_name, branch, sha)
       remote, _err, status = AgentCodingTool::NativeCommandTransport.new.call(["git", "remote", "get-url", remote_name], cwd: workspace)
       raise "missing fixture remote" unless status.success?
@@ -197,6 +200,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies unchanged writer requires no pr and can be cleaned; assertion failures raise.
   def test_unchanged_writer_requires_no_pr_and_can_be_cleaned
     fixture(change_beta: false) do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)
@@ -250,6 +254,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies squash integration cleanup refusals and interrupted resume; assertion failures raise.
   def test_squash_integration_cleanup_refusals_and_interrupted_resume
     fixture do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)
@@ -304,6 +309,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies cleanup refuses unmerged unsynchronized unknown and foreign; assertion failures raise.
   def test_cleanup_refuses_unmerged_unsynchronized_unknown_and_foreign
     fixture do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)

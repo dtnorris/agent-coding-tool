@@ -21,5 +21,7 @@ when 'flock'
 else
   abort 'unknown evidence fixture mode'
 end
+require_relative '../tunnel_processes'
+TunnelProcesses.install
 abort 'expected evidence command' unless ARGV.first == 'evidence'
 load File.expand_path('../../../bin/agent-coding-tool', __dir__)

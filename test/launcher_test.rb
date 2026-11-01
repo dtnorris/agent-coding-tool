@@ -6,6 +6,7 @@ require "rbconfig"
 require "timeout"
 require_relative "launcher_support"
 
+# Exercises launcher lifecycle, authority and genuine child statuses in private fixtures.
 class LauncherTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
@@ -29,12 +30,14 @@ class LauncherTest < Minitest::Test
     old_pid ? assert_equal(old_pid, current_pid) : assert_nil(current_pid)
   end
 
+  # Verifies launch binds pushed base independent of dirty divergent ordinary checkout; assertion failures raise.
   def test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout
     fixture(git: true, process: true) do
       File.write(File.join(@ordinary, "file.txt"), "local\n")
-      git("commit", "-am", "local divergent", chdir: @ordinary)
+      git("add", "-A", chdir: @ordinary)
+      git("commit", "-m", "local divergent", chdir: @ordinary)
       File.write(File.join(@ordinary, "untracked"), "untouched")
-      before = git("status", "--porcelain", chdir: @ordinary)
+      before = git("status", "--porcelain", "--untracked-files=all", chdir: @ordinary)
       assert_equal 0, launcher.launch("T", model: "explicit-model", reasoning: "high")
       state = @store.load("T")
       assert state["started_at"]
@@ -47,7 +50,7 @@ class LauncherTest < Minitest::Test
       assert_equal evidence.fetch('workspace'), worker.fetch('cwd')
       assert_equal @base, git("rev-parse", "HEAD", chdir: evidence.fetch("workspace"))
       assert_equal @remote, git("remote", "get-url", "origin", chdir: evidence.fetch("workspace"))
-      assert_equal before, git("status", "--porcelain", chdir: @ordinary)
+      assert_equal before, git("status", "--porcelain", "--untracked-files=all", chdir: @ordinary)
       prompt = File.binread(state.fetch("prompt_path"))
       consumed = File.binread(File.join(@root, "stdin"))
       assert consumed.start_with?(prompt + "\n\n--- ACT LOCAL CLI EXECUTION ENVELOPE ---")
@@ -78,6 +81,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies prepared prompt is consumed without reprepare and recommendation is advisory; assertion failures raise.
   def test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory
     fixture do
       # Exercise the actual runner/native-transport/fixture composition before
@@ -173,18 +177,21 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies stale input and changed remote authority fail closed; assertion failures raise.
   def test_stale_input_and_changed_remote_authority_fail_closed
     fixture(git: true, mutable_remote: true) do
       @coordinator.prepare('T')
       File.write(File.join(@ordinary, 'file.txt'), "new\n")
-      git('commit', '-am', 'new', chdir: @ordinary)
-      git('push', 'origin', 'main', chdir: @ordinary)
+      git("add", "-A", chdir: @ordinary)
+      git("commit", "-m", 'new', chdir: @ordinary)
+      git('push', 'origin', 'HEAD:refs/heads/main', chdir: @ordinary)
       assert_preflight_failure(/STALE/)
     end
     fixture(git: true) do
       @coordinator.prepare('T')
       second = File.join(@root, 'second.git')
-      git('clone', '--bare', @remote, second)
+      @memory_world.remote(url: second, from: @memory_checkout)
+      FileUtils.mkdir_p(second)
       git('remote', 'set-url', 'origin', second, chdir: @ordinary)
       assert_preflight_failure(/authority changed/)
     end
@@ -493,13 +500,14 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies exit provenance exposes midflight head movement without rewriting preparation; assertion failures raise.
   def test_exit_provenance_exposes_midflight_head_movement_without_rewriting_preparation
     fixture(process: true) do
       @coordinator.prepare('T')
       File.write(File.join(@ordinary, 'file.txt'), 'later pushed version')
       later = 'b' * 40
       spawning = lambda do |*args, **options|
-        pid = Process.spawn(*args, **options)
+        pid = spawn_fake_worker(*args, **options)
         @inspector.heads['repo'] = later
         pid
       end
@@ -515,10 +523,11 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies exit freshness unavailable is reported without losing worker status; assertion failures raise.
   def test_exit_freshness_unavailable_is_reported_without_losing_worker_status
     fixture(process: true) do
       spawning = lambda do |*args, **options|
-        pid = Process.spawn(*args, **options)
+        pid = spawn_fake_worker(*args, **options)
         FileUtils.mv(@remote, "#{@remote}-offline")
         pid
       end
@@ -561,6 +570,7 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies incompatible snapshot and foreign project configuration block worker; assertion failures raise.
   def test_incompatible_snapshot_and_foreign_project_configuration_block_worker
     fixture do
       @coordinator.prepare('T')
@@ -572,20 +582,19 @@ class LauncherTest < Minitest::Test
     fixture(git: true, mutable_remote: true) do
       FileUtils.mkdir_p(File.join(@ordinary, '.codex'))
       File.write(File.join(@ordinary, '.codex', 'config.toml'), 'sandbox_mode="danger-full-access"')
-      git('add', '.codex', chdir: @ordinary)
+      git('add', '--', '.codex', chdir: @ordinary)
       git('commit', '-m', 'unsafe config', chdir: @ordinary)
-      git('push', 'origin', 'main', chdir: @ordinary)
+      git('push', 'origin', 'HEAD:refs/heads/main', chdir: @ordinary)
       assert_preflight_failure(/Codex configuration/)
       assert_equal 'preflight_failed', report['status']
     end
   end
 
+  # Verifies cli returns real nonzero worker code using fake path; assertion failures raise.
   def test_cli_returns_real_nonzero_worker_code_using_fake_path
     fixture(git: true, process: true) do
       write_fake('failure')
-      stdout, stderr, status = Open3.capture3(
-        { 'PATH' => "#{@root}:#{ENV.fetch('PATH')}", 'AGENT_CODING_TOOL_DATA_DIR' => @data },
-        RbConfig.ruby, File.join(Dir.pwd, 'bin', 'agent-coding-tool'), 'launch', 'T', '--codex')
+      stdout, stderr, status = cold_launcher('launch', 'T', '--codex')
       assert_equal 7, status.exitstatus, stderr
       assert_includes stdout, 'progress'
       assert_includes stderr, 'Run evidence:'
@@ -651,14 +660,12 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Verifies two writable worktrees keep separate prepared authorities; assertion failures raise.
   def test_two_writable_worktrees_keep_separate_prepared_authorities
     fixture(git: true) do
-      seed = TestHelpers.git_seed
       other = File.join(@root, "other")
       remote = File.join(@root, "other.git")
-      FileUtils.cp_r(File.join(seed.fetch(:root), "ordinary"), other)
-      FileUtils.cp_r(File.join(seed.fetch(:root), "remote.git"), remote)
-      git("remote", "set-url", "origin", remote, chdir: other)
+      memory_repository(@memory_world, path: other, remote: remote)
       task_path = File.join(@data, "tasks", "T.yml")
       task = YAML.safe_load_file(task_path)
       task.fetch("repositories")["other"] = { "access" => "write", "path" => other }
@@ -674,7 +681,7 @@ class LauncherTest < Minitest::Test
       assert_includes command, "sandbox_workspace_write.writable_roots=#{JSON.generate([secondary, handoff.fetch('fixture').fetch('path')])}"
       assert_equal @base, git("rev-parse", "HEAD", chdir: secondary)
       assert_equal "act/T/attempt-1", git("branch", "--show-current", chdir: secondary)
-      assert_equal "origin", git("remote", chdir: other)
+      assert_equal remote, git("remote", "get-url", "origin", chdir: other)
     end
   end
   # External observations reserve whole repositories, have no managed parallel

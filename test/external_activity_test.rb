@@ -3,6 +3,7 @@
 require "stringio"
 require "timeout"
 require_relative "test_helper"
+require_relative "support/child_processes"
 require "minitest/mock"
 
 # Offline decision/persistence matrix; native/cold-process journeys live with the
@@ -306,14 +307,7 @@ class ExternalActivityTest < Minitest::Test
         assert_includes cli("start", "A", expected: 2), "reservation lock"
       end
       children = %w[A B].map do |id|
-        fork do
-          begin
-            report(id, identifier: "shared")
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_race("report", id, "shared")
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }.sort
       assert_equal [0, 2], results
@@ -448,31 +442,13 @@ class ExternalActivityTest < Minitest::Test
     fixture do
       @coordinator.prepare("A")
       children = 2.times.map do
-        fork do
-          begin
-            report
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_race("report", "A")
       end
       assert_equal [0, 2], children.map { |child| Process.wait2(child).last.exitstatus }.sort
       original = @activity.show("A").fetch("active").fetch("observation_id")
       @activity.end_activity("A", original, disposition: "ended")
       children = ["report", "start"].map do |operation|
-        fork do
-          begin
-            if operation == "report"
-              report(identifier: "racing-worker")
-            else
-              @activity.with_lock { |lock| @coordinator.start("A", reservation_lock: lock) }
-            end
-            exit! 0
-          rescue AgentCodingTool::InvalidState
-            exit! 2
-          end
-        end
+        spawn_race(operation, "A", "racing-worker")
       end
       results = children.map { |child| Process.wait2(child).last.exitstatus }
       assert results.all? { |status| [0, 2].include?(status) }
@@ -483,4 +459,14 @@ class ExternalActivityTest < Minitest::Test
       assert_raises(AgentCodingTool::InvalidState) { @activity.with_lock { |lock| @coordinator.start("A", allow_write_collision: true, reservation_lock: lock) } }
     end
   end
+
+  # Spawns one exact reviewed race script without inheriting mutable Ruby objects.
+  # Returns its native PID; the case waits for every competing process's status.
+  def spawn_race(operation, id, identifier = "")
+    approval = ChildProcesses.permit("external_race", arguments: [@data, operation, id, identifier])
+    NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv, **approval.options)
+    end
+  end
+
 end

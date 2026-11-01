@@ -5,12 +5,14 @@ require_relative "../launcher_support"
 require "shellwords"
 require "stringio"
 require "timeout"
+require_relative "../support/checkpoint_processes"
 
 # Public prepare/launch/export/host checkpoint journey; only Codex is a finite
 # fake executable. All Git, state, host commands and evidence are disposable.
 class ReadinessTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
+  include CheckpointProcesses
 
   # Installs a fixture-local act entry pointing to this exact implementation.
   # Yields with PATH restored afterward; no operator executable is changed.
@@ -20,21 +22,43 @@ class ReadinessTest < Minitest::Test
     File.chmod(0o755, entry)
     previous = ENV.fetch("PATH")
     ENV["PATH"] = "#{@root}:#{previous}"
+    descriptor = JSON.parse(File.binread(File.expand_path('../support/memory_git/fixtures/readiness-binary.json', __dir__)))
+    @memory_world.register_patch(MemoryGit::PatchCase.new(before: {},
+      after: { 'worker-change.txt' => "after drift\n\x00\xff".b },
+      bytes: descriptor.fetch('patch_base64').unpack1('m0'), sha256: descriptor.fetch('sha256'),
+      paths: ['worker-change.txt'], numstat: [descriptor.fetch('numstat_hex')].pack('H*'), stat: descriptor.fetch('stat')))
+    @unexpected_commit = @memory_world.build_commit(@memory_checkout,
+      files: @memory_checkout.tree.entries, message: 'unexpected worker HEAD').oid
     yield
   ensure
     ENV["PATH"] = previous
   end
 
+  # Builds an immutable remote-only commit; local availability remains absent.
+  # The declared Remote is the external mutable advertisement boundary.
+  def remote_commit(message)
+    commit = MemoryGit::Commit.new(tree: @memory_checkout.tree, parents: [@base], message: message)
+    @memory_remote.objects[commit.oid] = commit
+    commit.oid
+  end
+
   # Calls the production CLI in process with captured diagnostics. Returns its
   # code; malformed state/errors preserve the CLI's normal nonzero contract.
   def cli(*argv)
-    AgentCodingTool::CLI.run(argv, root: Dir.pwd, data_root: @data, out: @out, err: @err)
+    launcher_broker if argv.first == "launch"
+    constructor = AgentCodingTool::Launcher.method(:new)
+    AgentCodingTool::Launcher.stub(:new, ->(**options) { constructor.call(**options, spawner: method(:spawn_fake_worker)) }) do
+      AgentCodingTool::CLI.run(argv, root: Dir.pwd, data_root: @data, out: @out, err: @err)
+    end
   end
 
   # Executes a returned shell-safe host command in a new process without
   # reconstructing task/workspace/artifact names; returns stdout on success.
   def host(command)
-    output, error, status = Open3.capture3(*Shellwords.split(command))
+    words = Shellwords.split(command)
+    expected = ['env', "AGENT_CODING_TOOL_DATA_DIR=#{@data}", 'act']
+    raise 'unexpected host executable envelope' unless words.take(3) == expected
+    output, error, status = cold_launcher(*words.drop(3), fixture: 'readiness_cli')
     assert status.success?, "#{command}\n#{output}\n#{error}"
     output
   end
@@ -54,9 +78,8 @@ class ReadinessTest < Minitest::Test
     [false, true].each do |omit_readiness|
       fixture(git: true, process: true, mutable_remote: true) do
         public_entries do
-          future = setup_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-            "--git-dir", @remote, "commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "remote only")
-          setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", future)
+          future = remote_commit("remote only")
+          @memory_remote.refs["refs/heads/main"] = future
           assert_equal 0, cli("prepare", "T")
           assert_includes @out.string, "remain unverified until launch"
           before = file_bytes(@ordinary)
@@ -101,20 +124,19 @@ class ReadinessTest < Minitest::Test
     # object. The same prepared launch succeeds without moving ordinary HEAD/files.
     fixture(git: true, process: true, mutable_remote: true) do
       public_entries do
-        future = setup_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-          "--git-dir", @remote, "commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "recovery remote only")
-        setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", future)
+        future = remote_commit("recovery remote only")
+        @memory_remote.refs["refs/heads/main"] = future
         assert_equal 0, cli("prepare", "T")
         prepared = @store.load("T")
         assert_equal 2, cli("launch", "T", "--codex", "--reasoning", "high")
         refute File.exist?(File.join(@root, "worker-pid"))
         ordinary = file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
         head = setup_git("rev-parse", "HEAD", chdir: @ordinary)
-        index = File.binread(File.join(@ordinary, ".git", "index"))
+        index = setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
         source = prepared.fetch("snapshot").fetch("repo")
-        setup_git("fetch", "--", source.fetch("remote"), source.fetch("pushed_sha"), chdir: @ordinary)
+        setup_git("fetch", source.fetch("remote"), source.fetch("pushed_sha"), chdir: @ordinary)
         assert_equal head, setup_git("rev-parse", "HEAD", chdir: @ordinary)
-        assert_equal index, File.binread(File.join(@ordinary, ".git", "index"))
+        assert_equal index, setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
         assert_equal ordinary, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
         assert_equal prepared, @store.load("T")
         assert_equal 0, cli("launch", "T", "--codex", "--reasoning", "high"), @err.string
@@ -124,7 +146,7 @@ class ReadinessTest < Minitest::Test
         assert_equal future, setup_git("rev-parse", "HEAD", chdir: entry.fetch("path"))
         assert File.exist?(File.join(@root, "worker-pid"))
         assert_equal head, setup_git("rev-parse", "HEAD", chdir: @ordinary)
-        assert_equal index, File.binread(File.join(@ordinary, ".git", "index"))
+        assert_equal index, setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
         assert_equal ordinary, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
       end
     end
@@ -161,7 +183,7 @@ class ReadinessTest < Minitest::Test
           recorded = JSON.parse(host(commands.fetch("record")))
           assert_equal candidate.fetch("sha256"), recorded.fetch("sha256")
           assert_equal "verified", JSON.parse(host(commands.fetch("verify"))).fetch("status")
-          assert_equal "0", host(commands.fetch("gate_prefix") + " " + Shellwords.join([RbConfig.ruby, "-e", "exit 0"])).strip
+          assert_equal "0", host(commands.fetch("gate_prefix") + " " + Shellwords.join(gate_command("exit", "0"))).strip
           # Review bytes can apply yet cannot register as canonical evidence.
           review = File.join(@root, "review.patch")
           bytes = File.binread(candidate.fetch("artifact"))
@@ -197,11 +219,11 @@ class ReadinessTest < Minitest::Test
           # Legitimate ordinary and sibling work must survive the new attempt.
           File.binwrite(File.join(@ordinary, "unfinished.bin"), "\x00\xffordinary".b)
           sibling = File.join(@root, "sibling")
-          setup_git("worktree", "add", "--detach", sibling, @base, chdir: @ordinary)
+          setup_git("worktree", "add", "--detach", "--", sibling, @base, chdir: @ordinary)
           File.binwrite(File.join(sibling, "unfinished.bin"), "\xff\x00sibling".b)
           sibling_before = file_bytes(sibling)
           launching = Thread.new do
-            Open3.capture3({ "AGENT_CODING_TOOL_DATA_DIR" => @data }, File.join(@root, "act"), "launch", "T", "--codex")
+            cold_launcher("launch", "T", "--codex")
           end
           begin
             ready = File.join(@root, "worker-ready")
@@ -212,18 +234,19 @@ class ReadinessTest < Minitest::Test
             assert_equal "worker", File.binread(File.join(workspace, "worker-change.txt"))
             if condition == "unavailable"
               File.rename(@remote, "#{@remote}-offline")
+              @memory_remote.available = false
             elsif condition == "local"
               File.write(File.join(@ordinary, "file.txt"), "ordinary local main advanced\n")
-              setup_git("commit", "-am", "independent local advance", chdir: @ordinary)
+              setup_git("add", "--", "file.txt", chdir: @ordinary)
+              setup_git("commit", "-m", "independent local advance", chdir: @ordinary)
               refute_equal @base, setup_git("rev-parse", "HEAD", chdir: @ordinary)
             else
               # Independent remote producer; neither ordinary nor worker HEAD moves.
-              later = setup_git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-                "--git-dir", @remote, "commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "independent remote advance")
-              setup_git("--git-dir", @remote, "update-ref", "refs/heads/main", later)
+              later = remote_commit("independent remote advance")
+              @memory_remote.refs["refs/heads/main"] = later
             end
             ordinary_before = file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
-            index_before = File.binread(File.join(@ordinary, ".git", "index"))
+            index_before = setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
           ensure
             File.write(File.join(@root, "worker-continue"), "continue")
             launching.join
@@ -257,6 +280,7 @@ class ReadinessTest < Minitest::Test
             refute report.key?("exit_heads")
             # Only the test-owned remote is restored for later host status checks.
             File.rename("#{@remote}-offline", @remote)
+            @memory_remote.available = true
           else
             assert_equal condition == "remote" ? "stale" : "fresh_at_exit", report.fetch("writable_freshness")
             assert_equal condition == "remote" ? later : @base, report.dig("exit_heads", "repo", "pushed_sha")
@@ -267,7 +291,7 @@ class ReadinessTest < Minitest::Test
           assert_equal Digest::SHA256.file(candidate.fetch("artifact")).hexdigest, candidate.fetch("sha256")
           refute @store.load("T")["checkpoint"]
           reconstruction = File.join(@root, "reconstruction")
-          setup_git("clone", @ordinary, reconstruction)
+          setup_git("clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", @ordinary, reconstruction)
           setup_git("checkout", "--detach", @base, chdir: reconstruction)
           setup_git("apply", "--binary", candidate.fetch("artifact"), chdir: reconstruction)
           assert_equal "after drift\n\x00\xff".b, File.binread(File.join(reconstruction, "worker-change.txt"))
@@ -275,7 +299,7 @@ class ReadinessTest < Minitest::Test
                        file_bytes(reconstruction).reject { |path, _bytes| path.start_with?(".git/") }
           assert_equal sibling_before, file_bytes(sibling)
           assert_equal ordinary_before, file_bytes(@ordinary).reject { |path, _bytes| path.start_with?(".git/") }
-          assert_equal index_before, File.binread(File.join(@ordinary, ".git", "index"))
+          assert_equal index_before, setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
           assert_nil @store.load("T")["result"]
           assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
           next unless condition == "remote"
@@ -286,7 +310,7 @@ class ReadinessTest < Minitest::Test
           assert_equal "verified", JSON.parse(host(commands.fetch("verify"))).fetch("status")
           # Synthetic host validation preserves binary output/status and never
           # claims this fixture command is the product's required full gate.
-          validation = Shellwords.join([RbConfig.ruby, "-e", 'STDOUT.binmode.write("checked\x00\xff".b)'])
+          validation = Shellwords.join(gate_command("emit"))
           assert_includes host(commands.fetch("gate_prefix") + " " + validation).b, "checked\x00\xff".b
           assert_equal prepared.fetch("snapshot"), @store.load("T").fetch("snapshot")
           assert_equal "STALE", @coordinator.status("T").fetch("status")
@@ -302,12 +326,14 @@ class ReadinessTest < Minitest::Test
           assert_equal 2, cli("checkpoint", "record", "T", "--workspace", workspace, "--artifact", candidate.fetch("artifact"))
           assert_includes @err.string, "artifact differs from complete implementation"
           File.binwrite(candidate.fetch("artifact"), artifact_bytes)
-          branch = setup_git("symbolic-ref", "HEAD", chdir: workspace)
-          unexpected = setup_git("commit-tree", "#{@base}^{tree}", "-p", @base, "-m", "unexpected worker HEAD", chdir: workspace)
-          setup_git("update-ref", branch, unexpected, @base, chdir: workspace)
+          branch = setup_git("symbolic-ref", "-q", "HEAD", chdir: workspace)
+          unexpected = @unexpected_commit
+          assert_equal @base, @memory_checkout.repository.refs.fetch(branch)
+          @memory_checkout.repository.refs[branch] = unexpected
           assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
           assert_includes @err.string, "workspace HEAD differs from prepared baseline"
-          setup_git("update-ref", branch, @base, unexpected, chdir: workspace)
+          assert_equal unexpected, @memory_checkout.repository.refs.fetch(branch)
+          @memory_checkout.repository.refs[branch] = @base
           setup_git("remote", "set-url", "origin", sibling, chdir: workspace)
           assert_equal 2, cli("checkpoint", "verify", "T", "--workspace", workspace)
           assert_includes @err.string, "workspace remote differs from prepared authority"
@@ -322,7 +348,7 @@ class ReadinessTest < Minitest::Test
           File.binwrite(ownership_path, ownership_bytes)
           assert_equal 0, cli("checkpoint", "verify", "T", "--workspace", workspace)
           assert_equal sibling_before, file_bytes(sibling)
-          assert_equal index_before, File.binread(File.join(@ordinary, ".git", "index"))
+          assert_equal index_before, setup_git("ls-files", "--stage", "-z", chdir: @ordinary)
         end
       end
     end

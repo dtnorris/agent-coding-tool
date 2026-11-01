@@ -1,0 +1,214 @@
+[
+  {
+    "before": [
+      {
+        "path_hex": "6e6f746573202866726f6d20504446292e6d64",
+        "bytes_hex": "756e72656c6174656400ff",
+        "mode": "100755"
+      }
+    ],
+    "after": [],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL25vdGVzIChmcm9tIFBERikubWQgYi9ub3RlcyAoZnJvbSBQREYpLm1kCmRlbGV0ZWQgZmlsZSBtb2RlIDEwMDc1NQppbmRleCAyYTcyODNjYzQ4NjIwNTBlMzhiYWZlZTE3YzRkZWNiZTRjNDIwZDQ1Li4wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwCkdJVCBiaW5hcnkgcGF0Y2gKbGl0ZXJhbCAwCkhjbVY/ZDAwMDAxCgpsaXRlcmFsIDExClNjbVhUVERAeDV0RUo7bWFfendVWiNSUzl2Cgo=",
+    "sha256": "1dae838daf4f0e4c259d125c06b1f0d777022f8afe1c546c4376c77e8454db3a",
+    "paths_hex": [
+      "6e6f746573202866726f6d20504446292e6d64"
+    ],
+    "numstat_hex": "2d092d096e6f746573202866726f6d20504446292e6d6400",
+    "stat": " notes (from PDF).md |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "4578706c6f72657227735f47756964652e6d64",
+        "bytes_hex": "756e72656c6174656400ff",
+        "mode": "100755"
+      }
+    ],
+    "after": [],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL0V4cGxvcmVyJ3NfR3VpZGUubWQgYi9FeHBsb3JlcidzX0d1aWRlLm1kCmRlbGV0ZWQgZmlsZSBtb2RlIDEwMDc1NQppbmRleCAyYTcyODNjYzQ4NjIwNTBlMzhiYWZlZTE3YzRkZWNiZTRjNDIwZDQ1Li4wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwCkdJVCBiaW5hcnkgcGF0Y2gKbGl0ZXJhbCAwCkhjbVY/ZDAwMDAxCgpsaXRlcmFsIDExClNjbVhUVERAeDV0RUo7bWFfendVWiNSUzl2Cgo=",
+    "sha256": "8fb89f553970995dd2873daae59559f8a05496d8ac2ede5a9b1bac458b3ebb27",
+    "paths_hex": [
+      "4578706c6f72657227735f47756964652e6d64"
+    ],
+    "numstat_hex": "2d092d094578706c6f72657227735f47756964652e6d6400",
+    "stat": " Explorer's_Guide.md |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "7469746c652026206e6f7465732e6d64",
+        "bytes_hex": "756e72656c6174656400ff",
+        "mode": "100755"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "7469746c652026206e6f7465732e6d64",
+        "bytes_hex": "737461676564206f6e6c790a",
+        "mode": "100755"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL3RpdGxlICYgbm90ZXMubWQgYi90aXRsZSAmIG5vdGVzLm1kCmluZGV4IDJhNzI4M2NjNDg2MjA1MGUzOGJhZmVlMTdjNGRlY2JlNGM0MjBkNDUuLjdkOTFmNmY5ODhiNDlkZDI3ODY1YTgxMzJiYzJmM2JlZTk5MGVmMWYgMTAwNzU1CkdJVCBiaW5hcnkgcGF0Y2gKbGl0ZXJhbCAxMgpUY21YUmVObFpeb1FPTThCc3BKOXg5LUlWYQoKbGl0ZXJhbCAxMQpTY21YVFREQHg1dEVKO21hX3p3VVojUlM5dgoK",
+    "sha256": "7c588e094b5792092ba0f283f639a71c196aec595fb5fae6402df9e5e08874ba",
+    "paths_hex": [
+      "7469746c652026206e6f7465732e6d64"
+    ],
+    "numstat_hex": "2d092d097469746c652026206e6f7465732e6d6400",
+    "stat": " title & notes.md |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "4d6f7269615f4b68617a61642d64c3bb6d2e6d64",
+        "bytes_hex": "756e72656c6174656400ff",
+        "mode": "100755"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "4d6f7269615f4b68617a61642d64c3bb6d2e6d64",
+        "bytes_hex": "756e73746167656400ff",
+        "mode": "100644"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCAiYS9Nb3JpYV9LaGF6YWQtZFwzMDNcMjczbS5tZCIgImIvTW9yaWFfS2hhemFkLWRcMzAzXDI3M20ubWQiCm9sZCBtb2RlIDEwMDc1NQpuZXcgbW9kZSAxMDA2NDQKaW5kZXggMmE3MjgzY2M0ODYyMDUwZTM4YmFmZWUxN2M0ZGVjYmU0YzQyMGQ0NS4uOWE1MjFkYzhjYjUxZmExNzA1ZjQzNDNjOTY3OWRlMjg2YzJiZmFiOQpHSVQgYmluYXJ5IHBhdGNoCmxpdGVyYWwgMTAKUmNtWFRURD10WSlQZmNPPzQqKFpOMVh9PEEKCmxpdGVyYWwgMTEKU2NtWFRUREB4NXRFSjttYV96d1VaI1JTOXYKCg==",
+    "sha256": "1b0b14b976e6c6892a1584cf2820fbf13dd718b6834ba7c15ae2bc51421c1646",
+    "paths_hex": [
+      "4d6f7269615f4b68617a61642d64c3bb6d2e6d64"
+    ],
+    "numstat_hex": "2d092d094d6f7269615f4b68617a61642d64c3bb6d2e6d6400",
+    "stat": " \"Moria_Khazad-d\\303\\273m.md\" |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "626173650a",
+        "mode": "100644"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "7374616765642076657273696f6e0a",
+        "mode": "100644"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL2ZpbGUudHh0IGIvZmlsZS50eHQKaW5kZXggZGY5NjdiOTZhNTc5ZTQ1YTE4YjgyNTE3MzJkMTY4MDRiMmU1NmE1NS4uM2VkMzg3MGFhYzg0YTI5NmJiMDcxMWVhZjM3MDk2MTUxZjBjMDM3OCAxMDA2NDQKLS0tIGEvZmlsZS50eHQKKysrIGIvZmlsZS50eHQKQEAgLTEgKzEgQEAKLWJhc2UKK3N0YWdlZCB2ZXJzaW9uCg==",
+    "sha256": "8423a60062e4ccd5bcd4ed0448ceb799e326d16fff720757621ae1b6e1fd9bd4",
+    "paths_hex": [
+      "66696c652e747874"
+    ],
+    "numstat_hex": "3109310966696c652e74787400",
+    "stat": " file.txt |    2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "7374616765642076657273696f6e0a",
+        "mode": "100644"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "646966666572656e7420776f726b747265652076657273696f6e0a",
+        "mode": "100755"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL2ZpbGUudHh0IGIvZmlsZS50eHQKb2xkIG1vZGUgMTAwNjQ0Cm5ldyBtb2RlIDEwMDc1NQppbmRleCAzZWQzODcwYWFjODRhMjk2YmIwNzExZWFmMzcwOTYxNTFmMGMwMzc4Li4wYTZlNjUwOGNmYTY4YWI2NzFiODlhODkwNTEzYTlmZDYxMTFhYmQ0Ci0tLSBhL2ZpbGUudHh0CisrKyBiL2ZpbGUudHh0CkBAIC0xICsxIEBACi1zdGFnZWQgdmVyc2lvbgorZGlmZmVyZW50IHdvcmt0cmVlIHZlcnNpb24K",
+    "sha256": "9e81ccb27db2af879d674936a2df5335ea394b62be858c6510edc27cee319edc",
+    "paths_hex": [
+      "66696c652e747874"
+    ],
+    "numstat_hex": "3109310966696c652e74787400",
+    "stat": " file.txt |    2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "626173650a",
+        "mode": "100644"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "646966666572656e7420776f726b747265652076657273696f6e0a",
+        "mode": "100755"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL2ZpbGUudHh0IGIvZmlsZS50eHQKb2xkIG1vZGUgMTAwNjQ0Cm5ldyBtb2RlIDEwMDc1NQppbmRleCBkZjk2N2I5NmE1NzllNDVhMThiODI1MTczMmQxNjgwNGIyZTU2YTU1Li4wYTZlNjUwOGNmYTY4YWI2NzFiODlhODkwNTEzYTlmZDYxMTFhYmQ0Ci0tLSBhL2ZpbGUudHh0CisrKyBiL2ZpbGUudHh0CkBAIC0xICsxIEBACi1iYXNlCitkaWZmZXJlbnQgd29ya3RyZWUgdmVyc2lvbgo=",
+    "sha256": "0d288e3a31368aff1c24f5b7adfb31901343446898d35c6096798ec60f59bf8c",
+    "paths_hex": [
+      "66696c652e747874"
+    ],
+    "numstat_hex": "3109310966696c652e74787400",
+    "stat": " file.txt |    2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "73746174652f4143542d55582d30322e796d6c",
+        "bytes_hex": "726573756c743a2072657461696e65640a",
+        "mode": "100644"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "73746174652f4143542d55582d30322e796d6c",
+        "bytes_hex": "726573756c743a206f70657261746f7220656469740a",
+        "mode": "100755"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL3N0YXRlL0FDVC1VWC0wMi55bWwgYi9zdGF0ZS9BQ1QtVVgtMDIueW1sCm9sZCBtb2RlIDEwMDY0NApuZXcgbW9kZSAxMDA3NTUKaW5kZXggOWRjNTVmYjNjNTM3MWFjZjQxN2NmZmVkNWNmNDkwZjY5Y2VmNDIxOS4uMWEwOGY0Y2RmODRkZWQ3ZmNiZDQ4NWVjZGY3N2IzZmM2MTZiODBmNQotLS0gYS9zdGF0ZS9BQ1QtVVgtMDIueW1sCisrKyBiL3N0YXRlL0FDVC1VWC0wMi55bWwKQEAgLTEgKzEgQEAKLXJlc3VsdDogcmV0YWluZWQKK3Jlc3VsdDogb3BlcmF0b3IgZWRpdAo=",
+    "sha256": "4a1256c05d0ef2ef78dc606a95ae19afa39e19b63966d13f11919063e696f3f2",
+    "paths_hex": [
+      "73746174652f4143542d55582d30322e796d6c"
+    ],
+    "numstat_hex": "3109310973746174652f4143542d55582d30322e796d6c00",
+    "stat": " state/ACT-UX-02.yml |    2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "626173650a",
+        "mode": "100644"
+      }
+    ],
+    "after": [
+      {
+        "path_hex": "66696c652e747874",
+        "bytes_hex": "6d6f64696669656400ff",
+        "mode": "100644"
+      }
+    ],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL2ZpbGUudHh0IGIvZmlsZS50eHQKaW5kZXggZGY5NjdiOTZhNTc5ZTQ1YTE4YjgyNTE3MzJkMTY4MDRiMmU1NmE1NS4uZWU4YWU0NmY0NDZiMGYxMThhYmZjZmZhMWQxOGZjODFlODllODIxZiAxMDA2NDQKR0lUIGJpbmFyeSBwYXRjaApsaXRlcmFsIDEwClJjbWQxSlBzdlFuT2lmfDw0KihXbzFWSTEqCgpsaXRlcmFsIDUKTWNtWWRGRUtjUEQwMHAxe3JUX297Cgo=",
+    "sha256": "1e79b186eacaebacf9d2977b0a46557060074fb55fa6107928bd7ff7ae614771",
+    "paths_hex": [
+      "66696c652e747874"
+    ],
+    "numstat_hex": "2d092d0966696c652e74787400",
+    "stat": " file.txt |  Bin\n 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+  },
+  {
+    "before": [
+      {
+        "path_hex": "73746174652f4143542d55582d30322e796d6c",
+        "bytes_hex": "726573756c743a2072657461696e65640a",
+        "mode": "100644"
+      }
+    ],
+    "after": [],
+    "patch_base64": "ZGlmZiAtLWdpdCBhL3N0YXRlL0FDVC1VWC0wMi55bWwgYi9zdGF0ZS9BQ1QtVVgtMDIueW1sCmRlbGV0ZWQgZmlsZSBtb2RlIDEwMDY0NAppbmRleCA5ZGM1NWZiM2M1MzcxYWNmNDE3Y2ZmZWQ1Y2Y0OTBmNjljZWY0MjE5Li4wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwCi0tLSBhL3N0YXRlL0FDVC1VWC0wMi55bWwKKysrIC9kZXYvbnVsbApAQCAtMSArMCwwIEBACi1yZXN1bHQ6IHJldGFpbmVkCg==",
+    "sha256": "3f92a5d1f8564dd42a2e017de494eeac17442735ebaf0b730199c4baab06e6bc",
+    "paths_hex": [
+      "73746174652f4143542d55582d30322e796d6c"
+    ],
+    "numstat_hex": "3009310973746174652f4143542d55582d30322e796d6c00",
+    "stat": " state/ACT-UX-02.yml |    1 -\n 1 file changed, 1 deletion(-)\n"
+  }
+]

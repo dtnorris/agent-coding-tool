@@ -2,12 +2,14 @@
 
 require_relative "../test_helper"
 require_relative "../launcher_support"
+require_relative "../support/validation_processes"
 require "timeout"
 
-# Real disposable Git/process evidence with simulated publication only; no network.
+# Shared modeled Git and real process evidence with simulated publication; no network.
 class ParallelDeliveryTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
+  include ValidationProcesses
 
   # Tracks independent feature identities and can simulate a lost push response.
   class Provider
@@ -64,11 +66,18 @@ class ParallelDeliveryTest < Minitest::Test
   end
 
   # Runs fixture decision matrices with a controlled terminal open-file boundary.
-  # Git, process execution, artifacts, worktree verification and locks remain real.
+  # Git uses shared authority; process execution, artifacts, verification and locks remain real.
   def delivery_fixture(**options)
     fixture(git: true, process: true, **options) do
+      @memory_world.build_commit(@memory_checkout,
+        files: @memory_checkout.tree.entries.merge(validation_files({})),
+        message: 'fixed validator', advance: true)
+      @base = @memory_checkout.head
+      setup_git('push', 'origin', 'HEAD:refs/heads/main', chdir: @ordinary)
       @terminal_liveness = TerminalLiveness.new
-      AgentCodingTool::CleanupLiveness.stub(:new, @terminal_liveness) { yield }
+      with_validation_processes do
+        AgentCodingTool::CleanupLiveness.stub(:new, @terminal_liveness) { yield }
+      end
     end
   end
 
@@ -84,7 +93,7 @@ class ParallelDeliveryTest < Minitest::Test
     FileUtils.mkdir_p(root, mode: 0o700)
     File.write(File.join(root, "#{id}.yml"), YAML.dump(
       "allowed_paths" => ["worker-change.txt", "file.txt"], "base_branch" => "main",
-      "commands" => [["ruby", "-e", "puts '2 tests, 3 assertions, 0 failures, 0 errors, 0 skips'"]],
+      "commands" => [validation_command],
       "max_seconds" => 30, "min_tests" => 2, "min_assertions" => 3,
       "publication_guard" => { "trigger_assessment" => "simulated publication, zero cost" }))
   end
@@ -141,7 +150,7 @@ class ParallelDeliveryTest < Minitest::Test
           assert_equal sibling_before, File.binread(@store.state_path(sibling))
           detail = JSON.parse(File.binread(File.join(run_dir, "delivery.json")))
           assert_equal "candidate #{id}\n", setup_git("show", "#{detail.fetch('commit_sha')}:file.txt", chdir: report.fetch("workspace")) + "\n"
-          assert_equal @base, setup_git("rev-parse", "refs/heads/main", chdir: @remote)
+          assert_equal @base, setup_git("ls-remote", "--exit-code", "origin", "refs/heads/main", chdir: @ordinary).split.first
           assert_equal "CANDIDATE", @coordinator.status(id).fetch("status")
           handoff = @coordinator.status(id).fetch("candidate_handoff")
           assert_equal report.fetch("attempt"), handoff.fetch("attempt")
@@ -155,8 +164,9 @@ class ParallelDeliveryTest < Minitest::Test
         assert_equal 2, provider.prs.length
         before = @store.load(order.first)
         File.write(File.join(@ordinary, "file.txt"), "advanced main\n")
-        setup_git("commit", "-am", "advance main", chdir: @ordinary)
-        setup_git("push", "origin", "main", chdir: @ordinary)
+        setup_git("add", "-A", chdir: @ordinary)
+        setup_git("commit", "-m", "advance main", chdir: @ordinary)
+        setup_git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         status = @coordinator.status(order.first)
         assert_equal "STALE_CANDIDATE", status.fetch("status")
         assert_equal "not approved", status.dig("candidate_handoff", "integration")
@@ -431,9 +441,8 @@ class ParallelDeliveryTest < Minitest::Test
       write_task(@data, id: "B", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
       %w[T B].each { |id| @coordinator.prepare(id) }
       write_fake("sleep")
-      host = Process.spawn({ "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-        RbConfig.ruby, File.join(Dir.pwd, "bin", "agent-coding-tool"), "launch", "T", "--codex",
-        out: File.join(@root, "host-out"), err: File.join(@root, "host-err"))
+      host = start_cold_launcher("launch", "T", "--codex",
+        stdout: File.join(@root, "host-out"), stderr: File.join(@root, "host-err"))
       child = nil
       begin
         running = Timeout.timeout(8) do

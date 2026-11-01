@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../no_git_execution" unless ENV["ACT_NATIVE_SUITE"] == "1" && ENV["ACT_ORDINARY_SUITE"] != "1"
+require_relative "../no_git_execution"
 require_relative "patch_capabilities"
 
 module MemoryGit
@@ -42,15 +42,6 @@ module MemoryGit
       # Nests declared non-Git observations without capturing an original native
       # method. Restores the preceding adapter after refusal or assertion failure.
       def with_capture(capture)
-        if ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
-          original_capture = Open3.method(:capture3)
-          begin
-            Open3.singleton_class.define_method(:capture3) { |*argv, **options| capture.call(*argv, **options) }
-            return yield
-          ensure
-            Open3.singleton_class.define_method(:capture3, original_capture)
-          end
-        end
         previous = @capture
         @capture = capture
         yield
@@ -93,4 +84,4 @@ module MemoryGit
 end
 
 AgentCodingTool::NativeCommandTransport.prepend(MemoryGit::ComposedTransport)
-Open3.singleton_class.prepend(MemoryGit::ComposedCapture) unless ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
+Open3.singleton_class.prepend(MemoryGit::ComposedCapture)

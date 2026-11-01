@@ -2,7 +2,7 @@
 
 require "fileutils"
 require "tmpdir"
-require_relative "support/memory_git/session" unless ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
+require_relative "support/memory_git/session"
 require_relative "../lib/agent_coding_tool"
 require "json"
 
@@ -72,8 +72,4 @@ module CodingSkillSupport
   end
 end
 
-if ENV["ACT_NATIVE_SUITE"] == "1" && ENV["ACT_ORDINARY_SUITE"] != "1"
-  require_relative "native_coding_skill_support"
-else
-  CodingSkillSupport.install
-end
+CodingSkillSupport.install

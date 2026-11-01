@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require 'minitest/mock'
+require_relative 'support/fake_inspector'
 require_relative 'support/child_processes'
+require_relative 'support/memory_git/broker'
 
 # Only external boundaries are replaced in decision tests. Coordinator lifecycle,
 # prompt rendering, locks, trust checks and durable evidence use production code.
@@ -73,8 +75,7 @@ module LauncherSupport
   # Returns one immutable reviewed fake worker script. Each invocation reads its
   # case settings through the final-output path; it never initializes Git.
   def fake_executable
-    name = @native_fixture ? 'native_launcher_worker.rb' : 'launcher_worker.rb'
-    File.expand_path("support/fixtures/#{name}", __dir__)
+    File.expand_path('support/fixtures/launcher_worker.rb', __dir__)
   end
 
   # Adapts only the declared fake worker boundary to a guarded Ruby invocation.
@@ -82,14 +83,11 @@ module LauncherSupport
   # evidence. Other executables/options fail before any process is created.
   def spawn_fake_worker(environment, *command, **options)
     raise GitContract::UnexpectedObservation, 'unknown fake worker' unless command.shift == File.realpath(@fake)
-    if @native_fixture
-      return Process.spawn(environment, RbConfig.ruby, fake_executable, *command, **options)
-    end
     pipes = options.select { |key, _value| [:in, :out, :err].include?(key) }
     settings = options.reject { |key, _value| pipes.key?(key) }
     forwarded = environment.dup
     forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
-    forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker
+    forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker || ENV['ACT_TEST_MEMORY_ENDPOINT']
     approval = ChildProcesses.permit('launcher_worker', arguments: command, environment: forwarded,
       options: settings, endpoint: @memory_broker&.endpoint)
     NoGitExecution.with_permit(approval) do
@@ -111,9 +109,8 @@ module LauncherSupport
   # Executes bounded fixture commands against this case's authority only.
   # Unknown setup forms fail rather than fall back to a captured native method.
   def setup_git(*args, chdir: nil)
-    return TestHelpers.native_git(chdir || @root, *args).strip if @native_fixture
     raise MemoryGit::Mismatch, "missing launcher world" unless @memory_world
-    result = @memory_world.call(["git", *args], cwd: chdir)
+    result = (@memory_broker || @memory_world).call(["git", *args], cwd: chdir)
     raise "Git fixture failed: #{result.stderr}" unless result.success?
     result.stdout.strip
   end
@@ -124,28 +121,25 @@ module LauncherSupport
   def fixture(git: false, process: false, mutable_remote: false)
     Dir.mktmpdir('act-launch-') do |root|
       @root = File.realpath(root)
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = @root
       @unit_workspace = nil
+      @memory_broker = nil
       @dep_ordinary = nil
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
-      @native_fixture = ENV['ACT_NATIVE_SUITE'] == '1' && ENV['ACT_ORDINARY_SUITE'] != '1'
-      @memory_world = git && !@native_fixture ? MemoryGit::PatchWorld.new(root: @root) : nil
-      if git && @native_fixture
-        seed = TestHelpers.git_seed
-        FileUtils.cp_r(File.join(seed.fetch(:root), 'ordinary'), @ordinary)
-        FileUtils.cp_r(File.join(seed.fetch(:root), 'remote.git'), @remote)
-        TestHelpers.native_git(@ordinary, 'remote', 'set-url', 'origin', @remote)
-        @base = seed.fetch(:base)
-      elsif git
-        checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
-        @base = checkout.head
+      @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
+      if git
+        @memory_checkout, @memory_remote = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @base = @memory_checkout.head
       else
         FileUtils.mkdir_p([@ordinary, @remote])
         File.write(File.join(@ordinary, 'file.txt'), "base\n")
         @base = 'a' * 40
       end
-      MemoryGit::Session.with(@memory_world) do
+      transport = git ? ->(argv, **fields) { (@memory_broker || @memory_world).call(argv, **fields) } : nil
+      MemoryGit::Session.with(transport) do
         File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root, 'worktree_root' => File.join(@root, 'worktrees')))
         write_task(@data, id: 'T', repositories: { 'repo' => { 'access' => 'write', 'path' => @ordinary } })
         write_fake
@@ -168,16 +162,51 @@ module LauncherSupport
         end
       end
     ensure
-      @memory_world&.verify!
+      begin
+        @memory_broker&.close
+      ensure
+        @memory_broker = nil
+        ENV['TMPDIR'] = previous_tmpdir
+        @memory_world&.verify!
+      end
+    end
+  end
+
+  # Starts the existing leased broker once for a cold public launcher. Builders
+  # must finish first; subsequent parent and child commands share this authority.
+  # Returns the owner; bind/protocol errors propagate without execution fallback.
+  def launcher_broker
+    @memory_broker ||= MemoryGit::Broker.new(world: @memory_world, directory: @root,
+      case_id: "launcher-#{@data}")
+  end
+
+  # Captures the public CLI in a fresh guarded interpreter. Exact preflight and
+  # worker adapters are installed by the named fixture; status is genuinely reaped.
+  def cold_launcher(*arguments, fixture: "launcher_cli", environment: {})
+    endpoint = launcher_broker.endpoint
+    ChildProcesses.capture(fixture, arguments: [@root, @data, *arguments],
+      environment: environment, endpoint: endpoint, seconds: 15)
+  end
+
+  # Starts a live public CLI without waiting for it. The caller owns termination
+  # and reaping; IO handles are opened here so the exact permit checks real pipes.
+  def start_cold_launcher(*arguments, stdout:, stderr:)
+    approval = ChildProcesses.permit("launcher_cli", arguments: [@root, @data, *arguments],
+      endpoint: launcher_broker.endpoint)
+    File.open(stdout, "w") do |output|
+      File.open(stderr, "w") do |error|
+        NoGitExecution.with_permit(approval) do
+          Process.spawn(approval.environment, *approval.argv, out: output, err: error)
+        end
+      end
     end
   end
 
   # Exact external preflight observations for existing ordinary decision cases.
   # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
-    if @native_fixture && (@real_git || command.first == RbConfig.ruby ||
-        (command.first.is_a?(Hash) && command[1] == 'git' && (@real_git || command[2] == '--no-replace-objects')) || command.first == '/usr/sbin/sysctl')
-      return NativeTestCapture.call(*command, **options)
+    if command.first == 'ps'
+      return worker_parent_observation(command, options)
     end
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
       return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
@@ -199,13 +228,17 @@ module LauncherSupport
       raise GitContract::UnexpectedObservation, 'unexpected Git options' unless options.keys == [:chdir]
     end
     if command.first == 'git' && @memory_world
-      return @memory_world.call(command, cwd: options.fetch(:chdir)).to_ary
+      return (@memory_broker || @memory_world).call(command, cwd: options.fetch(:chdir)).to_ary
     end
     if command.first.is_a?(Hash)
       env = command.shift
-      allowed_options = [{ unsetenv_others: true },
-                         { chdir: File.join(@root, 'worktrees', 'T', 'repo'), unsetenv_others: true }]
-      raise GitContract::UnexpectedObservation, "unsafe preflight environment keys=#{env.keys.inspect} options=#{options.inspect}" unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
+      # Probe only a workspace already recorded by this case's persisted handoff.
+      # Task IDs, attempts and the number of writers are not fixed.
+      workspaces = Dir.glob("#{@data}-runs/*/*/handoff.json").flat_map do |path|
+        JSON.parse(File.binread(path)).fetch('worktrees', nil).to_h.fetch('entries', []).select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+      end
+      allowed_options = [{ unsetenv_others: true }] + workspaces.map { |workspace| { chdir: workspace, unsetenv_others: true } }
+      raise GitContract::UnexpectedObservation, 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
                                                     allowed_options.include?(options)
       raise GitContract::UnexpectedObservation, "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
       case command
@@ -220,7 +253,8 @@ module LauncherSupport
         raise GitContract::UnexpectedObservation, 'unsupported top-level sandbox flag or inherited configuration' unless
           prefix.length.even? && prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? } &&
           File.directory?(home) && (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
-          home != ENV['CODEX_HOME'] && !home.start_with?("#{@root}/")
+          home != ENV['CODEX_HOME'] &&
+          ([options.fetch(:chdir)] + JSON.parse(command.find { |arg| arg.start_with?('sandbox_workspace_write.writable_roots=') }.split('=', 2).last)).none? { |path| home == path || home.start_with?(path + '/') }
         @observed_sandbox_home = home
         raise GitContract::UnexpectedObservation, 'legacy or unenforced sandbox invocation' unless
           command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&
@@ -257,6 +291,30 @@ module LauncherSupport
       else raise GitContract::UnexpectedObservation, "unexpected Git operation: #{command.inspect}"
       end
     end
+  end
+
+  # Answers only the recorded fixture worker's exact parent/group query using
+  # facts sampled by that real child, never expected handoff values. Live PID and
+  # group checks still run; unknown envelopes, missing evidence and dead workers
+  # raise. This adapter does not establish native ps conformance.
+  def worker_parent_observation(command, options)
+    pid_argument = command.last
+    raise GitContract::UnexpectedObservation, 'invalid worker PID' unless pid_argument&.match?(/\A[1-9][0-9]*\z/)
+    path = File.join(@root, "worker-process-#{pid_argument}")
+    unless @real_process && options.empty? && File.file?(path)
+      raise GitContract::UnexpectedObservation, 'unbound worker process query'
+    end
+    observed = JSON.parse(File.binread(path))
+    pid, parent, group = observed.values_at('pid', 'parent', 'group')
+    unless [pid, parent, group].all? { |value| value.is_a?(Integer) && value.positive? } &&
+           command == ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p', pid.to_s]
+      raise GitContract::UnexpectedObservation, 'unexpected worker process query'
+    end
+    Process.kill(0, pid)
+    unless Process.getpgid(pid) == group
+      raise GitContract::UnexpectedObservation, 'worker process group changed'
+    end
+    ["#{parent} #{group}\n", '', status_result(true)]
   end
 
   def launcher(real_sandbox_probe: false, **extra)

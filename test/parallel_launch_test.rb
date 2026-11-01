@@ -5,6 +5,7 @@ require_relative "launcher_support"
 require "stringio"
 require "timeout"
 
+# Exercises simultaneous guarded launchers against shared modeled Git authority.
 class ParallelLaunchTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
@@ -32,12 +33,10 @@ class ParallelLaunchTest < Minitest::Test
     flunk "worker did not start: #{File.read(File.join(@root, 'first-err')) if File.file?(File.join(@root, 'first-err'))}"
   end
 
+  # Starts the public launch against shared authority; caller reaps the real host.
   def spawn_cli_worker(id)
-    Process.spawn(
-      { "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-      RbConfig.ruby, File.join(Dir.pwd, "bin", "agent-coding-tool"), "launch", id, "--codex",
-      chdir: Dir.pwd, out: File.join(@root, "first-out"), err: File.join(@root, "first-err")
-    )
+    start_cold_launcher("launch", id, "--codex", stdout: File.join(@root, "first-out"),
+      stderr: File.join(@root, "first-err"))
   end
 
   def stop_cli_worker(host, child)
@@ -53,13 +52,12 @@ class ParallelLaunchTest < Minitest::Test
   end
 
   # Cold public prepare/launch must admit a verified active sibling by default.
-  # Native process/Git checks run unchanged; only the fake Codex boundary differs.
+  # Cold guarded CLIs share main's modeled Git authority and retain real workers.
   def test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint
     fixture(git: true, process: true, mutable_remote: true) do
       write_task(@data, id: "B", repositories: { "alias" => { "access" => "write", "path" => @ordinary } })
       %w[T B].each do |id|
-        _output, error, status = Open3.capture3({ "AGENT_CODING_TOOL_DATA_DIR" => @data },
-          RbConfig.ruby, File.join(Dir.pwd, "bin/agent-coding-tool"), "prepare", id)
+        _output, error, status = cold_launcher("prepare", id)
         assert status.success?, error
       end
       write_fake("sleep")
@@ -68,10 +66,24 @@ class ParallelLaunchTest < Minitest::Test
       begin
         running = wait_for_running("T")
         first_pid = running.fetch("child_pid")
+        # The ps adapter consumes the child's own observations, independently
+        # of the handoff whose parent/group production will compare on macOS.
+        query = ['ps', '-o', 'ppid=', '-o', 'pgid=', '-p', first_pid.to_s]
+        output, error, status = Open3.capture3(*query)
+        assert status.success?, error
+        assert_equal [first_host, first_pid], output.split.map(&:to_i)
+        assert_raises(GitContract::UnexpectedObservation) { Open3.capture3(*query, chdir: @root) }
+        assert_raises(GitContract::UnexpectedObservation) { Open3.capture3(*query[0...-1], Process.pid.to_s) }
+        # A live but wrong host must not be replaced with expected report data.
+        if RbConfig::CONFIG.fetch('host_os').match?(/darwin/)
+          error = assert_raises(AgentCodingTool::InvalidState) {
+            launcher.send(:verify_running_process!, running.merge('host_pid' => Process.pid))
+          }
+          assert_match(/worker process parent\/group changed/, error.message)
+        end
         write_fake("success")
         _output, error, status = Timeout.timeout(20) {
-          Open3.capture3({ "PATH" => "#{@root}:#{ENV.fetch('PATH')}", "AGENT_CODING_TOOL_DATA_DIR" => @data },
-            RbConfig.ruby, File.join(Dir.pwd, "bin/agent-coding-tool"), "launch", "B", "--codex")
+          cold_launcher("launch", "B", "--codex")
         }
         assert status.success?, error
         assert_includes error, "verified ACT-managed overlap at launch (default_verified_managed)"
@@ -81,9 +93,9 @@ class ParallelLaunchTest < Minitest::Test
         assert_equal %w[IN_FLIGHT IN_FLIGHT], %w[B T].map { |id| @coordinator.status(id).fetch("status") }
         refute_equal running.fetch("workspace"), second.fetch("workspace")
         assert_equal @base, git("rev-parse", "HEAD", chdir: second.fetch("workspace"))
-        assert_equal "act/T/attempt-1", git("branch", "--show-current", chdir: running.fetch("workspace"))
-        assert_equal "act/B/attempt-1", git("branch", "--show-current", chdir: second.fetch("workspace"))
-        assert_equal "", git("status", "--porcelain", chdir: @ordinary)
+        assert_equal "act/T/attempt-1", git("symbolic-ref", "--short", "HEAD", chdir: running.fetch("workspace"))
+        assert_equal "act/B/attempt-1", git("symbolic-ref", "--short", "HEAD", chdir: second.fetch("workspace"))
+        assert_equal "", git("status", "--porcelain=v1", "--untracked-files=all", chdir: @ordinary)
         refute_includes second.fetch("argv"), running.fetch("workspace")
         assert_includes File.binread(second.fetch("stdin_path")), running.fetch("workspace")
         authorization = second.fetch("collision_authorization")
@@ -108,8 +120,9 @@ class ParallelLaunchTest < Minitest::Test
         assert_equal "verified", checkpoint.verify("B", workspace: second.fetch("workspace")).fetch("status")
 
         File.write(File.join(@ordinary, "file.txt"), "integrated later\n")
-        git("commit", "-am", "advance main", chdir: @ordinary)
-        git("push", "origin", "main", chdir: @ordinary)
+        git("add", "-A", chdir: @ordinary)
+      git("commit", "-m", "advance main", chdir: @ordinary)
+        git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         assert_equal "STALE", @coordinator.status("B").fetch("status")
         assert_equal "verified", checkpoint.verify("B").fetch("status")
         assert_equal @base, handoff("B").fetch("preparation").fetch("alias").fetch("pushed_sha")
@@ -147,6 +160,7 @@ class ParallelLaunchTest < Minitest::Test
     end
   end
 
+  # Verifies advanced main makes parallel prepared baselines incompatible; assertion failures raise.
   def test_advanced_main_makes_parallel_prepared_baselines_incompatible
     fixture(git: true, process: true, mutable_remote: true) do
       write_task(@data, id: "B", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
@@ -157,8 +171,9 @@ class ParallelLaunchTest < Minitest::Test
       begin
         child = wait_for_running("T").fetch("child_pid")
         File.write(File.join(@ordinary, "file.txt"), "new main\n")
-        git("commit", "-am", "advance main", chdir: @ordinary)
-        git("push", "origin", "main", chdir: @ordinary)
+        git("add", "-A", chdir: @ordinary)
+      git("commit", "-m", "advance main", chdir: @ordinary)
+        git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
         @coordinator.prepare("B")
         [false, true].each do |explicit|
           error = assert_raises(AgentCodingTool::InvalidState) {

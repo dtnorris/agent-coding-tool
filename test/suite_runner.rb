@@ -5,6 +5,7 @@ require "rbconfig"
 require "tmpdir"
 require "shellwords"
 require "securerandom"
+require_relative "support/suite_processes"
 
 # Runs fixed behavior inventories against independent child-test evidence.
 # Feedback supplies source coverage separately; case names are not that measure.
@@ -81,39 +82,47 @@ module TestSuiteRunner
     Dir.mktmpdir("act-suite-") do |directory|
       evidence_path = File.join(directory, "results.json")
       stdout_path, stderr_path = %w[stdout stderr].map { |name| File.join(directory, name) }
-      argv = [RbConfig.ruby, "-Ilib:test", "-r", File.join(root, "test/suite_reporter.rb"),
-              "-e", "paths = ARGV.shift(Integer(ARGV.shift)); paths.each { |path| require File.expand_path(path) }", paths.length.to_s, *paths]
+      entry = File.join(root, "test/support/fixtures/suite_entry.rb")
+      arguments = [paths.length.to_s, *paths]
       if selected
-        argv += ["--name", "/\\A(?:#{required_cases.map { |name| Regexp.escape(name) }.join('|')})\\z/"]
+        arguments += ["--name", "/\\A(?:#{required_cases.map { |name| Regexp.escape(name) }.join('|')})\\z/"]
       end
       invocation = SecureRandom.uuid
       selection = required_cases.sort.join("\n")
       environment = { "ACT_SUITE_EVIDENCE" => evidence_path, "ACT_ORDINARY_SUITE" => nil,
-                      "ACT_TEST_CODING_SKILL" => nil, "ACT_NATIVE_SUITE" => ordinary ? nil : "1", "ACT_SUITE_INVOCATION" => invocation,
+                      "ACT_TEST_CODING_SKILL" => nil, "ACT_SUITE_INVOCATION" => invocation,
                       "ACT_SUITE_SELECTION" => selection }
       record = nil
       if feedback
         additions, record = TestFeedback.child(feedback, paths, required_cases)
         environment.merge!(additions)
         stdout_path, stderr_path = %w[stdout stderr].map { |name| File.join(record.fetch("coverage_context").fetch("directory"), name) }
-        record["argv"], record["cwd"] = argv, root
       end
-      if ordinary
-        # Ruby executes command-line -r before RUBYOPT -r. Explicit preloads
-        # below protect helpers; inherited RUBYOPT also protects cold children.
-        boundary = File.join(root, "test/ordinary_execution.rb")
-        environment.merge!("ACT_ORDINARY_SUITE" => "1",
-          "RUBYOPT" => Shellwords.join(["-r#{boundary}", *Shellwords.split(environment.fetch("RUBYOPT", ENV.fetch("RUBYOPT", "")))]))
-        argv.insert(2, "-r", File.join(root, "test/ordinary_support.rb"))
-      end
-      argv.insert(2, "-r", File.join(root, "test/feedback_coverage.rb")) if feedback
-      argv.insert(2, "-r", File.join(root, "test/ordinary_execution.rb")) if ordinary
+      preloads = {}
+      bundler = $LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") }
+      preloads[bundler] = Digest::SHA256.file(bundler).hexdigest if bundler
+      preload_paths = []
+      preload_paths << File.join(root, "test/ordinary_execution.rb") if ordinary
+      preload_paths << File.join(root, "test/feedback_coverage.rb") if feedback
+      preload_paths << File.join(root, "test/ordinary_support.rb") if ordinary
+      preload_paths << File.join(root, "test/suite_reporter.rb")
+      preload_paths.each { |path| preloads[path] = Digest::SHA256.file(path).hexdigest }
+      environment["ACT_ORDINARY_SUITE"] = "1" if ordinary
+      environment.delete("RUBYOPT")
+      permit_class = ordinary ? SuiteProcesses::OrdinaryPermit : NoGitExecution::Permit
+      approval = permit_class.new(script: entry, sha256: "3bb1305fb5d9b0cd0478fd8d80c98aa5e97661495ce33053adcab08d90b0bfe7",
+        arguments: arguments, preloads: preloads, environment: environment,
+        options: { chdir: root, pgroup: true })
+      argv, environment = approval.argv, approval.environment
+      record["argv"], record["cwd"] = argv, root if record
       begin
         if feedback
           remaining = TestFeedback.context(root).fetch("hard_deadline_seconds") - FeedbackRuntime.elapsed(TestFeedback.timer)
           abort "feedback: hard deadline reached before next suite" unless remaining.positive?
-          outcome = FeedbackRuntime.capture(argv, environment: environment, root: root, seconds: remaining,
-            stdout_path: stdout_path, stderr_path: stderr_path)
+          outcome = NoGitExecution.with_permit(approval) do
+            FeedbackRuntime.capture(argv, environment: environment, root: root, seconds: remaining,
+              stdout_path: stdout_path, stderr_path: stderr_path)
+          end
           status = outcome.fetch(:status)
           record.merge!("exit_status" => status.exitstatus, "signal" => status.termsig,
                         "timeout" => outcome.fetch(:timeout), "seconds" => outcome.fetch(:seconds),
@@ -122,7 +131,13 @@ module TestSuiteRunner
                         "stdout" => stdout_path, "stderr" => stderr_path)
           abort "feedback: hard hang deadline; verification incomplete" if outcome.fetch(:timeout)
         else
-          pid = Process.spawn(environment, *argv, chdir: root, out: stdout_path, err: stderr_path)
+          pid = File.open(stdout_path, "wb") do |output|
+            File.open(stderr_path, "wb") do |error|
+              NoGitExecution.with_permit(approval) do
+                Process.spawn(environment, *argv, **approval.options, out: output, err: error)
+              end
+            end
+          end
           _child, status = Process.wait2(pid)
         end
       rescue Exception => exception
@@ -132,6 +147,10 @@ module TestSuiteRunner
         stdout, stderr = [stdout_path, stderr_path].map { |path| File.file?(path) ? File.binread(path) : "".b }
         $stdout.write(stdout)
         $stderr.write(stderr)
+        if record && File.file?(evidence_path)
+          retained = File.join(record.fetch("coverage_context").fetch("directory"), "cases.result")
+          File.write(retained, File.binread(evidence_path), mode: "wx")
+        end
       end
       exit(status.exitstatus || 128 + status.termsig) unless status.success?
       evidence = validate(stdout, evidence_path, required_cases, label: paths.join(", "), invocation: invocation, selection: selection)

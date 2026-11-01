@@ -1,10 +1,15 @@
 # frozen_string_literal: true
 
 require_relative "../test_helper"
+require_relative "../support/validation_processes"
 require "digest"
 require "open3"
 
+# Exercises coordinated delivery and cleanup across independent modeled repositories.
 class MultiDeliveryGitIntegration < Minitest::Test
+  include TestHelpers
+  include ValidationProcesses
+  # Records simulated remote publication effects; unknown repository reads raise.
   class Provider
     attr_reader :pushes, :prs
     attr_accessor :fail_remote, :integrations
@@ -15,8 +20,9 @@ class MultiDeliveryGitIntegration < Minitest::Test
 
     def branch(remote, branch) = @refs[[remote, branch]]
     def set_branch(remote, branch, sha) = @refs[[remote, branch]] = sha
+    # Records a feature push after resolving its modeled remote; missing remotes raise.
     def push(workspace, remote_name, branch, sha)
-      remote, _err, status = Open3.capture3("git", "remote", "get-url", remote_name, chdir: workspace)
+      remote, _err, status = AgentCodingTool::NativeCommandTransport.new.call(["git", "remote", "get-url", remote_name], cwd: workspace)
       raise "missing fixture remote" unless status.success?
       remote = remote.strip
       @refs[[remote, branch]] = sha
@@ -69,12 +75,15 @@ class MultiDeliveryGitIntegration < Minitest::Test
     def check(_report, _inventory) = :unknown
   end
 
+  # Returns stripped output from this case's finite authority; refusals raise.
   def git(directory, *args)
-    output, err, status = Open3.capture3("git", *args, chdir: directory)
+    output, err, status = @delivery_world.call(["git", *args], cwd: directory)
     raise "fixture Git: #{err}" unless status.success?
     output.strip
   end
 
+  # Yields independent repositories and one production multi-delivery manager.
+  # Validators are real guarded children; model/process/filesystem failures raise.
   def fixture(fail_second: false, change_beta: true)
     Dir.mktmpdir("act-multi-delivery-") do |temporary|
       root = File.realpath(temporary)
@@ -86,68 +95,68 @@ class MultiDeliveryGitIntegration < Minitest::Test
       File.chmod(0o700, "#{data}-runs")
       visible = File.join(root, "ACT-Worktrees")
       File.write(File.join(data, "config.yml"), YAML.dump("worktree_root" => visible))
-      repositories, snapshot = {}, {}
-      %w[alpha beta reader].each do |name|
-        ordinary = File.join(root, name)
-        remote = File.join(root, "#{name}.git")
-        git(root, "init", "-q", "--bare", remote)
-        git(root, "init", "-q", "-b", "main", ordinary)
-        git(ordinary, "config", "user.name", "Test")
-        git(ordinary, "config", "user.email", "test@example.invalid")
-        File.write(File.join(ordinary, "file.txt"), "before\n")
-        git(ordinary, "add", "file.txt")
-        git(ordinary, "commit", "-qm", "base")
-        base = git(ordinary, "rev-parse", "HEAD")
-        git(ordinary, "remote", "add", "origin", remote)
-        git(ordinary, "push", "-q", "origin", "main")
-        repositories[name] = { "access" => name == "reader" ? "read_only" : "write" }
-        snapshot[name] = { "path" => ordinary, "remote" => "origin", "remote_url" => remote,
-                           "branch" => "main", "pushed_sha" => base }
+      @delivery_world = MemoryGit::PatchWorld.new(root: root)
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = root
+      MemoryGit::Session.with(@delivery_world) do
+        with_validation_processes do
+          repositories, snapshot = {}, {}
+          %w[alpha beta reader].each do |name|
+            ordinary = File.join(root, name)
+            remote = File.join(root, "#{name}.git")
+            checkout, = memory_repository(@delivery_world, path: ordinary, remote: remote,
+              template: MemoryGit::Template.files(validation_files('file.txt' => "before\n")))
+            base = checkout.head
+            repositories[name] = { "access" => name == "reader" ? "read_only" : "write" }
+            snapshot[name] = { "path" => ordinary, "remote" => "origin", "remote_url" => remote,
+                               "branch" => "main", "pushed_sha" => base }
+          end
+          task = { "id" => "TASK", "title" => "Coordinated change", "repositories" => repositories }
+          File.write(File.join(data, "tasks", "TASK.yml"), YAML.dump(task))
+          AgentCodingTool::StateStore.new(File.join(data, "state")).write("TASK",
+            { "id" => "TASK", "snapshot" => snapshot, "started_at" => Time.now.utc.iso8601 })
+          policy = %w[alpha beta].to_h do |name|
+            command = validation_command('2 tests, 3 assertions, 0 failures, 0 errors, 0 skips', name == "beta" && fail_second ? 1 : 0)
+            [name, { "allowed_paths" => ["file.txt"], "base_branch" => "main",
+                     "commands" => [command], "max_seconds" => 30, "min_tests" => 2,
+                     "min_assertions" => 3, "publication_guard" => { "lease_check" => "/fake",
+                       "trigger_assessment" => "fixture" } }]
+          end
+          contract = { "repositories" => policy,
+                       "cross_repository_checks" => [
+                         { "cwd" => "alpha", "argv" => validation_command + ["{worktree:reader}"] }] }
+          File.write(File.join(validation, "TASK.yml"), YAML.dump(contract))
+          inventory = AgentCodingTool::WorktreeManager.new(root: visible,
+            record_path: File.join(run, "worktrees.json")).create(
+              task_id: "TASK", attempt: 1, task: task, snapshot: snapshot)
+          paths = inventory.fetch("entries").select { |entry| entry["access"] == "write" }.to_h {
+            |entry| [entry.fetch("name"), entry.fetch("path")] }
+          paths.each do |name, path|
+            File.write(File.join(path, "file.txt"), "changed #{name}\n") if name != "beta" || change_beta
+          end
+          report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "TASK",
+            "attempt" => 1, "status" => "exited", "exit_status" => 0, "final_valid" => true,
+            "writable_freshness" => "fresh_at_exit", "writable_repository" => "alpha",
+            "writable_repositories" => %w[alpha beta], "workspaces" => paths,
+            "workspace" => paths.fetch("alpha"), "preparation" => snapshot,
+            "worktrees" => inventory, "worktrees_path" => File.join(run, "worktrees.json") }
+          report["artifacts"] = %w[prompt_path stdin_path jsonl_path stderr_path final_path].map do |key|
+            path = File.join(run, key)
+            File.write(path, "host evidence\n")
+            report[key] = path
+            { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest, "bytes" => File.size(path) }
+          end
+          File.write(File.join(run, "handoff.json"), JSON.generate(report))
+          provider = Provider.new
+          guard = Guard.new
+          manager = AgentCodingTool::DeliveryManager.new(data_root: data,
+            coordinator: Coordinator.new(data, snapshot), provider: provider, guard: guard)
+          yield manager, provider, data, run, paths, snapshot, guard
+        end
       end
-      task = { "id" => "TASK", "title" => "Coordinated change", "repositories" => repositories }
-      File.write(File.join(data, "tasks", "TASK.yml"), YAML.dump(task))
-      AgentCodingTool::StateStore.new(File.join(data, "state")).write("TASK",
-        { "id" => "TASK", "snapshot" => snapshot, "started_at" => Time.now.utc.iso8601 })
-      policy = %w[alpha beta].to_h do |name|
-        command = name == "beta" && fail_second ? ["ruby", "-e", "exit 1"] :
-          ["ruby", "-e", "puts '2 tests, 3 assertions, 0 failures, 0 errors, 0 skips'"]
-        [name, { "allowed_paths" => ["file.txt"], "base_branch" => "main",
-                 "commands" => [command], "max_seconds" => 30, "min_tests" => 2,
-                 "min_assertions" => 3, "publication_guard" => { "lease_check" => "/fake",
-                   "trigger_assessment" => "fixture" } }]
-      end
-      contract = { "repositories" => policy,
-                   "cross_repository_checks" => [
-                     { "cwd" => "alpha", "argv" => ["ruby", "-e",
-                       "puts '2 tests, 3 assertions, 0 failures, 0 errors, 0 skips'",
-                       "{worktree:reader}"] }] }
-      File.write(File.join(validation, "TASK.yml"), YAML.dump(contract))
-      inventory = AgentCodingTool::WorktreeManager.new(root: visible,
-        record_path: File.join(run, "worktrees.json")).create(
-          task_id: "TASK", attempt: 1, task: task, snapshot: snapshot)
-      paths = inventory.fetch("entries").select { |entry| entry["access"] == "write" }.to_h {
-        |entry| [entry.fetch("name"), entry.fetch("path")] }
-      paths.each do |name, path|
-        File.write(File.join(path, "file.txt"), "changed #{name}\n") if name != "beta" || change_beta
-      end
-      report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "TASK",
-        "attempt" => 1, "status" => "exited", "exit_status" => 0, "final_valid" => true,
-        "writable_freshness" => "fresh_at_exit", "writable_repository" => "alpha",
-        "writable_repositories" => %w[alpha beta], "workspaces" => paths,
-        "workspace" => paths.fetch("alpha"), "preparation" => snapshot,
-        "worktrees" => inventory, "worktrees_path" => File.join(run, "worktrees.json") }
-      report["artifacts"] = %w[prompt_path stdin_path jsonl_path stderr_path final_path].map do |key|
-        path = File.join(run, key)
-        File.write(path, "host evidence\n")
-        report[key] = path
-        { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest, "bytes" => File.size(path) }
-      end
-      File.write(File.join(run, "handoff.json"), JSON.generate(report))
-      provider = Provider.new
-      guard = Guard.new
-      manager = AgentCodingTool::DeliveryManager.new(data_root: data,
-        coordinator: Coordinator.new(data, snapshot), provider: provider, guard: guard)
-      yield manager, provider, data, run, paths, snapshot, guard
+    ensure
+      ENV['TMPDIR'] = previous_tmpdir
+      @delivery_world&.verify!
     end
   end
 
@@ -191,6 +200,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies unchanged writer requires no pr and can be cleaned; assertion failures raise.
   def test_unchanged_writer_requires_no_pr_and_can_be_cleaned
     fixture(change_beta: false) do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)
@@ -202,8 +212,8 @@ class MultiDeliveryGitIntegration < Minitest::Test
       state_store.write("TASK", state)
       ordinary = snapshot.fetch("alpha").fetch("path")
       File.write(File.join(ordinary, "file.txt"), File.binread(File.join(paths.fetch("alpha"), "file.txt")))
-      git(ordinary, "add", "file.txt")
-      git(ordinary, "commit", "-qm", "squash")
+      git(ordinary, "add", "--", "file.txt")
+      git(ordinary, "commit", "-m", "squash")
       pr = delivered.fetch("prs").fetch("alpha")
       provider.integrations[pr.fetch("url")] = { "merged" => true, "head" => pr.fetch("head"),
         "base" => "main", "merge_commit_sha" => git(ordinary, "rev-parse", "HEAD") }
@@ -244,6 +254,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies squash integration cleanup refusals and interrupted resume; assertion failures raise.
   def test_squash_integration_cleanup_refusals_and_interrupted_resume
     fixture do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)
@@ -254,8 +265,8 @@ class MultiDeliveryGitIntegration < Minitest::Test
       paths.each do |name, workspace|
         ordinary = snapshot.fetch(name).fetch("path")
         File.write(File.join(ordinary, "file.txt"), File.binread(File.join(workspace, "file.txt")))
-        git(ordinary, "add", "file.txt")
-        git(ordinary, "commit", "-qm", "squash integration")
+        git(ordinary, "add", "--", "file.txt")
+        git(ordinary, "commit", "-m", "squash integration")
         pr = delivered.fetch("prs").fetch(name)
         provider.integrations[pr.fetch("url")] = { "merged" => true, "head" => pr.fetch("head"),
           "base" => "main", "merge_commit_sha" => git(ordinary, "rev-parse", "HEAD") }
@@ -263,15 +274,17 @@ class MultiDeliveryGitIntegration < Minitest::Test
       handler = AgentCodingTool::CleanupManager.new(data_root: data, provider: provider, liveness: ClearLiveness.new)
       before = File.binread(File.join(run, "worktrees.json"))
       parent = snapshot.fetch("alpha").fetch("path")
-      ordinary_before = [git(parent, "rev-parse", "HEAD"), git(parent, "status", "--porcelain"),
-                         git(parent, "worktree", "list", "--porcelain"),
-                         File.stat(File.join(parent, ".git", "index")).mtime]
+      ordinary_before = [git(parent, "rev-parse", "HEAD"), git(parent, "status", "--porcelain", "--untracked-files=all"),
+                         git(parent, "worktree", "list", "--porcelain", "-z"),
+                         git(parent, "ls-files", "--stage", "-z"),
+                         File.stat(File.join(parent, ".git", "MEMORY_GIT")).mtime]
       assert_equal false, handler.preflight("TASK").fetch("blocked")
       assert_equal before, File.binread(File.join(run, "worktrees.json"))
-      assert_equal ordinary_before.last, File.stat(File.join(parent, ".git", "index")).mtime
-      assert_equal ordinary_before.first(3),
-                   [git(parent, "rev-parse", "HEAD"), git(parent, "status", "--porcelain"),
-                    git(parent, "worktree", "list", "--porcelain")]
+      assert_equal ordinary_before.last, File.stat(File.join(parent, ".git", "MEMORY_GIT")).mtime
+      assert_equal ordinary_before.first(4),
+                   [git(parent, "rev-parse", "HEAD"), git(parent, "status", "--porcelain", "--untracked-files=all"),
+                    git(parent, "worktree", "list", "--porcelain", "-z"),
+                    git(parent, "ls-files", "--stage", "-z")]
       File.write(File.join(paths.fetch("beta"), "keep"), "operator")
       assert_includes handler.preflight("TASK").fetch("attempts").find { |row|
         row["repository"] == "beta" }.fetch("blockers"), "worktree contains changes"
@@ -296,6 +309,7 @@ class MultiDeliveryGitIntegration < Minitest::Test
     end
   end
 
+  # Verifies cleanup refuses unmerged unsynchronized unknown and foreign; assertion failures raise.
   def test_cleanup_refuses_unmerged_unsynchronized_unknown_and_foreign
     fixture do |manager, provider, data, run, paths, snapshot|
       delivered = manager.deliver("TASK", run_dir: run)
@@ -316,8 +330,8 @@ class MultiDeliveryGitIntegration < Minitest::Test
       paths.each do |name, workspace|
         ordinary = snapshot.fetch(name).fetch("path")
         File.write(File.join(ordinary, "file.txt"), File.binread(File.join(workspace, "file.txt")))
-        git(ordinary, "add", "file.txt")
-        git(ordinary, "commit", "-qm", "squash")
+        git(ordinary, "add", "--", "file.txt")
+        git(ordinary, "commit", "-m", "squash")
         provider.integrations[delivered.fetch("prs").fetch(name).fetch("url")]["merge_commit_sha"] =
           git(ordinary, "rev-parse", "HEAD")
       end

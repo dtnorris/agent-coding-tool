@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 require "stringio"
-require "minitest/mock"
 require_relative "test_helper"
 
 # Exercises family presentation with the real coordinator/planner and in-memory
-# task/state stores. No lifecycle calls, repository processes or network are used.
+# task/state stores plus real task files for reset-history inspection. No lifecycle
+# calls, repository processes or network are used.
 class FamilyStatusTest < Minitest::Test
   # Provides immutable task registry reads; unknown IDs raise the ordinary error.
   TaskRegistry = Struct.new(:all) do
@@ -16,13 +16,17 @@ class FamilyStatusTest < Minitest::Test
   end
 
   # Provides legacy empty states without a write API, catching accidental writes.
-  States = Struct.new(:rows) do
+  States = Struct.new(:rows, :root) do
     # Returns an existing mapping or an empty state for an unprepared task.
     def load(id) = rows.fetch(id, {})
+    # Locates synthetic state without creating it; reset history reads real tasks.
+    def state_path(id) = File.join(root, "#{id}.yml")
+  end
 
-    # Supplies the inert locator required to construct the mocked reset reader.
-    # No file exists here; the scoped reset-history boundary prevents I/O.
-    def state_path(id) = File.join("/unused", "state", "#{id}.yml")
+  # Removes only directories owned by this case; supplied stores retain ownership.
+  def teardown
+    Array(@fixture_roots).each { |root| FileUtils.remove_entry(root) }
+    super
   end
 
   # Declares an empty external-evidence boundary for this in-memory display
@@ -32,13 +36,6 @@ class FamilyStatusTest < Minitest::Test
     def active_snapshot = []
     # Returns no conflicts for any task in this no-observation fixture.
     def conflicts(*, **) = []
-  end
-
-  # Declares no hard-reset history for these task/state presentation fixtures.
-  # Real reset persistence and interrupted-operation fencing use native tests.
-  class NoResetHistory
-    # Returns no receipts for the supplied task; never reads or changes files.
-    def history(_id) = []
   end
 
   # Counts resolution/probe calls; pushed freshness is deterministic and offline.
@@ -116,12 +113,14 @@ class FamilyStatusTest < Minitest::Test
       assert_includes plain, "act stat --fam #{family}" if hidden.positive?
     end
     tasks.concat(family_tasks("ACT" => 1))
+    coordinator, = build(tasks)
     with_act = output(coordinator, %w[status --full])
     assert_equal %w[ACT-01 BUG-01 CL-01 ECT-01 TST-01], ready_ids(with_act)
     assert_match(/^ACT-01: READY \(NEXT\)/, with_act)
     assert_includes with_act, "ACT: 1 READY, 0 hidden"
     assert_equal 1, with_act.scan("(NEXT)").length
     tasks.concat(family_tasks("FS" => 1, "IG" => 1))
+    coordinator, = build(tasks)
     assert_equal 7, ready_ids(output(coordinator, %w[status --full])).length
   end
 
@@ -290,9 +289,17 @@ class FamilyStatusTest < Minitest::Test
     end
     tasks = (1..7).map { |number| task("-odd-#{number}") }
     coordinator, = build(tasks)
-    assert_equal 7, ready_ids(output(coordinator, %w[status --full])).length
-    assert_equal ["-odd-1"], ready_ids(output(coordinator, ["status", "--fam=-odd-1"]))
-    assert_equal ["-odd-1"], ready_ids(output(coordinator, ["status", "--", "-odd-1"]))
+    # Reset-history inspection rejects unsafe IDs before presentation. Check the
+    # refusal publicly and exercise defensive shell formatting independently.
+    out, err = StringIO.new, StringIO.new
+    assert_equal 2, client(coordinator, out: out, err: err).run(%w[status --full])
+    assert_empty out.string
+    assert_includes err.string, "hard reset: unsafe task ID"
+    out = StringIO.new
+    cli = client(coordinator, out: out)
+    assert_equal "-odd-1", cli.send(:task_family, "-odd-1")
+    cli.send(:display_family_summary, "-odd-1", [7, 4])
+    assert_includes out.string, "act stat --fam=-odd-1"
   end
 
   # ACT-14's ID grants no readiness: terminal and stale states retain their
@@ -557,9 +564,19 @@ class FamilyStatusTest < Minitest::Test
     { "snapshot" => { name => { "remote_url" => "git@github.com:fixture/#{name}.git", "branch" => "main", "pushed_sha" => "a" * 40 } } }
   end
 
-  # Returns a planner plus inspector using immutable in-memory stores by default;
-  # callers may supply a disposable state store/prompt root for Icebox evidence.
-  def build(tasks, states: {}, state_store: States.new(states), prompt_root: nil)
+  # Returns a planner/inspector with real task files for reset-history validation
+  # and a read-only state adapter by default. Callers may supply an owned store.
+  # Fixture writes finish before CLI inspection; filesystem errors propagate.
+  def build(tasks, states: {}, state_store: nil, prompt_root: nil)
+    if state_store
+      directory = File.dirname(File.dirname(state_store.state_path("unused")))
+    else
+      directory = File.realpath(Dir.mktmpdir("act-family-status-"))
+      (@fixture_roots ||= []) << directory
+      state_store = States.new(states, File.join(directory, "state"))
+    end
+    FileUtils.mkdir_p(File.join(directory, "tasks"))
+    tasks.each { |task| File.write(File.join(directory, "tasks", "#{task.fetch('id')}.yml"), YAML.dump(task)) }
     inspector = Inspector.new
     coordinator = AgentCodingTool::Coordinator.new(task_store: TaskRegistry.new(tasks), state_store: state_store,
       repo_inspector: inspector, prompt_renderer: nil, prompt_root: prompt_root, external_activity: NoExternalActivity.new)
@@ -570,10 +587,6 @@ class FamilyStatusTest < Minitest::Test
   def client(coordinator, out: StringIO.new, err: StringIO.new)
     cli = AgentCodingTool::CLI.new(root: "/unused", data_root: "/unused", out:, err:)
     cli.instance_variable_set(:@coordinator, coordinator)
-    # Keep both successful and refused public calls inside the declared boundary.
-    cli.define_singleton_method(:run) do |arguments|
-      AgentCodingTool::TaskReset.stub(:new, NoResetHistory.new) { super(arguments) }
-    end
     cli
   end
 

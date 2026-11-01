@@ -237,7 +237,8 @@ class CheckpointTest < Minitest::Test
   # cases declare exact reads at the call site. Setup/model errors
   # propagate and all fixture files are removed afterward.
   def fixture(native: true)
-    Dir.mktmpdir("act-checkpoint-test-") do |root|
+    # Keep the broker socket below macOS's path limit with its default TMPDIR.
+    Dir.mktmpdir("act-cp-") do |root|
       root = File.realpath(root)
       ordinary = File.join(root, "ordinary")
       remote = File.join(root, "remote.git")
@@ -1044,7 +1045,8 @@ class CheckpointTest < Minitest::Test
       checkpoint = AgentCodingTool::Checkpoint.new(data_root: data, err: diagnostics)
       assert_equal 0, checkpoint.gate("T", workspace: data, command: gate_command("exit", "0"))
       if File.realpath(data) != data
-        refute File.exist?("#{data}-runs")
+        # Reservation locking creates the canonical run root before receipt setup.
+        assert_equal ["launch.lock"], Dir.children("#{data}-runs")
         assert_includes diagnostics.string, "crash durability unconfirmed"
         refute_includes diagnostics.string, "Checkpoint gate receipt:"
       else

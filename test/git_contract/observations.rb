@@ -2,6 +2,7 @@
 
 require "open3"
 require "thread"
+require_relative "../../lib/agent_coding_tool/command_transport"
 
 # Strict external observations shared by behavioral tests; never interprets Git.
 module GitContract
@@ -10,17 +11,18 @@ module GitContract
 
   # Immutable command input and raw output, or an exceptional execution outcome.
   class Observation
-    attr_reader :argv, :cwd, :stdin_data, :stdout, :stderr, :status, :exception
+    attr_reader :argv, :cwd, :stdin_data, :stdout, :stderr, :status, :exception, :timeout, :options
 
     # Accepts exact argv (including a leading environment hash), cwd and a
     # capture3/capture tuple or an exception. Environment/stdin strings are copied;
     # an omitted environment and an empty leading environment hash are equivalent.
     # Raises ArgumentError for an ambiguous or incompatible outcome.
-    def initialize(argv:, cwd:, stdin_data: "", result: nil, exception: nil)
+    def initialize(argv:, cwd:, stdin_data: "", result: nil, exception: nil, timeout: nil, options: {})
       raise ArgumentError, "observation stdin must be a String" unless stdin_data.is_a?(String)
       unless (result.nil? != exception.nil?) &&
              (result.nil? || (result.size == 3 && result[0].is_a?(String) &&
-              result[1].is_a?(String) && (result[2] == true || result[2] == false || result[2].is_a?(Process::Status))))
+              result[1].is_a?(String) && (result[2] == true || result[2] == false ||
+              result[2].is_a?(Process::Status) || result[2].is_a?(AgentCodingTool::CommandResult))))
         raise ArgumentError, "provide a capture3 result or an exception"
       end
       argv = argv.drop(1) if argv.first == {}
@@ -29,6 +31,8 @@ module GitContract
       end.freeze
       @cwd = cwd&.dup&.freeze
       @stdin_data = stdin_data.dup.freeze
+      @timeout = timeout
+      @options = options.dup.freeze
       @stdout, @stderr, @status = result
       @stdout = @stdout&.dup&.freeze
       @stderr = @stderr&.dup&.freeze
@@ -36,11 +40,11 @@ module GitContract
       freeze
     end
 
-    # Returns fresh raw byte strings and the original Process::Status, or raises
-    # the recorded exception. Does not manufacture Process::Status behavior.
+    # Returns fresh streams and original native status or modeled CommandResult.
+    # Boolean-only legacy records cannot supply termination facts and raise.
     def capture3
       raise exception if exception
-      raise ArgumentError, "capture3 requires a native Process::Status" unless status.is_a?(Process::Status)
+      raise ArgumentError, "capture3 requires termination facts" unless status.is_a?(Process::Status) || status.is_a?(AgentCodingTool::CommandResult)
 
       [stdout.dup, stderr.dup, status]
     end
@@ -50,7 +54,15 @@ module GitContract
     def capture
       raise exception if exception
 
-      [stdout.dup, stderr.dup, status.is_a?(Process::Status) ? status.success? : status]
+      [stdout.dup, stderr.dup, status.respond_to?(:success?) ? status.success? : status]
+    end
+
+    # Adapts raw termination facts to the production transport value. Boolean
+    # observations lack those facts and raise; recorded exceptions stay exact.
+    def command_result
+      output, error, termination = capture3
+      AgentCodingTool::CommandResult.new(stdout: output, stderr: error,
+        exitstatus: termination.exitstatus, termsig: termination.termsig)
     end
   end
 
@@ -77,6 +89,13 @@ module GitContract
       take(argv, chdir, stdin_data).capture
     end
 
+    # Implements the full shared transport envelope without smuggling process
+    # fields into argv. Every declared option/timeout is exact; no native fallback.
+    def call(argv, cwd: nil, env: {}, input: "", timeout: nil, **options)
+      command = env.empty? ? argv : [env, *argv]
+      take(command, cwd, input, timeout, options).command_result
+    end
+
     # Returns true after complete consumption; raises for missing observations.
     def verify!
       @mutex.synchronize do
@@ -89,12 +108,12 @@ module GitContract
 
     # Consumes one exact request atomically; returns its Observation or raises
     # UnexpectedObservation without consuming an unmatched expectation.
-    def take(argv, cwd, stdin_data)
+    def take(argv, cwd, stdin_data, timeout = nil, options = {})
       argv = argv.drop(1) if argv.first == {}
       @mutex.synchronize do
-        index = @ordered ? 0 : @remaining.index { |item| item.argv == argv && item.cwd == cwd && item.stdin_data == stdin_data }
+        index = @ordered ? 0 : @remaining.index { |item| item.argv == argv && item.cwd == cwd && item.stdin_data == stdin_data && item.timeout == timeout && item.options == options }
         expected = index && @remaining[index]
-        unless expected && expected.argv == argv && expected.cwd == cwd && expected.stdin_data == stdin_data
+        unless expected && expected.argv == argv && expected.cwd == cwd && expected.stdin_data == stdin_data && expected.timeout == timeout && expected.options == options
           raise UnexpectedObservation, "unexpected argv=#{argv.inspect} cwd=#{cwd.inspect}; remaining=#{@remaining.map { |item| [item.argv, item.cwd] }.inspect}"
         end
         @remaining.delete_at(index)

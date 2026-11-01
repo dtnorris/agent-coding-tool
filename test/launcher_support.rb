@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
 require 'minitest/mock'
+require_relative 'support/child_processes'
 
 # Only external boundaries are replaced in decision tests. Coordinator lifecycle,
 # prompt rendering, locks, trust checks and durable evidence use production code.
-# `git: true` and `process: true` select the genuine integration paths explicitly.
+# `git: true` selects the memory world; `process: true` retains real process contracts.
 module LauncherSupport
   class FakeWorktrees
     def initialize(root, ordinary, remote, base)
@@ -64,129 +65,32 @@ module LauncherSupport
     end
   end
 
-  Status = Struct.new(:success) do
-    def success? = success
-    # These finite fixtures model normal exits only. The production transport
-    # consumes exit/signal facts, not just the legacy boolean success reader.
-    def exitstatus = success ? 0 : 1
-    def termsig = nil
+  # Returns modeled exit facts for finite external responses; no PID or process.
+  def status_result(success)
+    AgentCodingTool::CommandResult.new(stdout: "", stderr: "", exitstatus: success ? 0 : 1)
   end
 
-  # Reuse the executable, not worker state. Each child resolves its own fixture
-  # from the final-output argument and reads that fixture's settings. This avoids
-  # both rewriting executable bytes and cold startup checks for every scenario.
+  # Returns one immutable reviewed fake worker script. Each invocation reads its
+  # case settings through the final-output path; it never initializes Git.
   def fake_executable
-    return @@fake_executable if defined?(@@fake_executable)
+    File.expand_path('support/fixtures/launcher_worker.rb', __dir__)
+  end
 
-    directory = Dir.mktmpdir('act-fake-codex-')
-    Minitest.after_run { FileUtils.remove_entry(directory) }
-    @@fake_executable = File.join(directory, 'codex')
-    File.write(@@fake_executable, <<~RUBY)
-      #!#{RbConfig.ruby}
-      require 'json'
-      require 'tmpdir'
-      require 'open3'
-      require 'shellwords'
-      if ARGV == ['--version']
-        puts 'codex-cli 0.162.1'
-        exit
-      end
-      if ARGV.include?('sandbox')
-        prefix = ARGV.take(ARGV.index('sandbox'))
-        abort 'unsupported top-level sandbox flag' unless prefix.length.even? &&
-          prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? }
-        if ARGV.include?('--help')
-          puts 'Usage: codex sandbox [OPTIONS] [COMMAND]...'
-          exit
-        end
-        home = ENV['CODEX_HOME']
-        abort 'sandbox inherited user configuration' unless home && File.directory?(home) &&
-          (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
-          home != File.join(ENV.fetch('HOME', ''), '.codex')
-        abort 'legacy sandbox invocation' unless ARGV.include?('sandbox_mode="workspace-write"') &&
-          ARGV[ARGV.index('sandbox') + 1] == '--' && !ARGV.include?('--full-auto')
-        targets = ARGV.drop(ARGV.index('act-probe') + 1)
-        settings_root = Dir.pwd
-        settings_root = File.dirname(settings_root) until File.file?(File.join(settings_root, 'fake-settings.json')) || settings_root == File.dirname(settings_root)
-        settings = JSON.parse(File.read(File.join(settings_root, 'fake-settings.json')))
-        extra_roots = JSON.parse(ARGV.find { |arg| arg.start_with?('sandbox_workspace_write.writable_roots=') }.split('=', 2).last)
-        targets.each do |target|
-          if settings.fetch('mode') == 'leaky' || ([Dir.pwd] + extra_roots).any? { |root| target.start_with?(root + '/') && !target.include?('/.git/') }
-            File.write(target, 'breach')
-            puts '1'
-          else
-            puts '0'
-          end
-        end
-        exit
-      end
-      if ARGV == ['exec', '--help']
-        puts '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model'
-        exit
-      end
-      if ARGV == ['login', '--help']
-        puts 'status Show login status'
-        exit
-      end
-      if ARGV == ['login', 'status']
-        warn 'Logged in using ChatGPT'
-        exit
-      end
-      abort 'unexpected invocation' unless ARGV.first == 'exec'
-      path = ARGV[ARGV.index('--output-last-message') + 1]
-      root = File.expand_path('../../../..', path)
-      mode = JSON.parse(File.read(File.join(root, 'fake-settings.json'))).fetch('mode')
-      trap('INT') { File.write(File.join(root, 'interrupted'), 'INT'); exit 130 }
-      File.write(File.join(root, 'worker-pid'), Process.pid.to_s)
-      File.write(File.join(root, 'worker-process'), JSON.generate(pid: Process.pid, parent: Process.ppid, group: Process.getpgrp, cwd: Dir.pwd))
-      input = STDIN.read
-      File.binwrite(File.join(root, 'stdin'), input)
-      File.write(File.join(root, 'argv'), JSON.generate(ARGV))
-      File.write(File.join(root, 'envkeys'), JSON.generate(ENV.keys))
-      Dir.mktmpdir('worker-fixture-') do |directory|
-        temporary = File.join(directory, 'file')
-        File.write(temporary, 'created')
-        abort 'fixture read failed' unless File.read(temporary) == 'created'
-        File.write(temporary, 'updated')
-        abort 'fixture write failed' unless File.read(temporary) == 'updated'
-        File.unlink(temporary)
-        File.write(File.join(root, 'worker-temp'), JSON.generate('TMPDIR' => ENV.fetch('TMPDIR'), 'directory' => directory))
-      end
-      File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
-      File.write('worker-change.txt', 'worker')
-      if mode.start_with?('journey-drift-')
-        # The parent advances only external fixture refs after this real child
-        # consumes stdin; the worker must then edit/check/export at its old HEAD.
-        File.write(File.join(root, 'worker-ready'), Dir.pwd)
-        require 'timeout'
-        Timeout.timeout(10) { sleep 0.01 until File.file?(File.join(root, 'worker-continue')) }
-        File.binwrite('worker-change.txt', "after drift\\n\\x00\\xff".b)
-        abort 'post-drift focused check failed' unless File.binread('worker-change.txt') == "after drift\\n\\x00\\xff".b
-      end
-      if mode.start_with?('journey-')
-        # Finite external worker boundary: consume the real envelope command,
-        # check the fake implementation and export through the public CLI.
-        abort 'focused check failed' unless mode.start_with?('journey-drift-') || File.binread('worker-change.txt') == 'worker'
-        command = input.lines.find { |line| line.start_with?('After focused checks, export using') }
-        abort 'missing candidate handoff' unless command
-        output, error, status = Open3.capture3(*Shellwords.split(command.split(': ', 2).last))
-        abort error unless status.success?
-        result = JSON.parse(output)
-        result['focused_checks'] = [{ 'command' => 'finite fake worker content check', 'result' => 'PASS' }]
-        result['startup_tools'] = mode.delete_prefix('journey-')
-        File.write(path, JSON.generate(result))
-        exit(mode == 'journey-drift-remote' ? 7 : 0)
-      end
-      puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
-      puts 'progress'
-      STDOUT.flush
-      warn 'stderr progress'
-      sleep 30 if mode == 'sleep'
-      File.binwrite(path, mode == 'invalid' ? "\\xff" : 'Final worker response') unless mode == 'missing'
-      exit(mode == 'failure' ? 7 : 0)
-    RUBY
-    File.chmod(0o755, @@fake_executable)
-    @@fake_executable
+  # Adapts only the declared fake worker boundary to a guarded Ruby invocation.
+  # Production still creates pipes, forwards signals, reaps status and persists
+  # evidence. Other executables/options fail before any process is created.
+  def spawn_fake_worker(environment, *command, **options)
+    raise GitContract::UnexpectedObservation, 'unknown fake worker' unless command.shift == File.realpath(@fake)
+    pipes = options.select { |key, _value| [:in, :out, :err].include?(key) }
+    settings = options.reject { |key, _value| pipes.key?(key) }
+    forwarded = environment.dup
+    forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
+    forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker
+    approval = ChildProcesses.permit('launcher_worker', arguments: command, environment: forwarded,
+      options: settings, endpoint: @memory_broker&.endpoint)
+    NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv, **approval.options, **pipes)
+    end
   end
 
   def write_fake(mode = 'success', auth: 'Logged in using ChatGPT', help: true,
@@ -200,16 +104,18 @@ module LauncherSupport
     File.write(File.join(@root, 'fake-settings.json'), JSON.generate('mode' => mode))
   end
 
-  # Copy independent ordinary repositories; only read-only cases share the
-  # immutable seed remote. No refs, alternates, hard links or worktrees are
-  # shared with cases that mutate their remote. Fixture setup fails loudly
-  # without inflating product assertion counts.
+  # Executes bounded fixture commands against this case's authority only.
+  # Unknown setup forms fail rather than fall back to a captured native method.
   def setup_git(*args, chdir: nil)
-    stdout, stderr, status = Open3.capture3('git', *args, **(chdir ? { chdir: chdir } : {}))
-    raise "Git fixture failed: #{stderr}" unless status.success?
-    stdout.strip
+    raise MemoryGit::Mismatch, "missing launcher world" unless @memory_world
+    result = @memory_world.call(["git", *args], cwd: chdir)
+    raise "Git fixture failed: #{result.stderr}" unless result.success?
+    result.stdout.strip
   end
 
+  # Yields independent memory repositories or finite ordinary observations.
+  # All remotes are private; mutable_remote remains a legacy keyword. Real worker
+  # execution is explicit and guarded; setup/model/protocol failures propagate.
   def fixture(git: false, process: false, mutable_remote: false)
     Dir.mktmpdir('act-launch-') do |root|
       @root = File.realpath(root)
@@ -218,86 +124,89 @@ module LauncherSupport
       @data, @ordinary, @remote, @fake = %w[data ordinary remote.git codex].map { |name| File.join(@root, name) }
       @real_git, @real_process = git, process
       FileUtils.mkdir_p(File.join(@data, 'tasks'))
+      @memory_world = git ? MemoryGit::PatchWorld.new(root: @root) : nil
       if git
-        seed = TestHelpers.git_seed
-        FileUtils.cp_r(File.join(seed.fetch(:root), 'ordinary'), @ordinary)
-        if mutable_remote
-          FileUtils.cp_r(File.join(seed.fetch(:root), 'remote.git'), @remote)
-          setup_git('remote', 'set-url', 'origin', @remote, chdir: @ordinary)
-        else
-          # Other tests read the seed remote; their Git refs and worktrees live
-          # only in the independently copied ordinary checkout.
-          @remote = File.join(seed.fetch(:root), 'remote.git')
-        end
-        @base = seed.fetch(:base)
+        checkout, = memory_repository(@memory_world, path: @ordinary, remote: @remote)
+        @base = checkout.head
       else
         FileUtils.mkdir_p([@ordinary, @remote])
         File.write(File.join(@ordinary, 'file.txt'), "base\n")
         @base = 'a' * 40
       end
-      File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root, 'worktree_root' => File.join(@root, 'worktrees')))
-      write_task(@data, id: 'T', repositories: { 'repo' => { 'access' => 'write', 'path' => @ordinary } })
-      write_fake
-      @config = AgentCodingTool::Config.load(File.join(@data, 'config.yml'))
-      @store = AgentCodingTool::StateStore.new(File.join(@data, 'state'))
-      @inspector = git ? AgentCodingTool::RepoInspector.new(@config) : Inspector.new(@ordinary, @remote, @base)
-      @coordinator = AgentCodingTool::Coordinator.new(
-        task_store: AgentCodingTool::TaskStore.new(File.join(@data, 'tasks')), state_store: @store,
-        repo_inspector: @inspector, prompt_renderer: AgentCodingTool::PromptRenderer.new,
-        prompt_root: File.join(@data, 'state', 'prompts'))
-      @out, @err = StringIO.new, StringIO.new
-      if git
-        yield
-      else
-        @skill_capture = Open3.method(:capture3)
-        AgentCodingTool::RepoInspector.stub(:new, @inspector) do
-          AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do
-            Open3.stub(:capture3, method(:unit_capture)) { yield }
+      MemoryGit::Session.with(@memory_world) do
+        File.write(File.join(@data, 'config.yml'), YAML.dump('repo_root' => @root, 'worktree_root' => File.join(@root, 'worktrees')))
+        write_task(@data, id: 'T', repositories: { 'repo' => { 'access' => 'write', 'path' => @ordinary } })
+        write_fake
+        @config = AgentCodingTool::Config.load(File.join(@data, 'config.yml'))
+        @store = AgentCodingTool::StateStore.new(File.join(@data, 'state'))
+        @inspector = git ? AgentCodingTool::RepoInspector.new(@config) : Inspector.new(@ordinary, @remote, @base)
+        @coordinator = AgentCodingTool::Coordinator.new(
+          task_store: AgentCodingTool::TaskStore.new(File.join(@data, 'tasks')), state_store: @store,
+          repo_inspector: @inspector, prompt_renderer: AgentCodingTool::PromptRenderer.new,
+          prompt_root: File.join(@data, 'state', 'prompts'))
+        @out, @err = StringIO.new, StringIO.new
+        if git
+          MemoryGit::Session.with_capture(method(:unit_capture)) { yield }
+        else
+          AgentCodingTool::RepoInspector.stub(:new, @inspector) do
+            AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do
+              Open3.stub(:capture3, method(:unit_capture)) { yield }
+            end
           end
         end
       end
+    ensure
+      @memory_world&.verify!
     end
   end
 
+  # Exact external preflight observations for existing ordinary decision cases.
+  # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
-      return ['00000000-0000-0000-0000-000000000000', '', Status.new(true)]
+      return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
     end
     if command[0].is_a?(Hash) && command[1, 2] == ['git', '--no-replace-objects']
       raise GitContract::UnexpectedObservation, 'ordinary skill read escaped its finite runner' if ENV['ACT_ORDINARY_SUITE'] == '1'
-      return @skill_capture.call(*command, **options)
+      environment, *arguments = command
+      fields = { env: environment, cwd: options[:chdir], input: options.fetch(:stdin_data, '') }
+      raise GitContract::UnexpectedObservation, 'unknown source options' unless (options.keys - [:chdir, :stdin_data]).empty?
+      return MemoryGit::Session.skill_transport.call(arguments, **fields).to_ary
     end
     # NativeCommandTransport makes the empty inherited environment and stdin
     # explicit. Normalize only those defaults; overrides, input and extra
     # options must still fail rather than be mistaken for Codex preflight.
     command.shift if command.first == {} && command[1] == 'git'
     if command.first == 'git'
-      raise 'unexpected Git stdin' unless options.fetch(:stdin_data, '') == ''
+      raise GitContract::UnexpectedObservation, 'unexpected Git stdin' unless options.fetch(:stdin_data, '') == ''
       options = options.reject { |key, _value| key == :stdin_data }
-      raise 'unexpected Git options' unless options.keys == [:chdir]
+      raise GitContract::UnexpectedObservation, 'unexpected Git options' unless options.keys == [:chdir]
+    end
+    if command.first == 'git' && @memory_world
+      return @memory_world.call(command, cwd: options.fetch(:chdir)).to_ary
     end
     if command.first.is_a?(Hash)
       env = command.shift
       allowed_options = [{ unsetenv_others: true },
                          { chdir: File.join(@root, 'worktrees', 'T', 'repo'), unsetenv_others: true }]
-      raise 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
+      raise GitContract::UnexpectedObservation, 'unsafe preflight environment' unless (env.keys - %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL]).empty? &&
                                                     allowed_options.include?(options)
-      raise "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
+      raise GitContract::UnexpectedObservation, "unexpected executable: #{command.inspect}" unless command.shift == File.realpath(@fake)
       case command
-      when ['--version'] then [@fake_version, '', Status.new(true)]
-      when ['exec', '--help'] then [@fake_help, '', Status.new(true)]
-      when ['login', '--help'] then ['status Show login status', '', Status.new(true)]
-      when ['login', 'status'] then ['', @fake_auth, Status.new(!@fake_auth.empty?)]
-      when ['sandbox', '--help'] then [@fake_sandbox_help, '', Status.new(true)]
+      when ['--version'] then [@fake_version, '', status_result(true)]
+      when ['exec', '--help'] then [@fake_help, '', status_result(true)]
+      when ['login', '--help'] then ['status Show login status', '', status_result(true)]
+      when ['login', 'status'] then ['', @fake_auth, status_result(!@fake_auth.empty?)]
+      when ['sandbox', '--help'] then [@fake_sandbox_help, '', status_result(true)]
       when ->(args) { args.include?('sandbox') && args.include?('act-probe') }
         prefix = command.take(command.index('sandbox'))
         home = env.fetch('CODEX_HOME')
-        raise 'unsupported top-level sandbox flag or inherited configuration' unless
+        raise GitContract::UnexpectedObservation, 'unsupported top-level sandbox flag or inherited configuration' unless
           prefix.length.even? && prefix.each_slice(2).all? { |flag, value| flag == '-c' && value && !value.empty? } &&
           File.directory?(home) && (File.stat(home).mode & 0o077).zero? && Dir.children(home).empty? &&
           home != ENV['CODEX_HOME'] && !home.start_with?("#{@root}/")
         @observed_sandbox_home = home
-        raise 'legacy or unenforced sandbox invocation' unless
+        raise GitContract::UnexpectedObservation, 'legacy or unenforced sandbox invocation' unless
           command.include?('sandbox_mode="workspace-write"') && command[command.index('sandbox') + 1] == '--' &&
           !command.include?('--full-auto')
         paths = command.drop(command.index('act-probe') + 1)
@@ -311,32 +220,33 @@ module LauncherSupport
           File.write(path, 'breach') if allowed
           allowed ? "1\n" : "0\n"
         end.join
-        [output, '', Status.new(true)]
-      else raise "unexpected preflight: #{command.inspect}"
+        [output, '', status_result(true)]
+      else raise GitContract::UnexpectedObservation, "unexpected preflight: #{command.inspect}"
       end
     else
-      raise "unexpected external command: #{command.inspect}" unless command.shift == 'git'
+      raise GitContract::UnexpectedObservation, "unexpected external command: #{command.inspect}" unless command.shift == 'git'
       if command == ['rev-parse', '--path-format=absolute', '--git-common-dir'] &&
          ([@ordinary, @dep_ordinary] + @store.load('T').fetch('snapshot', {}).values.map { |repo| repo.fetch('path') }).compact.include?(options[:chdir])
         admin = File.join(@root, options.fetch(:chdir) == @ordinary ? 'admin' : 'admin-dep')
         FileUtils.mkdir_p(admin)
-        return [admin, '', Status.new(true)]
+        return [admin, '', status_result(true)]
       end
       @unit_workspace ||= File.join(@root, 'worktrees', 'T', 'repo')
-      raise 'unexpected Git working directory' unless options == { chdir: @unit_workspace }
+      raise GitContract::UnexpectedObservation, 'unexpected Git working directory' unless options == { chdir: @unit_workspace }
       case command
-      when ['remote', 'get-url', 'origin'] then [@remote, '', Status.new(true)]
-      when ['rev-parse', 'HEAD'] then [@base, '', Status.new(true)]
-      when ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'] then ['', '', Status.new(true)]
-      when ['symbolic-ref', '-q', 'HEAD'] then ['refs/heads/act/T/attempt-1', '', Status.new(true)]
-      else raise "unexpected Git operation: #{command.inspect}"
+      when ['remote', 'get-url', 'origin'] then [@remote, '', status_result(true)]
+      when ['rev-parse', 'HEAD'] then [@base, '', status_result(true)]
+      when ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'] then ['', '', status_result(true)]
+      when ['symbolic-ref', '-q', 'HEAD'] then ['refs/heads/act/T/attempt-1', '', status_result(true)]
+      else raise GitContract::UnexpectedObservation, "unexpected Git operation: #{command.inspect}"
       end
     end
   end
 
   def launcher(real_sandbox_probe: false, **extra)
     instance = AgentCodingTool::Launcher.new(coordinator: @coordinator, data_root: @data, source_root: Dir.pwd,
-                                           out: @out, err: @err, codex: @fake, **extra)
+                                           out: @out, err: @err, codex: @fake,
+                                           **{ spawner: method(:spawn_fake_worker) }.merge(extra))
     instance.define_singleton_method(:sandbox_probe!) { |_inventory, _workspace, _run_dir| true } unless real_sandbox_probe
     unless @real_process
       root, store = @root, @store

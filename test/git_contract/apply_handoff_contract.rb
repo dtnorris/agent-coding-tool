@@ -3,9 +3,9 @@
 require_relative "../apply_handoff_support"
 require_relative "../apply_handoff_observations"
 
-# Records one genuine composed run, then exercises full Ruby decision workflows
-# against finite phase transcripts and real fixture bytes/modes. Native public
-# CLI tests independently retain Git mutation, PTY, hook and process contracts.
+# Records one composed memory-Git run with a permitted real Ruby validator, then
+# exercises full decision workflows against finite transcripts and real files.
+# Native public CLI tests retain Git mutation, PTY and hook contracts separately.
 class ApplyHandoffContract < Minitest::Test
   include ApplyHandoffFixtures
 
@@ -30,10 +30,10 @@ class ApplyHandoffContract < Minitest::Test
     result
   end
 
-  # Calls the shared native transport, recording exact requests and CommandResult
-  # values. Marks partition requests at actual confirmation reads.
-  # Returns result, records, marks and initial snapshots; native failures fail.
-  def native_run(answers)
+  # Records exact product requests/results using the fixture's composed Git
+  # transport and one reviewed Ruby child. Returns result, records, confirmation
+  # marks and snapshots; unknown requests and child/fixture errors fail the test.
+  def recorded_run(answers)
     # Match the public CLI driver's removal of only its synthetic skill preload;
     # retain arbitrary inherited options, especially child coverage instrumentation.
     previous_rubyopt = ENV["RUBYOPT"]
@@ -44,7 +44,11 @@ class ApplyHandoffContract < Minitest::Test
     out, err = StringIO.new("".b), StringIO.new("".b)
     native_transport = AgentCodingTool::NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     transport = lambda do |argv, **options|
-      result = native_transport.call(argv, **options)
+      result = if argv.first == "git"
+                 recorded_git(argv, options)
+               else
+                 permitted_validation(native_transport, argv, options)
+               end
       records << { argv: argv, **options, result: result }
       result
     end
@@ -55,6 +59,46 @@ class ApplyHandoffContract < Minitest::Test
     [[code, out.string, err.string], records, marks, native.instance_variable_get(:@initial)]
   ensure
     ENV["RUBYOPT"] = previous_rubyopt
+  end
+
+  # Uses model Git for every request. The finite model rejects text status when
+  # any tracked name needs quoting, even when unchanged. For this display-only
+  # request, render its NUL rows only if all changed names are plain ASCII;
+  # otherwise fail. Returns CommandResult without permitting a native fallback.
+  def recorded_git(argv, options)
+    return @memory_world.call(argv, **options) unless argv == %w[git status --short --untracked-files=all]
+
+    result = @memory_world.call(argv + ["-z"], **options)
+    assert result.success?, result.stderr
+    rows = result.stdout.split("\0")
+    rows.each { |row| assert_match(/\A[ MADRCU?!]{2} [A-Za-z0-9_.\/-]+\z/, row) }
+    with_stdout(result, rows.map { |row| row + "\n" }.join.b)
+  end
+
+  # Checks the complete product validation envelope, then runs only the reviewed
+  # fixture script with the mandatory guard/coverage preloads and a five-second
+  # timeout. Returns genuine child output/status; mismatches or timeouts raise.
+  def permitted_validation(transport, argv, options)
+    assert_equal [RbConfig.ruby, "-Ilib:test", "--", "verify.rb"], argv
+    assert_equal({ cwd: @b, env: { "AGENT_CODING_TOOL_DATA_DIR" => @a }, input: "", pgroup: true }, options)
+    preloads = {}
+    if defined?(Bundler)
+      bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
+      preloads[bundler] = Digest::SHA256.file(bundler).hexdigest
+    end
+    if ENV["ACT_COVERAGE_CONTEXT"]
+      preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest
+    end
+    # Permit argv is fixed by the guard; preserve the product's -I search paths
+    # through RUBYLIB when adding the guard before the same script.
+    environment = options.fetch(:env).merge("RUBYLIB" =>
+      [File.join(@b, "lib"), File.join(@b, "test"), ENV["RUBYLIB"]].compact.join(File::PATH_SEPARATOR))
+    permit = NoGitExecution::Permit.new(script: File.join(@b, "verify.rb"),
+      sha256: "42f711ee67132d81613018c8b94d3d9d95d7f1608ad8bc1cf6ff58f24bc4041e",
+      preloads: preloads, environment: environment, options: { chdir: @b, pgroup: true })
+    NoGitExecution.with_permit(permit) do
+      transport.call(permit.argv, cwd: @b, env: permit.environment, input: "", pgroup: true, timeout: 5)
+    end
   end
 
   # Creates only the configured repository binding; configuration errors raise.
@@ -69,15 +113,50 @@ class ApplyHandoffContract < Minitest::Test
     [code, out.string, err.string]
   end
 
-  # Restores this matrix's private seed copy and original downloaded artifacts.
-  # Real file I/O errors propagate; no Git command or shared checkout is touched.
+  # Restores the private model and seed bytes without replacing registered .git
+  # identities. Returns the saved manifest; filesystem/model errors propagate.
   def restore_world
-    FileUtils.remove_entry(@repos)
-    FileUtils.cp_r(@saved_repos, @repos)
+    @apply_checkouts.each do |path, checkout|
+      Dir.children(path).reject { |name| name == ".git" }.each do |name|
+        FileUtils.remove_entry(File.join(path, name))
+      end
+      source = File.join(@saved_repos, File.basename(path))
+      Dir.children(source).reject { |name| name == ".git" }.each do |name|
+        FileUtils.cp_r(File.join(source, name), path)
+      end
+      saved = @saved_git.fetch(path)
+      %i[objects refs config remotes].each do |field|
+        checkout.repository.public_send(field).replace(saved.fetch(field))
+      end
+      checkout.index.replace(saved.fetch(:index))
+      checkout.ignored.replace(saved.fetch(:ignored))
+      checkout.head_ref, checkout.detached = saved.values_at(:head_ref, :detached)
+    end
     @manifest = Marshal.load(@saved_manifest)
     File.unlink(@patch_path) if File.symlink?(@patch_path)
     File.binwrite(@patch_path, @patch)
     save_manifest
+  end
+
+  # Copies authoritative model state for these ordinary, independent checkouts.
+  # Entries/objects are immutable; detached containers survive later mutations.
+  # Returns a path-keyed snapshot without native Git or filesystem index reads.
+  def git_state
+    @apply_checkouts.to_h do |path, checkout|
+      authority = %i[objects refs config remotes].to_h do |field|
+        [field, checkout.repository.public_send(field).dup]
+      end
+      [path, authority.merge(index: checkout.index.dup, ignored: checkout.ignored.dup,
+        head_ref: checkout.head_ref, detached: checkout.detached)]
+    end
+  end
+
+  # Returns independent index byte/mode oracles directly from model entries.
+  # Raw path/content bytes are preserved; missing fixture bindings raise.
+  def index_states
+    [@a, @b].map do |path|
+      @apply_checkouts.fetch(path).index.to_h { |name, entry| [name, [entry.mode, entry.blob.bytes]] }
+    end
   end
 
   # Captures non-Git regular bytes/modes directly; used independently of replayed
@@ -94,16 +173,16 @@ class ApplyHandoffContract < Minitest::Test
   # trees and indexes retain their original bytes. Returns nil; assertions fail.
   def assert_read_only_refusal(records)
     before = [file_state(@a), file_state(@b)]
-    indexes = [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+    indexes = index_states
     code, stdout, stderr = observed_run(records, [])
     assert_equal 2, code, stdout + stderr
     assert_includes stderr, "ERROR: apply:"
     assert_equal before, [file_state(@a), file_state(@b)]
-    assert_equal indexes, [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+    assert_equal indexes, index_states
     refute File.exist?(File.join(@root, "injected"))
   end
 
-  # Returns a transcript with selected native stdout bytes changed, retaining
+  # Returns a transcript with selected recorded stdout bytes changed, retaining
   # every exact request, code and stream otherwise. The selector must match.
   def changed_output(records, argv, cwd, replacement)
     found = false
@@ -112,7 +191,7 @@ class ApplyHandoffContract < Minitest::Test
       found = true
       record.merge(result: with_stdout(record.fetch(:result), replacement))
     end
-    assert found, "missing native request #{argv.inspect}"
+    assert found, "missing recorded request #{argv.inspect}"
     altered
   end
 
@@ -123,12 +202,13 @@ class ApplyHandoffContract < Minitest::Test
       exitstatus: result.exitstatus, termsig: result.termsig)
   end
 
-  # Records real application/sibling validation/local commit once, verifies its
-  # native effects, and checks every migrated permutation through actual run.
+  # Records modeled application/commit plus real sibling validation, then checks
+  # every migrated permutation. The historical test ID remains inventory-stable;
+  # native Git parity is owned by the separate native contracts.
   # Assertions and strict request consumption fail closed on lost transitions.
   def test_complete_run_decision_matrices_with_native_parity
     fixture(nonportable: true) do
-      # Native parity covers tabs and newlines in tracked names.
+      # Model inventories cover tabs and newlines in tracked names.
       # Each combined inventory must reconstruct the original four raw reads.
       raw_path = "raw\tline\nname.bin".b
       File.binwrite(File.join(@a, raw_path), "protected\x00\xfe".b)
@@ -143,25 +223,29 @@ class ApplyHandoffContract < Minitest::Test
       @saved_manifest = Marshal.dump(@manifest)
       @saved_repos = File.join(@root, "saved-repositories")
       FileUtils.cp_r(@repos, @saved_repos)
+      @saved_git = git_state
       initial_files = [file_state(@a), file_state(@b)]
-      initial_indexes = [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+      initial_indexes = index_states
       [@a, @b].each do |repo|
-        _stdout, _stderr, status = Open3.capture3("git", "cat-file", "-e", "#{'a' * 40}^{commit}", chdir: repo)
+        _stdout, _stderr, status = @memory_world.call(["git", "cat-file", "-e", "#{'a' * 40}^{commit}"], cwd: repo)
         refute status.success?, "declared drift baseline must be absent"
       end
-      declined, declined_records, = native_run(["no"])
+      declined, declined_records, = recorded_run(["no"])
       assert_equal 0, declined.first, declined.inspect
       assert_equal initial_files, [file_state(@a), file_state(@b)]
-      result, records, marks, initial_states = native_run(%w[yes yes yes])
+      result, records, marks, initial_states = recorded_run(%w[yes yes yes])
       assert_equal 0, result.first, result.inspect
       assert_includes result[1], "sibling validation passed"
       assert_includes result[1], "committed locally"
       assert_equal TASK, git(@a, "show", "HEAD:tasks/NEW.yml")
-      assert_equal "tasks/NEW.yml\n", git(@a, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+      assert_equal "tasks/NEW.yml\0", git(@a, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD")
       assert_equal @bases[0], git(@a, "rev-parse", "HEAD^").strip
       assert_equal initial_files[0], file_state(@a).reject { |path, _value| path == "tasks/NEW.yml" }
       assert_equal initial_files[1], file_state(@b)
       restore_world
+      assert @saved_git == git_state, "model authority/index were not restored"
+      assert_equal initial_files, [file_state(@a), file_state(@b)]
+      assert_equal initial_indexes, index_states
       listing = records.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout.split("\0")
       untracked, indexed = listing.partition { |entry| entry.start_with?("? ") }
       assert_equal git(@a, "ls-files", "--stage", "-z").b, indexed.map { |entry| entry.delete_prefix("H ") + "\0" }.join
@@ -193,10 +277,10 @@ class ApplyHandoffContract < Minitest::Test
         assert_includes stdout, "#{%w[Application Validation Commit].fetch(phase - 1)} declined"
         assert_equal phase > 1, File.exist?(@task)
         refute_includes stdout, "committed locally"
-        assert_equal initial_indexes, [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+        assert_equal initial_indexes, index_states
       end
 
-      # Drift and untracked permutations retain exact native output contracts;
+      # Drift and untracked permutations retain exact recorded output contracts;
       # the absent baseline is provenance only, never an object to execute/read.
       [false, true].product([false, true]).each do |drift, untracked|
         executed["success"] += 1
@@ -225,11 +309,11 @@ class ApplyHandoffContract < Minitest::Test
         assert_includes stdout, "committed locally"
         assert_equal "NEW", AgentCodingTool::TaskStore.new(File.join(@a, "tasks")).load("NEW").fetch("id")
         assert_equal TASK, File.binread(@task)
-        assert_equal initial_indexes, [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+        assert_equal initial_indexes, index_states
       end
 
       # The original 20 contract mutations plus malformed JSON are full run
-      # refusals. Identity errors consume exactly their native inspection prefix.
+      # refusals. Identity errors consume exactly their recorded inspection prefix.
       restore_world
       mutations = [
         -> { @manifest["schema"] = "future/v2" }, -> { @manifest.delete("target") },
@@ -288,7 +372,7 @@ class ApplyHandoffContract < Minitest::Test
       end
 
       # Every phase checks both source snapshots and downloaded bytes again.
-      # Head/index responses are deliberate faults in native observations; real
+      # Head/index responses are deliberate faults in recorded observations; real
       # file races at all three prompts independently remain in the PTY suite.
       [1, 2, 3].each do |phase|
         prefix = [preview, preview + application, preview + application + validation].fetch(phase - 1)
@@ -301,8 +385,8 @@ class ApplyHandoffContract < Minitest::Test
           if %i[head sibling_head].include?(mutation)
             inspection = changed_output(inspection, %w[git rev-parse HEAD], mutation == :head ? @a : @b, "#{'c' * 40}\n")
           elsif mutation == :index
-            native_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
-            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @a, native_index.sub("100644", "100755"))
+            recorded_index = inspection.find { |record| record.fetch(:cwd) == @a && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
+            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @a, recorded_index.sub("100644", "100755"))
           end
           answers = Array.new(phase - 1, "y") + [lambda do
             File.binwrite(@patch_path, "tampered") if mutation == :patch
@@ -317,7 +401,7 @@ class ApplyHandoffContract < Minitest::Test
                      "applied; validated; commit not run"].fetch(phase - 1)
           assert_includes stdout, "Apply outcome: #{outcome}"
           refute_includes stdout, "committed locally"
-          assert_equal initial_indexes, [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+          assert_equal initial_indexes, index_states
         end
       end
 
@@ -329,8 +413,8 @@ class ApplyHandoffContract < Minitest::Test
           restore_world
           inspection = snapshot
           if mutation == :addition
-            native_listing = inspection.find { |record| record.fetch(:cwd) == repo && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
-            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], repo, native_listing + "? unexpected.bin\0")
+            recorded_listing = inspection.find { |record| record.fetch(:cwd) == repo && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
+            inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], repo, recorded_listing + "? unexpected.bin\0")
           end
           local = File.join(repo, "local.bin")
           answer = lambda do
@@ -346,7 +430,7 @@ class ApplyHandoffContract < Minitest::Test
           assert_equal 2, code, stdout + stderr
           assert_includes stderr, "changed since review"
           refute File.exist?(@task)
-          assert_equal initial_indexes, [@a, @b].map { |root| File.binread(File.join(root, ".git", "index")) }
+          assert_equal initial_indexes, index_states
         end
       end
 
@@ -362,8 +446,8 @@ class ApplyHandoffContract < Minitest::Test
         inspection = after_step
         execution = validation_prefix
         if mutation == :addition
-          native_listing = inspection.find { |record| record.fetch(:cwd) == @b && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
-          inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @b, native_listing + "? unexpected.bin\0")
+          recorded_listing = inspection.find { |record| record.fetch(:cwd) == @b && record.fetch(:argv) == %w[git ls-files --stage -v -z --cached --others --exclude-standard] }.fetch(:result).stdout
+          inspection = changed_output(inspection, %w[git ls-files --stage -v -z --cached --others --exclude-standard], @b, recorded_listing + "? unexpected.bin\0")
         elsif mutation == :failing_source
           execution = validation_prefix[0...-1] + [validation_prefix.last.merge(result: AgentCodingTool::CommandResult.new(stdout: "".b, stderr: "".b, exitstatus: 23))]
         end
@@ -380,7 +464,7 @@ class ApplyHandoffContract < Minitest::Test
         assert_equal mutation == :failing_source ? 23 : 2, code, stdout + stderr
         assert_includes stderr, "validation changed"
         refute_includes stdout, "Stage these files"
-        assert_equal initial_indexes, [@a, @b].map { |repo| File.binread(File.join(repo, ".git", "index")) }
+        assert_equal initial_indexes, index_states
       end
       restore_world
       restored = observed_run(records, %w[yes yes yes])

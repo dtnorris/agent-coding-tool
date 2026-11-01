@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../test_helper"
+require_relative "../support/validation_processes"
 require "digest"
 require "json"
 require "open3"
@@ -8,6 +9,8 @@ require "rbconfig"
 require "minitest/mock"
 
 class DeliveryManagerTest < Minitest::Test
+  include TestHelpers
+  include ValidationProcesses
   class Provider
     attr_reader :pushes, :creations, :body
     attr_accessor :fail_after_push, :fail_after_pr
@@ -66,6 +69,8 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
+  # Yields a production manager over fresh modeled Git and a real fixed validator.
+  # All files/locks are private; command/model/filesystem failures propagate.
   def fixture(output: "2 tests, 3 assertions, 0 failures, 0 errors, 0 skips", allowed: ["file.txt"])
     Dir.mktmpdir do |temporary_root|
       # Launcher canonicalizes data_root before recording handoff paths. On
@@ -80,57 +85,62 @@ class DeliveryManagerTest < Minitest::Test
        "#{data}-validation", run_dir].each { |p| FileUtils.mkdir_p(p) }
       File.chmod(0o700, "#{data}-validation")
       File.chmod(0o700, "#{data}-runs")
-      git(root, "init", "-q", "--bare", remote)
-      git(root, "init", "-q", "-b", "main", ordinary)
-      git(ordinary, "config", "user.name", "Test")
-      git(ordinary, "config", "user.email", "test@example.invalid")
-      File.write(File.join(ordinary, "file.txt"), "baseline\n")
-      git(ordinary, "add", "file.txt")
-      git(ordinary, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
-      base = git(ordinary, "rev-parse", "HEAD").strip
-      git(ordinary, "remote", "add", "origin", remote)
-      git(ordinary, "push", "-q", "origin", "main")
-      File.write(File.join(data, "config.yml"), YAML.dump("worktree_root" => worktrees))
-      File.write(File.join(data, "tasks", "TASK.yml"), YAML.dump(
-        "id" => "TASK", "title" => "Change file", "repositories" => { "repo" => { "access" => "write" } }))
-      snapshot = { "repo" => { "path" => ordinary, "remote" => "origin", "remote_url" => remote,
-                               "branch" => "main", "pushed_sha" => base } }
-      state = { "id" => "TASK", "snapshot" => snapshot, "started_at" => Time.now.utc.iso8601 }
-      AgentCodingTool::StateStore.new(File.join(data, "state")).write("TASK", state)
-      contract = { "allowed_paths" => allowed, "base_branch" => "main",
-                   "commands" => [["ruby", "-e", "puts #{output.inspect}"]],
-                   "max_seconds" => 30, "min_tests" => 2, "min_assertions" => 3,
-                   "publication_guard" => { "lease_check" => "/unused-in-fake",
-                                            "trigger_assessment" => "fixture has no paid hooks" } }
-      File.write(File.join("#{data}-validation", "TASK.yml"), YAML.dump(contract))
-      inventory = AgentCodingTool::WorktreeManager.new(root: worktrees,
-        record_path: File.join(run_dir, "worktrees.json")).create(
-          task_id: "TASK", attempt: 1,
-          task: { "repositories" => { "repo" => { "access" => "write" } } }, snapshot: snapshot)
-      workspace = inventory.fetch("entries").first.fetch("path")
-      File.write(File.join(workspace, "file.txt"), "changed\n")
-      report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "TASK",
-                 "attempt" => 1, "status" => "exited", "exit_status" => 0, "final_valid" => true,
-                 "writable_freshness" => "fresh_at_exit", "writable_repository" => "repo",
-                 "preparation" => snapshot, "worktrees" => inventory, "workspace" => workspace,
-                 "worktrees_path" => File.join(run_dir, "worktrees.json") }
-      report["artifacts"] = %w[prompt_path stdin_path jsonl_path stderr_path final_path].map do |key|
-        path = File.join(run_dir, key)
-        File.write(path, "host evidence\n")
-        report[key] = path
-        { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest, "bytes" => File.size(path) }
+      @delivery_world = MemoryGit::PatchWorld.new(root: root)
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = root
+      MemoryGit::Session.with(@delivery_world) do
+        with_validation_processes do
+          checkout, = memory_repository(@delivery_world, path: ordinary, remote: remote,
+            template: MemoryGit::Template.files(validation_files('file.txt' => "baseline\n")))
+          @delivery_checkout = checkout
+          base = checkout.head
+          File.write(File.join(data, "config.yml"), YAML.dump("worktree_root" => worktrees))
+          File.write(File.join(data, "tasks", "TASK.yml"), YAML.dump(
+            "id" => "TASK", "title" => "Change file", "repositories" => { "repo" => { "access" => "write", "path" => ordinary } }))
+          snapshot = { "repo" => { "path" => ordinary, "remote" => "origin", "remote_url" => remote,
+                                   "branch" => "main", "pushed_sha" => base } }
+          state = { "id" => "TASK", "snapshot" => snapshot, "started_at" => Time.now.utc.iso8601 }
+          AgentCodingTool::StateStore.new(File.join(data, "state")).write("TASK", state)
+          contract = { "allowed_paths" => allowed, "base_branch" => "main",
+                       "commands" => [validation_command(output)],
+                       "max_seconds" => 30, "min_tests" => 2, "min_assertions" => 3,
+                       "publication_guard" => { "lease_check" => "/unused-in-fake",
+                                                "trigger_assessment" => "fixture has no paid hooks" } }
+          File.write(File.join("#{data}-validation", "TASK.yml"), YAML.dump(contract))
+          inventory = AgentCodingTool::WorktreeManager.new(root: worktrees,
+            record_path: File.join(run_dir, "worktrees.json")).create(
+              task_id: "TASK", attempt: 1,
+              task: { "repositories" => { "repo" => { "access" => "write" } } }, snapshot: snapshot)
+          workspace = inventory.fetch("entries").first.fetch("path")
+          File.write(File.join(workspace, "file.txt"), "changed\n")
+          report = { "schema_version" => AgentCodingTool::Launcher::SCHEMA, "task_id" => "TASK",
+                     "attempt" => 1, "status" => "exited", "exit_status" => 0, "final_valid" => true,
+                     "writable_freshness" => "fresh_at_exit", "writable_repository" => "repo",
+                     "preparation" => snapshot, "worktrees" => inventory, "workspace" => workspace,
+                     "worktrees_path" => File.join(run_dir, "worktrees.json") }
+          report["artifacts"] = %w[prompt_path stdin_path jsonl_path stderr_path final_path].map do |key|
+            path = File.join(run_dir, key)
+            File.write(path, "host evidence\n")
+            report[key] = path
+            { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest, "bytes" => File.size(path) }
+          end
+          File.write(File.join(run_dir, "handoff.json"), JSON.generate(report))
+          provider, guard = Provider.new, Guard.new
+          coordinator = Coordinator.new(data, remote, base)
+          manager = AgentCodingTool::DeliveryManager.new(data_root: data, coordinator: coordinator,
+                                                          provider: provider, guard: guard)
+          yield manager, provider, guard, coordinator, workspace, run_dir, data
+        end
       end
-      File.write(File.join(run_dir, "handoff.json"), JSON.generate(report))
-      provider, guard = Provider.new, Guard.new
-      coordinator = Coordinator.new(data, remote, base)
-      manager = AgentCodingTool::DeliveryManager.new(data_root: data, coordinator: coordinator,
-                                                      provider: provider, guard: guard)
-      yield manager, provider, guard, coordinator, workspace, run_dir, data
+    ensure
+      ENV['TMPDIR'] = previous_tmpdir
+      @delivery_world&.verify!
     end
   end
 
+  # Returns raw output from this case's finite authority, raising on refusal.
   def git(path, *args)
-    out, err, status = Open3.capture3("git", *args, chdir: path)
+    out, err, status = @delivery_world.call(["git", *args], cwd: path)
     raise err unless status.success?
     out
   end
@@ -156,7 +166,7 @@ class DeliveryManagerTest < Minitest::Test
     end
   end
 
-  # Public discovery, delivery and cleanup use real native fixture ownership;
+  # Public discovery, delivery and cleanup use modeled Git and physical ownership;
   # only provider/liveness boundaries are faked. No GitHub publication occurs.
   def test_public_delivery_and_cleanup_with_metadata_churn
     fixture do |manager, provider, _guard, _coordinator, workspace, run_dir, data|
@@ -185,7 +195,11 @@ class DeliveryManagerTest < Minitest::Test
       state_store.write("TASK", state)
       inventory = JSON.parse(File.binread(File.join(run_dir, "worktrees.json")))
       ordinary = inventory.fetch("entries").first.fetch("parent")
-      git(ordinary, "merge", "--ff-only", detail.fetch("commit_sha"))
+      assert @delivery_world.call(["git", "merge-base", "--is-ancestor", @delivery_checkout.head,
+        detail.fetch("commit_sha")], cwd: ordinary).success?
+      integrated = @delivery_checkout.repository.objects.fetch(detail.fetch("commit_sha"))
+      @delivery_world.build_commit(@delivery_checkout, files: integrated.tree.entries,
+        parents: integrated.parents, message: integrated.message, oid: integrated.oid, advance: true)
       provider.define_singleton_method(:integration) do |_remote, _url|
         { "merged" => true, "head" => detail.fetch("commit_sha"), "base" => "main", "merge_commit_sha" => detail.fetch("commit_sha") }
       end
@@ -283,7 +297,7 @@ class DeliveryManagerTest < Minitest::Test
     fixture(output: "token ghp_secret 2 tests, 3 assertions, 0 failures, 0 errors, 0 skips") do |manager, provider, _guard, _coordinator, workspace, run_dir, _data|
       assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
       assert_empty provider.pushes
-      refute_empty git(workspace, "log", "-1", "--format=%s")
+      refute_empty git(workspace, "show", "-s", "--format=%B", "HEAD")
       assert_match(/ghp_secret/, File.read(File.join(run_dir, "validation-0.stdout")))
     end
   end
@@ -299,8 +313,9 @@ class DeliveryManagerTest < Minitest::Test
       admin = git(workspace, "rev-parse", "--absolute-git-dir").strip
       paths = Dir.glob(File.join(run_dir, "**", "*")).select { |path| File.file?(path) } +
         [File.join(workspace, "file.txt"), File.join(data, "state", "TASK.yml"),
-         File.join(admin, "index"), File.join(admin, "HEAD")]
+         File.join(admin, "gitdir"), File.join(admin, "commondir")]
       preserved = paths.to_h { |path| [path, File.binread(path)] }
+      authority = [git(workspace, "rev-parse", "HEAD"), git(workspace, "ls-files", "--stage", "-z")]
       [
         [File.join(run_dir, "validation-0.stdout"), "forged", "delivery: missing validation evidence"],
         [File.join(workspace, "file.txt"), "changed again", "delivery: commit changed"]
@@ -310,6 +325,7 @@ class DeliveryManagerTest < Minitest::Test
           error = assert_raises(AgentCodingTool::InvalidState) { manager.deliver("TASK", run_dir: run_dir) }
           assert_equal reason, error.message
           assert_equal preserved.merge(path => altered), paths.to_h { |entry| [entry, File.binread(entry)] }
+          assert_equal authority, [git(workspace, "rev-parse", "HEAD"), git(workspace, "ls-files", "--stage", "-z")]
           assert_equal ["act/TASK/attempt-1"], provider.pushes
           assert_empty provider.creations
         ensure
@@ -324,7 +340,7 @@ class DeliveryManagerTest < Minitest::Test
   end
 
   # Stale authority and forged artifacts refuse before validation, so they share
-  # one native candidate with exact fixture-input restoration. The competing-ref
+  # one modeled candidate with exact fixture-input restoration. The competing-ref
   # row runs last because it must really validate and commit before refusing.
   def test_stale_main_competing_feature_ref_and_forged_worker_artifact_block
     fixture do |manager, provider, guard, coordinator, workspace, run_dir, data|
@@ -379,37 +395,45 @@ class DeliveryManagerTest < Minitest::Test
       base = coordinator.head
       adapter = AgentCodingTool::GitHubDeliveryProvider.new
       adapter.push(workspace, "origin", "act/TASK/attempt-1", base)
-      assert_equal base, git(workspace, "ls-remote", remote, "refs/heads/act/TASK/attempt-1").split.first
-      git(workspace, "commit", "-qam", "different feature commit")
+      assert_equal base, git(workspace, "ls-remote", "--exit-code", remote, "refs/heads/act/TASK/attempt-1").split.first
+      git(workspace, "add", "-A")
+      git(workspace, "commit", "-m", "different feature commit")
       changed = git(workspace, "rev-parse", "HEAD").strip
       assert_raises(AgentCodingTool::RepositoryError) do
         adapter.push(workspace, "origin", "act/TASK/attempt-1", changed)
       end
-      assert_equal base, git(workspace, "ls-remote", remote, "refs/heads/main").split.first
+      assert_equal base, git(workspace, "ls-remote", "--exit-code", remote, "refs/heads/main").split.first
     end
   end
 
   def test_live_guard_rejects_unbounded_or_unclassified_publication
     Dir.mktmpdir do |root|
-      checker = File.join(root, "check")
+      checker = File.join(ChildProcesses::FIXTURES, "publication_lease.rb")
+      payload_path = File.join(root, "lease.json")
       payload = { "independently_enforced" => true, "triggers_classified" => true,
                   "crash_surviving" => true, "assessment" => "reviewed exact triggers",
                   "commit_sha" => "a" * 40, "remaining_usd" => 5,
                   "maximum_additional_loss_usd" => 4, "expected_cost_usd" => 1,
                   "maximum_hourly_rate_usd" => 2, "maximum_runtime_seconds" => 3600,
                   "expires_at" => (Time.now.utc + 3600).iso8601 }
-      File.write(checker, "#!/bin/sh\nprintf '%s\\n' '#{JSON.generate(payload)}'\n")
-      File.chmod(0o700, checker)
-      policy = { "trigger_assessment" => "reviewed exact triggers", "lease_check" => [checker] }
+      File.binwrite(payload_path, JSON.generate(payload))
+      policy = { "trigger_assessment" => "reviewed exact triggers", "lease_check" => [RbConfig.ruby, checker, payload_path] }
+      capture = lambda do |*argv, **options|
+        raise GitContract::UnexpectedObservation, 'changed lease fixture' unless
+          argv.first(3) == [RbConfig.ruby, checker, payload_path] && options.empty? && argv.length == 6
+        ChildProcesses.capture('publication_lease', arguments: argv.drop(2))
+      end
+      MemoryGit::Session.with_capture(capture) do
       guard = AgentCodingTool::ExternalPublicationGuard.new
       guard.verify!(policy, "git@github.com:owner/repo.git", :push, "a" * 40)
       assert_raises(AgentCodingTool::InvalidState) do
         guard.verify!(policy, "git@github.com:owner/repo.git", :push, "b" * 40)
       end
       payload["maximum_additional_loss_usd"] = 100
-      File.write(checker, "#!/bin/sh\nprintf '%s\\n' '#{JSON.generate(payload)}'\n")
+      File.binwrite(payload_path, JSON.generate(payload))
       assert_raises(AgentCodingTool::InvalidState) do
         guard.verify!(policy, "git@github.com:owner/repo.git", :push, "a" * 40)
+      end
       end
     end
   end

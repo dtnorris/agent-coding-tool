@@ -2,9 +2,10 @@
 
 require_relative "../test_helper"
 require_relative "../recovery_observations"
+require_relative "../support/memory_git/broker"
 require "minitest/mock"
 
-# Native preservation/reconstruction and strict launch-binding refusal decisions.
+# Modeled history, physical preservation and strict launch-binding refusals.
 # All repositories, evidence, processes and candidate files are fixture-owned.
 class CheckpointTest < Minitest::Test
   include TestHelpers
@@ -198,39 +199,23 @@ class CheckpointTest < Minitest::Test
     end
   end
 
+  # Returns immutable baseline files; every case creates fresh mutable authority.
+  # No native Git storage, repository identity or persistent seed directory exists.
   def self.seed
-    return @seed if @seed
-
-    root = Dir.mktmpdir("act-checkpoint-seed-")
-    ordinary = File.join(root, "ordinary")
-    remote = File.join(root, "remote.git")
-    _out, err, status = Open3.capture3("git", "init", "--initial-branch=main", ordinary)
-    raise err unless status.success?
-    [["user.email", "fixture@example.test"], ["user.name", "Fixture"]].each do |key, value|
-      _out, err, status = Open3.capture3("git", "config", key, value, chdir: ordinary)
-      raise err unless status.success?
-    end
-    { "changed.txt" => "old\n", "removed.txt" => "remove\n", "renamed.txt" => "rename\n" }.each do |path, value|
-      File.write(File.join(ordinary, path), value)
-    end
-    [%w[add -A], %w[commit -m baseline]].each do |args|
-      _out, err, status = Open3.capture3("git", *args, chdir: ordinary)
-      raise err unless status.success?
-    end
-    _out, err, status = Open3.capture3("git", "clone", "--bare", ordinary, remote)
-    raise err unless status.success?
-    Minitest.after_run { FileUtils.remove_entry(root) }
-    @seed = { ordinary: ordinary, remote: remote }
+    MemoryGit::Template.files({ "changed.txt" => "old\n", "removed.txt" => "remove\n", "renamed.txt" => "rename\n" })
   end
+  # Executes only this fixture's modeled setup authority; returns stripped output.
+  # Unknown roots/forms and missing authority fail without a native fallback.
   def git(*args, chdir: nil)
-    out, err, status = Open3.capture3("git", *args, **(chdir ? { chdir: chdir } : {}))
+    raise MemoryGit::Mismatch, "no checkpoint setup authority" unless @checkpoint_world
+    out, err, status = @checkpoint_world.call(["git", *args], cwd: chdir)
     assert status.success?, err
     out.strip
   end
 
-  # Yields disposable task/state, candidate files and baseline identity. Native
-  # mode creates real local repositories; refusal-only mode declares Git reads
-  # at the call site and never claims to prove native ownership. Setup errors
+  # Yields disposable task/state, candidate files and modeled baseline identity.
+  # Native-family cases use fresh modeled repository authority; refusal-only
+  # cases declare exact reads at the call site. Setup/model errors
   # propagate and all fixture files are removed afterward.
   def fixture(native: true)
     Dir.mktmpdir("act-checkpoint-test-") do |root|
@@ -240,33 +225,56 @@ class CheckpointTest < Minitest::Test
       workspace = File.join(root, "workspace")
       data = File.join(root, "data")
       FileUtils.mkdir_p(File.join(data, "tasks"))
-      if native
-        FileUtils.cp_r(self.class.seed.fetch(:ordinary), ordinary)
-        FileUtils.cp_r(self.class.seed.fetch(:remote), remote)
-        base = git("rev-parse", "HEAD", chdir: ordinary)
-        git("remote", "add", "origin", remote, chdir: ordinary)
-        git("clone", ordinary, workspace)
-        git("remote", "set-url", "origin", remote, chdir: workspace)
-        git("checkout", "--detach", base, chdir: workspace)
-      else
-        base = "a" * 40
-        FileUtils.mkdir_p([ordinary, workspace])
-        File.write(File.join(workspace, "removed.txt"), "remove\n")
-        File.write(File.join(workspace, "renamed.txt"), "rename\n")
+      world = native ? MemoryGit::PatchWorld.new(root: root) : nil
+      @checkpoint_world = world
+      if world
+        # Exact native-generated binary bytes and independent before/after trees
+        # are stored as data; tests never invoke a binary codec or native Git.
+        %w[checkpoint-tracked-metadata checkpoint-legacy-metadata].each do |name|
+          descriptor = JSON.parse(File.binread(File.expand_path("../support/memory_git/fixtures/#{name}.json", __dir__)))
+          trees = %w[before after].to_h do |side|
+            [side.to_sym, descriptor.fetch(side).to_h { |entry|
+              [MemoryGit::PatchCase.hex_bytes(entry.fetch('path_hex')),
+               MemoryGit::Entry.new(MemoryGit::PatchCase.hex_bytes(entry.fetch('bytes_hex')), mode: entry.fetch('mode'))] }]
+          end
+          world.register_patch(MemoryGit::PatchCase.new(**trees,
+            bytes: descriptor.fetch('patch_base64').unpack1('m0'), sha256: descriptor.fetch('sha256'),
+            paths: descriptor.fetch('paths_hex').map { |hex| MemoryGit::PatchCase.hex_bytes(hex) },
+            numstat: MemoryGit::PatchCase.hex_bytes(descriptor.fetch('numstat_hex')), stat: descriptor.fetch('stat')))
+        end
       end
-      File.write(File.join(workspace, "changed.txt"), "updated\n")
-      File.write(File.join(workspace, "new.txt"), "untracked\n")
-      File.unlink(File.join(workspace, "removed.txt"))
-      File.rename(File.join(workspace, "renamed.txt"), File.join(workspace, "moved.txt"))
-      write_task(data, id: "T", repositories: { "repo" => { "access" => "write" } })
-      snapshot = { "repo" => {
-        "path" => ordinary, "remote" => "origin", "remote_url" => remote,
-        "branch" => "main", "pushed_sha" => base
-      } }
-      state = { "id" => "T", "prepared_at" => Time.now.utc.iso8601,
-                "started_at" => Time.now.utc.iso8601, "snapshot" => snapshot }
-      AgentCodingTool::StateStore.new(File.join(data, "state")).write("T", state)
-      yield root, data, ordinary, workspace, base
+      previous_tmpdir = ENV['TMPDIR']
+      ENV['TMPDIR'] = root
+      MemoryGit::Session.with(world) do
+        if native
+          checkout, = memory_repository(world, path: ordinary, remote: remote, template: self.class.seed)
+          @checkpoint_checkout = checkout
+          base = checkout.head
+          world.copy(checkout, path: workspace)
+          git("checkout", "--detach", base, chdir: workspace)
+        else
+          base = "a" * 40
+          FileUtils.mkdir_p([ordinary, workspace])
+          File.write(File.join(workspace, "removed.txt"), "remove\n")
+          File.write(File.join(workspace, "renamed.txt"), "rename\n")
+        end
+        File.write(File.join(workspace, "changed.txt"), "updated\n")
+        File.write(File.join(workspace, "new.txt"), "untracked\n")
+        File.unlink(File.join(workspace, "removed.txt"))
+        File.rename(File.join(workspace, "renamed.txt"), File.join(workspace, "moved.txt"))
+        write_task(data, id: "T", repositories: { "repo" => { "access" => "write" } })
+        snapshot = { "repo" => {
+          "path" => ordinary, "remote" => "origin", "remote_url" => remote,
+          "branch" => "main", "pushed_sha" => base
+        } }
+        state = { "id" => "T", "prepared_at" => Time.now.utc.iso8601,
+                  "started_at" => Time.now.utc.iso8601, "snapshot" => snapshot }
+        AgentCodingTool::StateStore.new(File.join(data, "state")).write("T", state)
+        yield root, data, ordinary, workspace, base
+      end
+    ensure
+      ENV['TMPDIR'] = previous_tmpdir
+      world&.verify!
     end
   end
 
@@ -312,15 +320,14 @@ class CheckpointTest < Minitest::Test
       fresh = AgentCodingTool::Checkpoint.new(data_root: data)
       assert_raises(AgentCodingTool::InvalidState) { fresh.recover("T", destination: destination) }
       refute File.exist?(destination)
-      reconstruction = <<~'RUBY'
-        require "agent_coding_tool"
-        puts JSON.generate(AgentCodingTool::Checkpoint.new(data_root: ARGV.fetch(0)).recover(
-          "T", destination: ARGV.fetch(1), confirm_disconnected: true))
-      RUBY
-      stdout, stderr, status = GitContract::Native.new.capture3(
-        RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__),
-        "-e", reconstruction, data, destination
-      )
+      broker = MemoryGit::Broker.new(world: @checkpoint_world, directory: root, case_id: 'checkpoint-recovery')
+      begin
+        stdout, stderr, status = ChildProcesses.capture('cold_cli',
+          arguments: ['checkpoint', 'recover', 'T', '--destination', destination, '--confirm-disconnected'],
+          environment: { 'AGENT_CODING_TOOL_DATA_DIR' => data }, endpoint: broker.endpoint, seconds: 5)
+      ensure
+        broker.close
+      end
       assert status.success?, stderr
       assert_equal "reconstructed", JSON.parse(stdout).fetch("status")
       assert_equal "updated\n", File.read(File.join(destination, "changed.txt"))
@@ -343,7 +350,7 @@ class CheckpointTest < Minitest::Test
       File.binwrite(truncated, File.binread(old.fetch("path"))[0, 20])
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: truncated) }
       tracked_only = File.join(root, "tracked-only.patch")
-      File.binwrite(tracked_only, Open3.capture3("git", "diff", "--binary", "HEAD", chdir: workspace).first)
+      File.binwrite(tracked_only, @checkpoint_world.call(%w[git diff --binary HEAD], cwd: workspace).stdout)
       assert_raises(AgentCodingTool::InvalidState) { checkpoint.record("T", workspace: workspace, artifact: tracked_only) }
       empty = File.join(root, "empty.patch")
       File.binwrite(empty, "")
@@ -745,7 +752,7 @@ class CheckpointTest < Minitest::Test
       assert_equal "explicit artifact must be verified", File.binread(explicit_artifact)
       git("add", "-f", "--", ".DS_Store", chdir: workspace)
       assert_equal 2, cli.run(["checkpoint", "verify", "T", "--workspace", workspace])
-      git("reset", "--", ".DS_Store", chdir: workspace)
+      git("reset", "-q", "--", ".DS_Store", chdir: workspace)
       metadata_only_run = File.join(File.dirname(run_dir), "metadata-only-run")
       Dir.mkdir(metadata_only_run)
       File.write(File.join(metadata_only_run, ".DS_Store"), "no handoff")
@@ -767,7 +774,7 @@ class CheckpointTest < Minitest::Test
       git("commit", "-m", "tracked fixture metadata", chdir: ordinary)
       base = git("rev-parse", "HEAD", chdir: ordinary)
       tracked_workspace = File.join(root, "tracked-workspace")
-      git("clone", ordinary, tracked_workspace)
+      @checkpoint_world.copy(@checkpoint_checkout, path: tracked_workspace)
       git("remote", "set-url", "origin", File.join(root, "remote.git"), chdir: tracked_workspace)
       store = AgentCodingTool::StateStore.new(File.join(data, "state"))
       state = store.load("T")

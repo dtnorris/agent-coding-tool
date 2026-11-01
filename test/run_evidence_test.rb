@@ -517,6 +517,26 @@ class RunEvidenceTest < Minitest::Test
     JSON.parse(output)
   end
 
+  # Observes live public status within one deadline. Only the exact nonblocking
+  # busy refusal is retried; persistent contention, other failures and bad JSON
+  # still fail. Each fresh CLI keeps the genuine ledger and child-process guard.
+  def cli_status_when_available(path, seconds: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    busy = "ERROR: evidence session refused (session.busy); check private grant, exact run identity and session status\n"
+    loop do
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      flunk "CLI status remained busy after #{seconds}s" unless remaining.positive?
+      output, error, status = ChildProcesses.capture("evidence_cli",
+        arguments: ["plain", "evidence", "status", "--session", path], seconds: remaining)
+      unless status.exitstatus == 2 && output.empty? && error == busy
+        assert status.success?, "CLI status failed: #{error}"
+        return JSON.parse(output)
+      end
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      IO.select(nil, nil, nil, [0.01, remaining].min) if remaining.positive?
+    end
+  end
+
   # Yields live pipes and a genuine waiter for one exact public evidence child.
   # The caller owns EOF/signals and bounded waits; the permit preserves coverage.
   def evidence_process(*arguments, mode: "plain", environment: {}, cwd: nil, &block)
@@ -768,7 +788,7 @@ class RunEvidenceTest < Minitest::Test
       end
       bad = exchange.call(rpc("tools/call", {}, meta: metadata(tool: true).merge("unknown" => "private-context")))
       assert_equal "metadata.unknown_member", bad.dig("error", "data", "stage")
-      assert_equal 2, cli("status", "--session", path)["selected_runs"].length
+      assert_equal 2, cli_status_when_available(path)["selected_runs"].length
       assert_equal "stopped", cli("stop", "--session", path)["status"]
     end
     adapter_diagnostics = File.binread(File.join(@temporary, "tunnel-first", "adapter-diagnostics.jsonl"))

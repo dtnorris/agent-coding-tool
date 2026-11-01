@@ -337,7 +337,7 @@ class PlanningGuidanceTest < Minitest::Test
       coordinator.prepare("T")
       renderer = AgentCodingTool::PromptRenderer.new(skill_root: File.join(dir, "missing"))
       before = directory_bytes(dir)
-      Open3.stub(:capture3, ->(*) { flunk "status retrieved a skill" }) do
+      MemoryGit::Session.with_capture(->(*) { flunk "status retrieved a skill" }) do
         assert_equal "PREPARED", coordinator_with_renderer(dir, renderer).status("T").fetch("status")
       end
       assert_equal before, directory_bytes(dir)

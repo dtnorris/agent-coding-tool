@@ -150,7 +150,7 @@ module LauncherSupport
         else
           AgentCodingTool::RepoInspector.stub(:new, @inspector) do
             AgentCodingTool::WorktreeManager.stub(:new, FakeWorktrees.new(@root, @ordinary, @remote, @base)) do
-              Open3.stub(:capture3, method(:unit_capture)) { yield }
+              MemoryGit::Session.with_capture(method(:unit_capture)) { yield }
             end
           end
         end

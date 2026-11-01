@@ -118,3 +118,86 @@ assertion purposes and deliberate omissions. Existing family inventories are
 unchanged; their owners still migrate and verify the complete scenarios. On
 filesystems refusing invalid UTF-8 filenames, the verifier uses actual valid
 control-byte paths and immutable tree reads for invalid UTF-8/NUL framing.
+
+## Patch/index/tree capability (TST-36)
+
+Require `test/support/memory_git/patch_capabilities` and construct
+`MemoryGit::PatchWorld` with the same `root:` contract. It subclasses `World` so
+core-only consumers and their absent-capability checks remain independent, even
+in one interpreter. TST-37 composes shared fixtures; TST-39/40 migrate families;
+TST-45 owns complete integration and acceptance. No production API, coverage
+denominator, policy floor or existing required-case inventory is changed here.
+
+Register immutable `PatchCase` records with `world.register_patch(record)`.
+`PatchCase.load` reads a JSON descriptor and sibling raw patch. Each descriptor
+binds a required patch SHA-256, explicit preimage/postimage bytes and modes,
+exact changed-path inventory, and reviewed NUL numstat/stat observations. Hex
+fields preserve byte paths without encoding loss. Optional independently hashed
+sections partition the entire raw patch and inventory, permitting scoped diff
+observations without decoding binary payloads. Descriptors are trusted reviewed
+specifications, not data inferred from patch output. Keep literal tree assertions
+and raw fixture expectations independent of the model. `corrupt-postimage` is an
+intentional wrong-effect observation for Checkpoint's negative comparison.
+
+Known application validates exact bytes and every scoped physical/index preimage
+before any effect. `--check` does no file, index, object or ref writes. Normal
+application changes only working files; `--cached` changes only index/object state;
+`--index` requires both preimages. Unsafe paths/ancestors, symlink output modes,
+symlink destinations and special/hardlinked files refuse. Extra unrelated files
+and staged entries survive. Effects are named `apply` and `patch:PATH` and use the
+core's exact-envelope fault scheduling. Partial failures deliberately retain
+inspectable effects rather than promising a filesystem transaction.
+
+Diffs distinguish index/HEAD/worktree and explicit tree comparisons; untracked
+files require staging or intent-to-add to enter a worktree diff. Names/statuses
+support NUL framing. Binary/full-index observations emit registered canonical
+patch bytes, including literal binary payloads, modes, add/delete, rename-as-
+add/delete and reviewed quoted renames. The model does not implement rename
+heuristics, general binary literal/delta decoding or native minimal-hunk choice.
+For known records the registered canonical patch also serves a plain diff
+preview; it is not a claim about Git's abbreviated or binary-summary rendering.
+Unknown binary sections never map to a similar record or expected postimage.
+
+The ordinary text codec is limited to ASCII content, portable unquoted paths,
+ordinary modes and exact whole-file replacement hunks, including no final
+newline, empty files, addition/deletion and mode changes. It validates counts,
+headers, blob hashes and preimages by exact reconstruction; fuzzy/context hunks,
+whitespace repair and richer formats fail loudly. Existing manually authored
+new-file hunks may omit the index header. Dynamic apply fixtures justify this
+small codec; arbitrary Git text formats remain unsupported.
+
+Scratch contexts accept the complete Checkpoint envelope: `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, plus base settings.
+The index path must be absent with a canonical case-owned parent; the object
+directory must be a real case-owned directory and the alternate must name that
+checkout's common object path. Scratch indexes/object writes stay in memory,
+separate from ordinary indexes/object stores. They are not native index files.
+`read-tree`, `write-tree`, all-path/forced staging, explicit index removal,
+stdin blob hashing and intent/reset cleanup have bounded command forms. Intent markers
+bind exact placeholder entry identities within each index. Replacing or removing
+that entry ends intent even when the replacement has identical empty bytes; a
+deliberately omitted mutation preserves intent.
+
+Reconstruction handles only Checkpoint's local `clone --no-checkout` variants
+and detached `checkout`. It copies immutable local objects into separate mutable
+authority and projects real files; no usable native Git repository is created.
+Local object presence, commit ancestry and remote refs remain separate. Other
+clone/checkout forms and unknown commands cannot fall back to a process.
+
+Run `ruby test/support/memory_git/verify_patches.rb --seed 3601` with a private
+`TMPDIR`. Its guards load before dependencies/product/fixtures and forbid all
+processes. `patch_required_cases.json` and `patch_case_map.json` reconcile the
+fixed additive case inventory with independent reporter results and prior
+assertion purposes; filtering and skips fail. Set fresh `MEMORY_PATCH_EVIDENCE`,
+`MEMORY_PATCH_AUDIT` and `MEMORY_PATCH_SOURCE` paths to retain results, the internal
+guard audit, and actual source/fixture/index hashes checked across the invocation.
+Independent OS process auditing remains unavailable. Public CLI apply and
+checkpoint export/record/verify/recover use actual parsing, consent, durability,
+hashes and scope checks. Delivery's candidate byte/mode/parent checks are covered
+without calling providers. Generic non-Git child contracts remain owned elsewhere.
+
+These golden contracts establish bounded ACT behavior, not a complete Git
+implementation or compatibility with a live Git version. Zero-Git removes live
+implementation conformance; neither component success nor unchanged production
+source proves all-suite coverage/runtime acceptance. Host checkpoint registration,
+gated validation and operator acceptance remain separate from worker export.

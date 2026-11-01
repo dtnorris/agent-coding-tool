@@ -1,0 +1,7 @@
+diff --git a/file.txt b/file.txt
+index df967b9..3e75765 100644
+--- a/file.txt
++++ b/file.txt
+@@ -1 +1 @@
+-base
++new

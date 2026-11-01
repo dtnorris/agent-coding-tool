@@ -1,0 +1,58 @@
+{
+  "patch": "corrupt-postimage.patch",
+  "sha256": "71a7a5d972c3d90e8ed8b1204b57a342e854676b4be7bdf605319ad2b5584bfd",
+  "before": [
+    {
+      "path_hex": "62696e6172792e62696e",
+      "bytes_hex": "006f6c64ff0a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "64656c657465642e747874",
+      "bytes_hex": "72656d6f76650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "6f6c642e747874",
+      "bytes_hex": "72656e616d650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "72756e",
+      "bytes_hex": "6563686f20666978747572650a",
+      "mode": "100644"
+    }
+  ],
+  "after": [
+    {
+      "path_hex": "61646465642e747874",
+      "bytes_hex": "6e6f2066696e616c206e65776c696e65",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "62696e6172792e62696e",
+      "bytes_hex": "00424144fe0a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "6e65772e747874",
+      "bytes_hex": "72656e616d650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "72756e",
+      "bytes_hex": "6563686f20666978747572650a",
+      "mode": "100755"
+    }
+  ],
+  "paths_hex": [
+    "61646465642e747874",
+    "62696e6172792e62696e",
+    "64656c657465642e747874",
+    "6e65772e747874",
+    "6f6c642e747874",
+    "72756e"
+  ],
+  "numstat_hex": "3109300961646465642e747874002d092d0962696e6172792e62696e003009310964656c657465642e74787400310930096e65772e74787400300931096f6c642e747874003009300972756e00",
+  "stat": " added.txt   | 1 +\n binary.bin  | Bin 6 -> 6 bytes\n deleted.txt | 1 -\n new.txt     | 1 +\n old.txt     | 1 -\n run         | 0\n 6 files changed, 2 insertions(+), 2 deletions(-)\n"
+}

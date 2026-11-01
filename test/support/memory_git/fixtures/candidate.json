@@ -1,0 +1,120 @@
+{
+  "patch": "candidate.patch",
+  "sha256": "66e23a33385c596e74a44bfccae44fb917491d3acebab451fba508c9e876c732",
+  "before": [
+    {
+      "path_hex": "62696e6172792e62696e",
+      "bytes_hex": "006f6c64ff0a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "64656c657465642e747874",
+      "bytes_hex": "72656d6f76650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "6f6c642e747874",
+      "bytes_hex": "72656e616d650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "72756e",
+      "bytes_hex": "6563686f20666978747572650a",
+      "mode": "100644"
+    }
+  ],
+  "after": [
+    {
+      "path_hex": "61646465642e747874",
+      "bytes_hex": "6e6f2066696e616c206e65776c696e65",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "62696e6172792e62696e",
+      "bytes_hex": "006e6577fe0a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "6e65772e747874",
+      "bytes_hex": "72656e616d650a",
+      "mode": "100644"
+    },
+    {
+      "path_hex": "72756e",
+      "bytes_hex": "6563686f20666978747572650a",
+      "mode": "100755"
+    }
+  ],
+  "paths_hex": [
+    "61646465642e747874",
+    "62696e6172792e62696e",
+    "64656c657465642e747874",
+    "6e65772e747874",
+    "6f6c642e747874",
+    "72756e"
+  ],
+  "numstat_hex": "3109300961646465642e747874002d092d0962696e6172792e62696e003009310964656c657465642e74787400310930096e65772e74787400300931096f6c642e747874003009300972756e00",
+  "stat": " added.txt   | 1 +\n binary.bin  | Bin 6 -> 6 bytes\n deleted.txt | 1 -\n new.txt     | 1 +\n old.txt     | 1 -\n run         | 0\n 6 files changed, 2 insertions(+), 2 deletions(-)\n",
+  "sections": [
+    {
+      "offset": 0,
+      "length": 235,
+      "sha256": "56bc238404ae97cd417957b6e459c141a221d9504a8a754ecdb3ff7944d4712c",
+      "paths_hex": [
+        "61646465642e747874"
+      ],
+      "numstat_hex": "3109300961646465642e74787400",
+      "stat": " added.txt | 1 +\n"
+    },
+    {
+      "offset": 235,
+      "length": 216,
+      "sha256": "2470edc466e404e6cf53985a6c54fe8b1ce53a2a87e4d468e58d46cb5deef704",
+      "paths_hex": [
+        "62696e6172792e62696e"
+      ],
+      "numstat_hex": "2d092d0962696e6172792e62696e00",
+      "stat": " binary.bin | Bin 6 -> 6 bytes\n"
+    },
+    {
+      "offset": 451,
+      "length": 207,
+      "sha256": "edba648d47e2f6a70357dd7e41e108de757d92f3c283f49906dca255c4c64fc6",
+      "paths_hex": [
+        "64656c657465642e747874"
+      ],
+      "numstat_hex": "3009310964656c657465642e74787400",
+      "stat": " deleted.txt | 1 -\n"
+    },
+    {
+      "offset": 658,
+      "length": 191,
+      "sha256": "cab2c6a068306299d548f5288db594b3877260786a50ffe03c0e861b7f0e084c",
+      "paths_hex": [
+        "6e65772e747874"
+      ],
+      "numstat_hex": "310930096e65772e74787400",
+      "stat": " new.txt | 1 +\n"
+    },
+    {
+      "offset": 849,
+      "length": 195,
+      "sha256": "e56beba899df171f6f5631b3e2fd05c09065456f19bb43e99f3f2eff5268054a",
+      "paths_hex": [
+        "6f6c642e747874"
+      ],
+      "numstat_hex": "300931096f6c642e74787400",
+      "stat": " old.txt | 1 -\n"
+    },
+    {
+      "offset": 1044,
+      "length": 55,
+      "sha256": "4f9b0fcadf3e2a3e6da769c63972d7ce206397f119fafcf141ce292efd6a6ed8",
+      "paths_hex": [
+        "72756e"
+      ],
+      "numstat_hex": "3009300972756e00",
+      "stat": " run | 0\n"
+    }
+  ]
+}

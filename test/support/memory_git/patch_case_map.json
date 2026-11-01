@@ -1,0 +1,87 @@
+{
+  "schema": "act-memory-patch-case-map/v1",
+  "baseline": "57a5cafe6d6774ce00e5f206c1ecec89de723095",
+  "scope": "Additive capability proof; original family scenarios/identities are retained and remain owned by TST-39/40, integration by TST-45. Prior case lists identify consuming contracts, not replacement equivalence.",
+  "cases": [
+    {
+      "new_cases": [
+        "MemoryPatchVerifier#test_golden_identity_and_check_are_read_only",
+        "MemoryPatchVerifier#test_apply_stage_tree_commit_and_remote_separation",
+        "MemoryPatchVerifier#test_cached_and_worktree_preimages_and_unrelated_index",
+        "MemoryPatchVerifier#test_scratch_index_objects_and_inventory",
+        "MemoryPatchVerifier#test_unknown_envelopes_and_binary_inputs_fail_loudly",
+        "MemoryPatchVerifier#test_corrupt_hash_scope_mode_and_base_refuse",
+        "MemoryPatchVerifier#test_quoted_rename_and_nul_inventory",
+        "MemoryPatchVerifier#test_symlink_and_traversal_rejection_is_read_only",
+        "MemoryPatchVerifier#test_limited_text_codec_and_corruption"
+      ],
+      "prior_cases": [
+        "ApplyHandoffTest#test_paths_refuse_traversal_control_bytes_and_symlink_components",
+        "ApplyHandoffTest#test_artifact_rechecks_manifest_patch_hash_and_regular_file",
+        "CheckpointTest#test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace",
+        "CheckpointTest#test_checkpoint_preserves_tracked_metadata_and_rejects_unsafe_types"
+      ],
+      "assertion_purpose": "Exact bytes/modes/base/scope, read-only check, scratch separation, NUL paths and strict unsupported requests.",
+      "negative_control": "Independent literals/raw files; corrupt bytes/hash/scope/base/mode and reject unsafe paths/envelopes."
+    },
+    {
+      "new_cases": [
+        "MemoryPatchVerifier#test_public_checkpoint_export_record_verify_recover",
+        "MemoryPatchVerifier#test_checkpoint_corruption_and_remote_change_are_rejected",
+        "MemoryPatchVerifier#test_omitted_reconstruction_handoff_fails_product_verification",
+        "MemoryPatchVerifier#test_corrupt_reconstruction_bytes_fail_product_comparison"
+      ],
+      "prior_cases": [
+        "CheckpointTest#test_record_verifies_complete_changes_and_fresh_process_recovers_without_workspace",
+        "CheckpointTest#test_incomplete_and_symlinked_artifacts_cannot_replace_good_checkpoint",
+        "CheckpointTest#test_wrong_baseline_and_foreign_or_symlinked_evidence_fail_closed",
+        "CheckpointTest#test_nested_metadata_public_checkpoint_round_trip"
+      ],
+      "assertion_purpose": "Public export/record/verify/recover, durable evidence and independent reconstruction.",
+      "negative_control": "Omit reconstruction effect; corrupt stored artifact, change remote and restore positives. Wrong reconstructed binary bytes have a separate reviewed golden; real Checkpoint rejects byte inequality and restored application passes."
+    },
+    {
+      "new_cases": [
+        "MemoryPatchVerifier#test_public_binary_apply_preserves_unrelated_index_and_files",
+        "MemoryPatchVerifier#test_public_apply_corruption_conflicts_and_consent",
+        "MemoryPatchVerifier#test_partial_and_unrelated_effects_are_rejected_by_apply",
+        "MemoryPatchVerifier#test_commit_hook_mutation_and_omitted_stage_are_rejected",
+        "MemoryPatchVerifier#test_partial_failure_preserves_diagnosable_effects",
+        "MemoryPatchVerifier#test_mutating_check_is_rejected_before_application"
+      ],
+      "prior_cases": [
+        "ApplyHandoffGitIntegrationTest#test_public_cli_new_task_sibling_validation_and_target_commit",
+        "ApplyHandoffGitIntegrationTest#test_independent_default_no_eof_and_noninteractive_consent",
+        "ApplyHandoffGitIntegrationTest#test_preflight_artifact_git_and_symlink_refusals_are_read_only",
+        "ApplyHandoffGitIntegrationTest#test_commit_failure_retains_only_proposal_in_index",
+        "ApplyHandoffGitIntegrationTest#test_bundle_rake_and_mixed_file_patch",
+        "ApplyHandoffGitIntegrationTest#test_public_apply_ignores_metadata_churn_but_preserves_explicit_collision"
+      ],
+      "assertion_purpose": "Public apply with phase consent, unrelated index/files, conflicts and scoped commit.",
+      "negative_control": "Corrupt artifact/path; omit mode/stage; mutate unrelated bytes and commit hook; restored positive passes. A nonzero partial effect retains already-written binary/addition and untouched later paths. A deliberate check-time write fails the real review/consent snapshot before application, then restored check succeeds."
+    },
+    {
+      "new_cases": [
+        "MemoryPatchVerifier#test_delivery_candidate_hash_mode_scope_and_ancestry_checks"
+      ],
+      "prior_cases": [
+        "DeliveryManagerTest#test_validates_exact_bytes_then_commits_pushes_once_and_opens_draft",
+        "DeliveryManagerTest#test_tampering_with_log_or_source_blocks_recovery",
+        "DeliveryManagerTest#test_stale_main_competing_feature_ref_and_forged_worker_artifact_block"
+      ],
+      "assertion_purpose": "Real delivery parent, path, staged/committed byte and mode verification, distinct remote state.",
+      "negative_control": "Corrupt manifest hash/mode/path/base and restore; no provider publication."
+    },
+    {
+      "new_cases": [
+        "MemoryPatchVerifier#test_full_staging_replaces_empty_intent_entries",
+        "MemoryPatchVerifier#test_index_replacement_does_not_revive_intent",
+        "MemoryPatchVerifier#test_omitted_index_effects_preserve_intent",
+        "MemoryPatchVerifier#test_scratch_index_intent_is_independent"
+      ],
+      "prior_cases": [],
+      "assertion_purpose": "Additive TST-36 review regression: empty-file staging after intent, index replacement/removal and independent scratch state. No legacy replacement equivalence claimed.",
+      "negative_control": "Omitted stage/reset/update-index/read-tree effects retain pending intent; restoring full staging exposes the exact addition."
+    }
+  ]
+}

@@ -25,7 +25,7 @@ class EvidenceTunnelTest < Minitest::Test
     @session = AgentCodingTool::EvidenceSession.new(@path)
     @out, @err = StringIO.new, StringIO.new
     @tunnel = AgentCodingTool::EvidenceTunnel.new(session: @path, grant: grant_path,
-      env_file: nil, client: "/unused-client", runtime_dir: @temporary, out: @out, err: @err)
+      env_file: nil, client: "/unused-client", runtime_dir: @temporary, out: @out, err: @err, spawn: method(:fake_spawn))
     @tunnel.instance_variable_set(:@session, @session)
     @cleaned = []
     cleaned = @cleaned
@@ -35,6 +35,20 @@ class EvidenceTunnelTest < Minitest::Test
     end
     @clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     @wall = Time.now
+  end
+
+  # Verifies the exact external client launch without creating a process. Returns
+  # the synthetic PID used by the existing cleanup assertions; drift fails here.
+  def fake_spawn(environment, *command, **options)
+    expected_environment = AgentCodingTool::EvidenceTunnel::ENVIRONMENT.to_h do |name|
+      [name, ENV[name]]
+    end.compact.merge("CONTROL_PLANE_API_KEY" => nil)
+    assert_equal expected_environment, environment
+    assert_equal ["/unused-client", "run", "--config", File.join(@path, "tunnel.json")], command
+    assert_equal({ unsetenv_others: true, pgroup: true, in: File::NULL,
+      out: File::NULL, err: File::NULL, chdir: @path }, options)
+    @spawned << 987_654
+    987_654
   end
 
   # Removes only synthetic fixture files, even after a failing regression.
@@ -56,17 +70,14 @@ class EvidenceTunnelTest < Minitest::Test
     @signals = {}
     signals = @signals
     @spawned = []
-    spawn = ->(*_arguments) { @spawned << 987_654; 987_654 }
     wait = ->(_read, _write = nil, _error = nil, seconds = nil) do
       @clock += seconds || 0
       @keepalive.closed? ? [[watch], [], []] : nil
     end
     Signal.stub(:trap, ->(name, handler = nil, &block) { signals[name] = handler || block }) do
-      Process.stub(:spawn, spawn) do
-        Process.stub(:clock_gettime, ->(_clock) { @clock }) do
-          Time.stub(:now, -> { @wall }) do
-            IO.stub(:select, wait) { @exit_code = @tunnel.send(:own, watch, nil) }
-          end
+      Process.stub(:clock_gettime, ->(_clock) { @clock }) do
+        Time.stub(:now, -> { @wall }) do
+          IO.stub(:select, wait) { @exit_code = @tunnel.send(:own, watch, nil) }
         end
       end
     end
@@ -312,10 +323,16 @@ class EvidenceTunnelTest < Minitest::Test
     status.define_singleton_method(:success?) { successful }
     cleanup = AgentCodingTool::EvidenceTunnel.instance_method(:cleanup_group).bind(@tunnel)
     result = nil
+    capture = lambda do |environment, *command, **options|
+      assert_equal AgentCodingTool::EvidenceTunnel::ENVIRONMENT.to_h { |name| [name, ENV[name]] }.compact, environment
+      assert_equal ["/bin/ps", "-axo", "pid=,pgid=,stat="], command
+      assert_equal({ unsetenv_others: true }, options)
+      [output, error, status]
+    end
     Process.stub(:getpgid, ->(_target) { raise Errno::ESRCH }) do
       Process.stub(:kill, ->(signal, target) { signals << [signal, target]; 1 }) do
         Process.stub(:waitpid, ->(target) { reaped << target; target }) do
-          Open3.stub(:capture3, [output, error, status]) { result = cleanup.call(pid) }
+          MemoryGit::Session.with_capture(capture) { result = cleanup.call(pid) }
         end
       end
     end

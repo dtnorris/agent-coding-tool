@@ -115,13 +115,14 @@ class PlanningGuidanceTest < Minitest::Test
         capture = Open3.method(:capture3)
         calls = []
         # Complete prompt digests include checkpoint/handoff guidance and ACT-31's
-        # pinned continuation policy for every access/checkpoint combination.
+        # pinned continuation policy plus ACT-33's scoped evidence handoff for
+        # every access/checkpoint combination.
         # Only coding text/revision/fingerprint use fixture-independent tokens.
         expected = {
-          ["write", false] => "41d9be73fd8c8fb2587493d0bed145964970d97852e273bad4c3a77398b6598c",
-          ["write", true] => "f1e67d981fec8acc760632b2eb06c691bace31ae7504de15c4932c5c69ca0f84",
-          ["read_only", false] => "23170d890f426a5fd149a0623307a5dffe8594b343e5a743a4e12f04ac16c5c9",
-          ["read_only", true] => "df0445eb2101e3a2ecc34035c93e94588c7398b8183e5ef0fbb70221036dac9e"
+          ["write", false] => "08a6b8ebec099c2db6a24672ae8375b2927cdd48e0fbcf1aeb8b77716904beb9",
+          ["write", true] => "2669f7dc4692c94a3ea0ac9f827149e5ab595b1de7271450974de67367a40d51",
+          ["read_only", false] => "79217137c5a199a1e8d97cb29201ea454341dde314d3910ff1af52728f5669f2",
+          ["read_only", true] => "4fcb9ddc705ec23cf171d4d58828ec52e43c04d2d096d53200799aab5f01d712"
         }
         ["write", "read_only"].each do |access|
           [nil, { "mode" => "exempt", "category" => "planning", "reason" => "Only a plan." }].each do |policy|

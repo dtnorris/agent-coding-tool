@@ -154,6 +154,8 @@ module LauncherSupport
       end
       File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
       File.write('worker-change.txt', 'worker')
+      puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
+      STDOUT.flush
       if mode.start_with?('journey-drift-')
         # The parent advances only external fixture refs after this real child
         # consumes stdin; the worker must then edit/check/export at its old HEAD.
@@ -177,8 +179,7 @@ module LauncherSupport
         File.write(path, JSON.generate(result))
         exit(mode == 'journey-drift-remote' ? 7 : 0)
       end
-      puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
-      puts 'progress'
+      puts JSON.generate(type: 'item.completed', text: 'progress')
       STDOUT.flush
       warn 'stderr progress'
       sleep 30 if mode == 'sleep'

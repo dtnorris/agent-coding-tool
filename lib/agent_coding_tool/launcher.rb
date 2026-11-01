@@ -821,9 +821,9 @@ module AgentCodingTool
       base = @report.fetch("preparation").fetch(name)
       artifact = File.join(@report.fetch("fixture").fetch("path"), "#{@report.fetch('task_id')}.patch")
       command = ["env", "AGENT_CODING_TOOL_DATA_DIR=#{@data_root}", "act", "checkpoint", "export", @report.fetch("task_id"), "--workspace", workspace,
-                 "--base", base.fetch("pushed_sha"), "--remote", base.fetch("remote"), "--artifact", artifact]
+                 "--base", base.fetch("pushed_sha"), "--remote", base.fetch("remote"), "--artifact", artifact, "--repository", name]
       "After focused checks, export using the installed ACT implementation (or this checkout's bin/agent-coding-tool when available): #{Shellwords.join(command)}\n" \
-        "Host data root for returned commands: #{JSON.generate(@data_root)}; set AGENT_CODING_TOOL_DATA_DIR to this exact path for export's handoff. Export writes only the candidate artifact, never protected host records. Report actual focused commands/results separately; export cannot attest tests. Stop before host-only gates if host checkpoint registration is pending.\n"
+        "Host data root for returned commands: #{JSON.generate(@data_root)}; set AGENT_CODING_TOOL_DATA_DIR to this exact path for export's handoff. Export writes the candidate and companion apply/package JSON, never protected host records. Preserve bounded focused evidence beside the export and add --focused PATH when available. Report actual focused commands/results separately; export cannot attest tests. Stop before host-only gates if host checkpoint registration is pending. The host registers this package against the exact completed run; managers use act share task-scoped discovery before requesting missing evidence.\n"
     end
 
     def sandbox_probe!(inventory, workspace, run_dir)
@@ -1032,6 +1032,8 @@ module AgentCodingTool
           @err.puts "ERROR: host exit freshness unavailable: #{e.message}"
         end
         save_report
+        register_worker_evidence
+        save_report
         @report.fetch("exit_status")
       ensure
         old_traps.each { |signal, old| Signal.trap(signal, old) }
@@ -1043,18 +1045,49 @@ module AgentCodingTool
       end
     end
 
+    # Drains one managed stream to its durable run path and console. The first
+    # bounded stdout event prefix supplies live session discovery on a later
+    # heartbeat; unrelated Codex sessions are never searched or imported.
     def capture_stream(stream, path, terminal)
+      prefix = "".b
       File.open(path, "wb", 0o600) do |file|
         loop do
           bytes = stream.readpartial(4096)
           file.write(bytes)
           file.flush
+          if path == @report["jsonl_path"] && !@report["session_id"] && prefix.bytesize < 65_536
+            prefix << bytes.byteslice(0, 65_536 - prefix.bytesize)
+            prefix.lines.take_while { |line| line.end_with?("\n") }.each do |line|
+              event = JSON.parse(line) rescue nil
+              session = event["thread_id"] if event.is_a?(Hash) && event["type"] == "thread.started"
+              @report["session_id"] = session if session.is_a?(String) && session.match?(/\A[A-Za-z0-9_-]{1,128}\z/)
+            end
+          end
           terminal.write(bytes)
           terminal.flush if terminal.respond_to?(:flush)
         end
       rescue EOFError
         nil
       end
+    end
+
+    # Copies only the known export package from this launch's verified fixture.
+    # Missing/invalid packages remain explicit; neither host copying nor worker
+    # claims constitute checkpoint adoption, acceptance or publication authority.
+    # Registration failure cannot replace the worker's real process outcome.
+    def register_worker_evidence
+      @report["worker_evidence"] = { "status" => "missing" }
+      return unless @report["session_id"] && @report["fixture"]
+      path = File.join(@report.fetch("fixture").fetch("path"), "#{@report.fetch('task_id')}.patch.export.json")
+      return unless File.exist?(path) || File.symlink?(path)
+      root = @report.fetch("fixture").fetch("path")
+      digest = Digest::SHA256.hexdigest(RunEvidenceStore.bytes(path, root: root))
+      result = RunEvidenceStore.new(@data_root).register(@report.slice(*RunEvidenceReader::IDENTITIES), path, digest)
+      @report["worker_evidence"] = { "status" => "registered_worker_claims", "package_sha256" => result.fetch("package_sha256") }
+      @out.puts "Worker export retained for act share #{@report.fetch('task_id')}; host checkpoint record/verify and validation remain separate."
+    rescue RunEvidenceReader::Refused, SystemCallError
+      @report["worker_evidence"] = { "status" => "registration_refused" }
+      @err.puts "Worker evidence registration refused; preserve the fixture and inspect exact run/package binding before retrying."
     end
   end
 end

@@ -53,10 +53,12 @@ class FeedbackContract < Minitest::Test
       root = File.realpath(root)
       options = { environment: {}, root: root, seconds: 1,
                   stdout_path: File.join(root, "out"), stderr_path: File.join(root, "err") }
+      # Plain rake has no Bundler preload; bundle exec retains its exact binding.
+      preloads = { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }
+      bundler = $LOADED_FEATURES.find { |path| path.end_with?('/bundler/setup.rb') }
+      preloads[File.realpath(bundler)] = Digest::SHA256.file(bundler).hexdigest if bundler
       permit = NoGitExecution::MissingExecutablePermit.new(directory: File.realpath(root),
-        preloads: { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest,
-          File.realpath($LOADED_FEATURES.find { |path| path.end_with?('/bundler/setup.rb') }) => Digest::SHA256.file($LOADED_FEATURES.find { |path| path.end_with?('/bundler/setup.rb') }).hexdigest },
-        options: { chdir: root, pgroup: true })
+        preloads: preloads, options: { chdir: root, pgroup: true })
       assert_raises(Errno::ENOENT) do
         NoGitExecution.with_permit(permit) { FeedbackRuntime.capture(permit.argv, **options.merge(environment: permit.environment)) }
       end

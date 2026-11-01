@@ -48,7 +48,7 @@ module ApplyHandoffObservations
         raise ArgumentError, "apply observation requires CommandResult" unless result.is_a?(AgentCodingTool::CommandResult)
         GitContract::Observation.new(argv: [record.fetch(:env), *record.fetch(:argv), record.fetch(:input),
           { "pgroup" => record.fetch(:pgroup) }], cwd: record.fetch(:cwd),
-          result: [result.stdout, result.stderr, result.success? == true])
+          result: [result.stdout, result.stderr, result])
       end)
     end
 

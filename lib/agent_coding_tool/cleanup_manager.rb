@@ -107,7 +107,8 @@ module AgentCodingTool
       # ownership records. Unknown files cannot be treated as disposable.
       visible = Config.load(File.join(@data_root, "config.yml")).worktree_root
       begin
-        foreign = WorktreeManager.foreign_task_paths(root: visible, task_id: id, paths: owned_paths)
+        retired = TaskReset.new(data_root: @data_root, transport: @transport).retired_paths(id)
+        foreign = WorktreeManager.foreign_task_paths(root: visible, task_id: id, paths: owned_paths + retired)
         rows << { "path" => File.join(visible, id), "blockers" => ["foreign task path entries: #{foreign.join(', ')}"] } unless foreign.empty?
       rescue InvalidState => error
         rows << { "path" => File.join(visible, id), "blockers" => [error.message] }
@@ -115,7 +116,12 @@ module AgentCodingTool
       { "task_id" => id, "dry_run" => true, "attempts" => rows, "blocked" => rows.any? { |row| !row.fetch("blockers").empty? } }
     end
 
-    def remove(id)
+    def remove(id, reservation_lock: nil)
+      unless reservation_lock
+        return ReservationLock.synchronize(@data_root) { |lock| remove(id, reservation_lock: lock) }
+      end
+      ReservationLock.synchronize(@data_root, held: reservation_lock) { nil }
+      TaskReset.new(data_root: @data_root, transport: @transport).assert_admission!(id)
       inventory = preflight(id)
       raise InvalidState, "cleanup: #{inventory.fetch('attempts').flat_map { |row| row.fetch('blockers') }.uniq.join('; ')}" if inventory.fetch("blocked")
       root = File.join("#{@data_root}-runs", id)

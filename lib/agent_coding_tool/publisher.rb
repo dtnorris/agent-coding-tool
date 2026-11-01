@@ -20,6 +20,7 @@ module AgentCodingTool
       @config = config
       @task_store = task_store
       @runner = runner || CommandRunner.new(transport: transport)
+      @transport = transport
     end
 
     def publish(mode:, task_id: nil, dry_run: false)
@@ -52,7 +53,10 @@ module AgentCodingTool
       git_dir = verify_checkout!
       File.open(File.join(git_dir, "act-publish.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
         lock.flock(File::LOCK_EX)
-        perform(mode, task_id, dry_run: false)
+        ReservationLock.synchronize(@root) do
+          TaskReset.new(data_root: @root, transport: @transport).assert_publication!
+          perform(mode, task_id, dry_run: false)
+        end
       end
     end
 

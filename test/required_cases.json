@@ -470,7 +470,20 @@
       "AttemptRecoveryTest#test_historical_checkpoint_uses_original_preparation_after_retry",
       "AttemptRecoveryTest#test_sibling_terminal_review_is_independent_in_both_orders",
       "AttemptRecoveryTest#test_external_activity_public_journey_preserves_stale_lifecycle",
-      "AttemptRecoveryTest#test_retry_uses_original_contract_after_repository_and_access_changes"
+      "AttemptRecoveryTest#test_retry_uses_original_contract_after_repository_and_access_changes",
+      "AttemptRecoveryTest#test_hard_reset_changed_scope_public_journey_and_retirement_negative_control",
+      "AttemptRecoveryTest#test_hard_reset_preview_decline_eof_and_unsafe_arguments_are_read_only",
+      "AttemptRecoveryTest#test_hard_reset_dirty_binary_index_and_worktree_reconstruct_independently",
+      "AttemptRecoveryTest#test_hard_reset_interruptions_fence_admission_and_resume_same_archive",
+      "AttemptRecoveryTest#test_hard_reset_retains_each_historical_external_authority",
+      "AttemptRecoveryTest#test_hard_reset_live_unknown_foreign_external_and_busy_refusals",
+      "AttemptRecoveryTest#test_hard_reset_confirmation_races_archive_capacity_and_new_resource_refuse",
+      "AttemptRecoveryTest#test_hard_reset_partial_creation_and_malformed_progress_preserve_original_bytes",
+      "AttemptRecoveryTest#test_hard_reset_lifecycle_variants_deferral_dependencies_and_repeat",
+      "AttemptRecoveryTest#test_hard_reset_multiple_attempts_native_retirement_and_fresh_binding",
+      "AttemptRecoveryTest#test_hard_reset_legacy_owned_layout_without_rewriting_history",
+      "AttemptRecoveryTest#test_hard_reset_unsafe_progress_and_archive_tampering_refuse",
+      "AttemptRecoveryTest#test_hard_reset_manual_reservations_do_not_become_inactive_by_declaration"
     ],
     "test/integration/checkpoint_git_integration.rb": [
       "CheckpointTest#test_exempt_gate_receipt_setup_is_best_effort_without_following_symlinks",

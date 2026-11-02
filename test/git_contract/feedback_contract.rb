@@ -261,6 +261,51 @@ class FeedbackContract < Minitest::Test
     end
   end
 
+  # Interrupting publication must not expose partial final JSON or overwrite a
+  # prior result. Abandoned fixture-only writes are harmless; active children
+  # still require complete evidence and malformed published JSON still refuses.
+  def test_coverage_publication_is_atomic_and_exclusive
+    with_coverage do |context, original|
+      path = Dir.glob(File.join(context.fetch("directory"), "*.json")).fetch(0)
+      bytes = File.binread(path)
+      result = JSON.parse(bytes)
+      File.unlink(path)
+      interrupted = lambda do |pending, destination|
+        assert_equal path, destination
+        assert_equal result, JSON.parse(File.binread(pending))
+        assert_equal 0o600, File.stat(pending).mode & 0o777
+        refute File.exist?(destination)
+        assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+        raise IOError, "interrupted coverage publication"
+      end
+      File.stub(:link, interrupted) do
+        assert_raises(IOError) { FeedbackCoverage.publish_result(path, result) }
+      end
+      refute File.exist?(path)
+      refute File.exist?("#{path}.pending")
+      FeedbackCoverage.publish_result(path, result)
+      assert_equal original, FeedbackCoverage.collect(context)
+      assert_equal bytes, File.binread(path)
+      assert_raises(Errno::EEXIST) { FeedbackCoverage.publish_result(path, result.merge("invocation" => "changed")) }
+      assert_equal bytes, File.binread(path)
+      File.binwrite("#{path}.pending", "unowned")
+      assert_raises(Errno::EEXIST) { FeedbackCoverage.publish_result(path, result) }
+      assert_equal "unowned", File.binread("#{path}.pending")
+      File.unlink("#{path}.pending")
+
+      prefix = File.join(context.fetch("directory"), "interrupted-fixture")
+      File.write("#{prefix}.started", JSON.generate("pid" => Process.pid))
+      File.write("#{prefix}.json.pending", "{\"partial\":")
+      assert_equal original, FeedbackCoverage.collect(context)
+      File.write("#{prefix}.active", "ACT source executed\n")
+      error = assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+      assert_includes error.message, "incomplete ACT-executing child evidence"
+      File.unlink("#{prefix}.active")
+      File.write("#{prefix}.json", "")
+      assert_raises(JSON::ParserError) { FeedbackCoverage.collect(context) }
+    end
+  end
+
   # The opposite branch executes only in a genuinely cold Ruby child. Losing
   # its preload leaves that branch uncovered and fails the same direct floor.
   def test_cold_child_visibility_and_missing_instrumentation

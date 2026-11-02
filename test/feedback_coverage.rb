@@ -200,13 +200,27 @@ module FeedbackCoverage
     result = { "invocation" => context.fetch("invocation"), "selection" => context.fetch("selection"),
       "stage" => context.fetch("stage"), "sources" => context.fetch("sources"),
       "pid" => Process.pid, "active" => state.fetch(:active), "files" => files }
-    File.open("#{state.fetch(:prefix)}.json", File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    publish_result("#{state.fetch(:prefix)}.json", result)
+    state[:finished] = true
+    nil
+  end
+
+  # Publishes complete JSON at path only after writing and syncing a private
+  # sibling. An interrupted writer leaves no partial final result. Hard linking
+  # preserves exclusive creation; duplicate paths and I/O errors propagate.
+  def self.publish_result(path, result)
+    pending = "#{path}.pending"
+    owned = false
+    File.open(pending, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      owned = true
       file.write(JSON.generate(result))
       file.flush
       file.fsync
     end
-    state[:finished] = true
+    File.link(pending, path)
     nil
+  ensure
+    File.unlink(pending) if owned
   end
 
   # Merges fresh child evidence by union of executed source nodes. Returns an

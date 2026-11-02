@@ -11,6 +11,30 @@ class RetryRecoveryContract < Minitest::Test
   include TestHelpers
   include RetryDecisionSupport
 
+  # Neither terminal worker evidence nor a previous closeout substitutes for
+  # the explicit result and durable closeout handoffs. Refusals preserve modes
+  # and bytes; restoring the exact closeout re-enables real retry readiness.
+  def test_missing_result_and_removed_closeout_handoff_refuse_retry
+    with_retry_decision(liveness_checks: 4) do |recovery, _report|
+      before = retry_decision_bytes
+      error = assert_raises(AgentCodingTool::InvalidState) { recovery.close("T") }
+      assert_equal "close-attempt: record blocked, failed or needs_judgment first", error.message
+      assert_equal before, retry_decision_bytes
+      @decision_coordinator.record("T", outcome: "failed")
+      recovery.close("T")
+      path = File.join(@decision_directory, "closeout.json")
+      closeout = File.binread(path)
+      File.unlink(path)
+      before = retry_decision_bytes
+      error = assert_raises(AgentCodingTool::InvalidState) { recovery.retry_ready!("T") }
+      assert_includes error.message, "explicit close-attempt required"
+      assert_equal before, retry_decision_bytes
+      File.binwrite(path, closeout)
+      File.chmod(0o600, path)
+      assert_nil recovery.retry_ready!("T")
+    end
+  end
+
   # Every non-complete outcome permits the same explicit closeout/readiness
   # handoff. Native preflight supplies the exact ordered transcript; replay keeps
   # validators, backpointer reads, hashes, locks and durable writes real. The
@@ -20,7 +44,11 @@ class RetryRecoveryContract < Minitest::Test
       original_state = File.binread(File.join(@decision_data, "state", "T.yml"))
       native = GitContract::Native.new
       @decision_coordinator.record("T", outcome: "blocked", summary: "No candidate.", next_action: "Explicit closeout and retry.")
-      plan = Open3.stub(:capture3, native.method(:capture3)) { recovery.preflight("T") }
+      # Stubbing a prepended method corrupts its restored super chain. Keep the
+      # real non-Git fallback intact for later cold CLI cases in this interpreter.
+      capture_fallback = Open3.method(:capture3).super_method
+      plan = MemoryGit::Session.with_capture(native.method(:capture3)) { recovery.preflight("T") }
+      assert_equal capture_fallback, Open3.method(:capture3).super_method
       assert_empty plan.fetch("attempts").first.fetch("blockers")
       transcript = native.observations
       %w[blocked failed needs_judgment].each do |outcome|

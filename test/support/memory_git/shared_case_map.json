@@ -58,7 +58,7 @@
     },
     {
       "prior_cases": [
-        "PublisherTest#test_default_selects_lifecycle_state_and_prompts_only",
+        "PublisherDecisionTest#test_default_selects_lifecycle_state_and_prompts_only",
         "CodingSkillTest#test_complete_skill_once_with_identity_and_only_offline_git_reads"
       ],
       "purpose": "Hash-checked immutable sources and finite publisher/skill responses; strict missing/extra request accounting.",

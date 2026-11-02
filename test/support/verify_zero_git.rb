@@ -279,10 +279,21 @@ class NoGitExecutionVerifier < Minitest::Test
 
   # Audit records distinguish internal refusals/permits from independent OS
   # tracing, whose absence cannot be represented as observed zero OS executions.
+  # Each route must produce its own denial, independent of prior test order.
+  # A fresh absent executable keeps both probes harmless if protection regresses.
   # Rendering a failed assertion must neither spawn nor add a boundary refusal.
   def test_audit_scope
-    assert_raises(NoGitExecution::ProhibitedExecution) { system("git --version") }
-    assert NoGitExecution.audit.any? { |row| row["mechanism"] == "ruby-c-entry" && row["decision"] == "DENY" }
+    Dir.mktmpdir("zero-git-audit-") do |root|
+      executable = File.join(root, "absent")
+      before = NoGitExecution.audit.length
+      assert_raises(NoGitExecution::ProhibitedExecution) { system(executable) }
+      assert_equal [["system without permit", "DENY", "ruby-wrapper"]],
+        NoGitExecution.audit.drop(before).map { |row| row.values_at("operation", "decision", "mechanism") }
+      before = NoGitExecution.audit.length
+      assert_raises(NoGitExecution::ProhibitedExecution) { ORIGINAL_ZERO_GIT_SPAWN.call(executable) }
+      assert_equal [["spawn", "DENY", "ruby-c-entry"]],
+        NoGitExecution.audit.drop(before).map { |row| row.values_at("operation", "decision", "mechanism") }
+    end
     assert_equal "UNAVAILABLE", NoGitExecution.independent_audit.fetch("status")
     audit_before = NoGitExecution.audit.dup
     expected = "/canonical/source/common\n" * 3

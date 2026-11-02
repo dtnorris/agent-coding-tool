@@ -11,7 +11,7 @@ require_relative "../support/contract_recorder"
 require_relative "../support/child_processes"
 Minitest::Assertions.diff = nil
 
-# Finite Git-world and native transport observations through unchanged production
+# Finite Git-world and real non-Git transport observations through unchanged production
 # interpretation. Native-derived rename bytes retain the independent parser oracle.
 # Deliberately outside *_test.rb discovery until the coordinated runner selects it.
 class NativeGitContract < Minitest::Test
@@ -34,6 +34,8 @@ class NativeGitContract < Minitest::Test
       native = ContractRecorder.new(world, checkout, upstream)
       assert_equal remote, git(native, parent, "remote", "get-url", "origin").strip
       yield native, parent, remote, checkout.head
+    ensure
+      world&.verify!
     end
   end
 
@@ -85,7 +87,7 @@ class NativeGitContract < Minitest::Test
   end
 
   # Returns a copy with one command's stdout/status corrupted, retaining all
-  # other native inputs/outputs. Raises if the selected observation is absent.
+  # other modeled inputs/outputs. Raises if the selected observation is absent.
   def corrupt(observations, argument, stdout: nil, status: nil)
     index = observations.index { |item| item.argv.include?(argument) }
     raise "no observation for #{argument}" unless index
@@ -173,6 +175,23 @@ class NativeGitContract < Minitest::Test
       raw = observations.first.stdout
       assert_includes raw, "?? #{binary_path}\0".b
       assert_includes raw, "R  moved\nname\0renamed\0".b
+      # The golden response is unavailable when its independent source identity
+      # is wrong or missing; neither failure may become a successful Git result.
+      Digest::SHA256.stub(:file, Struct.new(:hexdigest).new("0" * 64)) do
+        assert_raises(MemoryGit::Mismatch) do
+          Open3.stub(:capture3, native.method(:capture3)) { publisher.send(:status_entries) }
+        end
+      end
+      original_read = File.method(:binread)
+      File.stub(:binread, lambda { |path|
+        raise Errno::ENOENT, path if path == ContractRenameStatus::PATH
+        original_read.call(path)
+      }) do
+        error = assert_raises(AgentCodingTool::RepositoryError) do
+          Open3.stub(:capture3, native.method(:capture3)) { publisher.send(:status_entries) }
+        end
+        assert_includes error.message, ContractRenameStatus::PATH
+      end
       blocker, = equivalent(native) { publisher.send(:scope_blocker, entries, ["staged"], :default, nil) }
       assert_match(/different staged and working-tree versions/, blocker)
       altered = corrupt(observations, "status", stdout: raw.sub(binary_path, "wrong"))
@@ -332,6 +351,10 @@ class NativeGitContract < Minitest::Test
     ordered = GitContract::Replay.new([observation, other])
     assert_raises(GitContract::UnexpectedObservation) { ordered.capture(*other.argv, chdir: other.cwd) }
     assert_raises(ArgumentError) { observation.capture3 }
+
+    fixture do |recorder, parent, _remote, _base|
+      assert_raises(MemoryGit::Mismatch) { recorder.capture3("git", "undeclared-operation", chdir: parent) }
+    end
   end
 
   # Keeps RepoInspector's concurrent scheduling real while independently

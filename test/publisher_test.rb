@@ -4,9 +4,10 @@ require "stringio"
 require_relative "test_helper"
 require_relative "publisher_observations"
 
-# Production decisions with strict observations; real index/commit/ref effects
-# remain mandatory in the separately executed publisher_git_integration.rb.
-class PublisherTest < Minitest::Test
+# Production decisions with strict observations; modeled index/commit/ref effects
+# remain mandatory in publisher_git_integration.rb. Previously PublisherTest;
+# each test suffix is unchanged, keeping the two families distinct when batched.
+class PublisherDecisionTest < Minitest::Test
   include TestHelpers
   include PublisherObservations
 

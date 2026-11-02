@@ -12,24 +12,20 @@ class RetryRecoveryContract < Minitest::Test
   include RetryDecisionSupport
 
   # Every non-complete outcome permits the same explicit closeout/readiness
-  # handoff. Native preflight supplies the exact ordered transcript; replay keeps
-  # validators, backpointer reads, hashes, locks and durable writes real. The
+  # handoff. The shared memory world supplies Git ownership transitions; ACT's
+  # validators, backpointer reads, hashes, locks and durable writes stay real. The
   # public retry journey owns actual fresh launches and protection of old paths.
   def test_terminal_outcome_decisions_use_native_ownership_observations
     with_retry_decision(liveness_checks: 14) do |recovery, report|
       original_state = File.binread(File.join(@decision_data, "state", "T.yml"))
-      native = GitContract::Native.new
       @decision_coordinator.record("T", outcome: "blocked", summary: "No candidate.", next_action: "Explicit closeout and retry.")
-      plan = Open3.stub(:capture3, native.method(:capture3)) { recovery.preflight("T") }
+      plan = recovery.preflight("T")
       assert_empty plan.fetch("attempts").first.fetch("blockers")
-      transcript = native.observations
       %w[blocked failed needs_judgment].each do |outcome|
         @decision_coordinator.record("T", outcome: outcome, summary: "No candidate.", next_action: "Explicit closeout and retry.")
         before = retry_decision_bytes
-        with_recovery_observations(transcript * 4) do
-          assert_equal false, recovery.close("T").fetch("dry_run")
-          assert_nil recovery.retry_ready!("T")
-        end
+        assert_equal false, recovery.close("T").fetch("dry_run")
+        assert_nil recovery.retry_ready!("T")
         closeout_path = File.join(@decision_directory, "closeout.json")
         closeout = JSON.parse(File.binread(closeout_path))
         assert_equal ["T", 1, "retry-decision"], closeout.values_at("task_id", "attempt", "invocation_id")
@@ -45,17 +41,15 @@ class RetryRecoveryContract < Minitest::Test
         File.unlink(closeout_path)
         File.binwrite(File.join(@decision_data, "state", "T.yml"), original_state)
       end
-      # A genuine on-disk backpointer fault must fail even with faithful Git
-      # responses. A second native positive proves exact restoration afterward.
+      # A genuine on-disk backpointer fault must fail even with valid modeled
+      # authority. A restored positive proves the physical pointer is required.
       entry = report.fetch("worktrees").fetch("entries").first
       admin = File.binread(File.join(entry.fetch("path"), ".git")).delete_prefix("gitdir: ").strip
       pointer = File.join(admin, "gitdir")
       original_pointer = File.binread(pointer)
       begin
         File.binwrite(pointer, "foreign\n")
-        with_recovery_observations(transcript.take(4)) do
-          assert_includes recovery.inspect("T").first.fetch("blockers").join, "native Git backpointer changed"
-        end
+        assert_includes recovery.inspect("T").first.fetch("blockers").join, "native Git backpointer changed"
       ensure
         File.binwrite(pointer, original_pointer)
       end

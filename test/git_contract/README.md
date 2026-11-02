@@ -1,42 +1,39 @@
 # Strict Git observation contract
 
-This is the shared observation interface for behavioral test migrations
-(TST-17/18/19) and suite selection (TST-14/20). It supplements the native
-integration requirements in the repository's [development documentation](../../README.md#development).
-It grants no publication or integration authority and replaces no existing case
-or native integration suite. The coverage inventory owned by TST-16 remains
-authoritative for migration accounting.
+This is the shared observation interface for behavioral tests and suite selection.
+The [zero-Git migration contract](../coverage/zero-git-migration.md) and the prepared
+ACTD `plans/TST-33-45-fast-suite.txt` govern execution and acceptance. Earlier native
+integration requirements are historical. Production continues to use real Git;
+tests verify ACT's boundary contracts with finite authorities and independent
+expected values. They do not establish conformance to an installed Git version.
+This document grants no integration, publication or lifecycle authority.
 
-## Selection
+## Selection and historical names
 
-Run this standalone Ruby process, including fixture setup and Ruby startup in
-elapsed measurements:
+Preload the guard before test helpers or production, for example:
 
 ```sh
-bundle exec ruby -Ilib:test test/git_contract/native_contract.rb
+ruby -r./test/support/no_git_execution -rbundler/setup -Ilib:test test/git_contract/native_contract.rb
 ```
 
-The filename deliberately avoids default `*_test.rb` discovery. The complete
-named case inventory in `required_cases.json` follows TST-14's runner interface:
-root-relative contract filename mapped to an array of `Class#test_method` names.
-The runner selects `**/*_contract.rb` and refuses absent or omitted inventory.
-Standalone execution remains independent of that runner. Do not require
-integration files into this process. The five documented native integration files must retain separate
-Ruby invocations. This suite launches only local Git/Ruby fixture processes,
-never Codex. It does not establish installed-Codex/macOS sandbox qualification.
+`native_contract.rb`, `NativeGitContract` and the `native_default` and
+`native_integration` layer names are historical compatibility labels. No test,
+bootstrap, setup, teardown or descendant may execute real Git. The complete
+root-relative file/case inventory is [required_cases.json](required_cases.json).
+The runner checks discovery and independent case evidence; a standalone focused
+run is intermediate evidence, never full `test:all` acceptance. TST-45 owns that
+integration, coverage and timing acceptance. Keep existing process isolation until
+the runner owner verifies batching, global state and coverage together.
 
-On a sandbox with unwritable system temporary directories, create a writable
-temporary parent and set both `TMPDIR` and `ACT_GIT_CONTRACT_TMPDIR` to it. The
-latter chooses the fixture parent without changing production configuration.
-Fixtures use isolated Git configuration, SHA-1 objects, C locale, UTC, explicit
-identity/dates, disabled hooks/signing for commits, and file-only transport.
-They verify the newly created local origin before use. Git must support
-`worktree list --porcelain -z` and `rev-parse --path-format=absolute`.
+Fixtures build fresh memory worlds and materialize real files, modes, `.git`
+pointers and backpointers. Set `TMPDIR` and optionally `ACT_GIT_CONTRACT_TMPDIR` to
+an authorized writable fixture parent. Socket-dependent journeys also require a
+root short enough for the platform socket limit and permission to bind sockets.
+Failure of these requirements is a reported failure, never a skip or fallback.
 
-## Stable support interface
+## Stable observation interface
 
-Require `test/git_contract/observations.rb` directly; it does not load Minitest,
-shared test helpers, or production classes.
+Require `observations.rb` directly; it loads neither Minitest nor shared fixtures.
 
 ```ruby
 observation = GitContract::Observation.new(
@@ -45,73 +42,92 @@ observation = GitContract::Observation.new(
 )
 runner = GitContract::Replay.new([observation])
 inspector = AgentCodingTool::RepoInspector.new(config, runner: runner)
-# Invoke the real production operation using the complete expected sequence.
+# Invoke the real production operation with every required observation declared.
 runner.verify!
 ```
 
-`Observation` takes exact string argv with an optional leading material
-environment hash, exact cwd (including `nil`), and either
-`result:` or `exception:`. A result contains raw stdout/stderr and either a
-boolean success or a genuine `Process::Status`. Boolean fixtures need no native
-setup and are supported by `Replay#capture`, the `CommandRunner` seam.
-`Replay#capture3` requires a genuine recorded status and refuses boolean-only
-observations. No object pretends to implement `Process::Status`.
+`Observation` binds exact string argv, optional leading material environment,
+cwd (including `nil`), binary stdin, timeout and execution options. It contains
+either raw stdout/stderr plus termination facts, or an exception. `capture`
+also accepts legacy boolean-success observations. `capture3` requires genuine
+`Process::Status` or the declared `AgentCodingTool::CommandResult` value;
+boolean-only records cannot invent exit/signal facts. No object impersonates
+`Process::Status`, and modeled status creation starts no child.
 
-Both methods preserve byte strings, encoding, and exceptional execution.
-Native normal exits become boolean success at `capture`; a signal retains
-Ruby's `status.success? == nil` behavior. A missing executable or cwd raises
-`Errno::ENOENT`; no synthetic failure tuple substitutes for that exception.
+Streams are copied, preserving bytes and encodings. `capture` returns boolean
+success, including `nil` for a signal; `call` returns the production result value
+with exact exit/signal facts. Missing executable/cwd exceptions stay exceptional.
 
-Ordered replay is the default. Use `ordered: false` only for independent
-concurrent requests such as `RepoInspector#pushed_heads`. Matching and consumption
-are atomic; each expectation is consumed once. Always call `verify!` after the
-operation, including expected refusals, to detect omitted commands. Unexpected
-argv, cwd, ordering or duplicate calls raise `UnexpectedObservation`, deliberately
-outside `StandardError` so product error handling cannot turn an inaccurate
-fixture into a successful refusal.
+Replay is ordered unless independent concurrent requests explicitly use
+`ordered: false`. Matching/consumption is atomic and each expectation is used
+once. Call `verify!` after successful operations and expected refusals. Unknown,
+duplicate, wrong-order or changed-envelope requests and unused expectations raise
+`UnexpectedObservation` outside `StandardError`; product refusal handlers cannot
+turn a fixture mismatch into a passing negative case.
 
-`Native#capture3` records local processes with raw binary pipes, a real status
-and spawn exceptions. It uses a two-second deadline per owned process group,
-with concurrent pipe draining and a watchdog that kills only that group and
-joins its waiter/readers. Timeout is a fixture `IOError`, never a recorded Git
-response. `environment:` isolates child configuration; a command's explicit
-leading environment hash overrides those defaults and remains part of its exact
-replay input. Environment strings are copied and frozen with the observation.
-`seconds:` is for narrow
-observer qualification and does not alter production deadlines. Native recording
-is contract support, not a command emulator or production replacement.
+`ContractRecorder` records finite memory-world responses, with no native fallback.
+Replay consistency alone is insufficient: cases assert independently chosen
+semantic values, byte/mode oracles, state transitions and deliberate corruptions.
+The rename-status fixture is hash-bound to a separately prepared golden NUL
+transcript and admitted only for its exact independently checked index/file state.
+Its historical native preparation does not execute Git during tests.
 
-The contract file scopes `Open3.capture3` substitution to one operation for
-production consumers without injected runners. Their parsing, filesystem
-ownership checks and refusal decisions still execute. Behavioral migrations
-should use existing injected runners; a new shared production seam requires
-the designated owner's review. Do not shadow the global Git executable.
+`GitContract::Native` is retained for generic **non-Git** transport controls only.
+The guard admits exact hash-reviewed Ruby scripts, arguments, environment,
+preloads and options through single-use permits. Binary pipes, genuine status,
+spawn exceptions and a per-process-group watchdog remain real. The default
+deadline is two seconds. Timeout kills/reaps the owned group and raises `IOError`
+without recording a command response. This is no longer a Git transcript source.
 
-## Named contract matrix
+## Independent contract matrix
 
-Every native interpretation is repeated against recorded observations through
-the same production method. Native stdout/stderr bytes and status fields are
-compared exactly; expected semantic values come from the independently created
-fixture history and files. Exceptional cases compare class/message. Corrupted
-observations are separate negative controls, followed by restored positives.
+Production parsers, authorization/refusal decisions and filesystem ownership
+checks run unchanged. Model/replay substitutions occur only at external command
+boundaries. Every listed identity retains its existing method suffix.
 
-| Test method (`test_` prefix) | Production boundary and native observations | Negative control / refusal |
+| Case (`test_` prefix) | Independent oracle and state effect | Deliberate fault or refusal |
 | --- | --- | --- |
-| `authoritative_refs_snapshot_and_dirty_state` | `RepoInspector#snapshot`: exact `ls-remote --exit-code` ref, local divergent HEAD, staged/unstaged/untracked status, remote URL | Empty, duplicate, wrong-ref and invalid-SHA rows; falsely clean bytes; false success status |
-| `nul_status_parser_and_refusal` | `Publisher#status_entries` and `scope_blocker`: porcelain v1 NUL records, rename's second path, newline/non-ASCII path bytes, mixed index/worktree | Changed path bytes differ; production refuses mixed staged/working versions |
-| `linked_worktree_ownership` | `WorktreeManager#verify_entry!`: absolute common/admin dirs, local HEAD, commit existence, origin, NUL registry, detached marker and real on-disk backpointer | Wrong registry path, wrong HEAD and changed backpointer are refused; backpointer bytes restored in `ensure` |
-| `commit_contents_modes_and_ref_movement` | `DeliveryManager#verify_commit!`: parent/head, clean status, NUL changed paths, exact binary blob, 100644/100755 tree modes, absent deleted blob; `RepoInspector#pushed_heads` before/after local push and concurrent branch requests | Changed blob bytes/mode are refused; local remote advances while independent release ref stays fixed |
-| `failures_and_exceptions` | `RepoInspector`: missing ref exits 2 with empty streams, nonrepository exits 128 with diagnostic stderr, missing cwd raises; missing executable raises | Production classifies command failures as `RepositoryError` and retains spawn exception semantics |
-| `strict_replay` | Exact argv/cwd, raw bytes and false success at the declared observation boundary | Unexpected argv/cwd, missing, duplicate and wrong-order requests fail; boolean raw-status fabrication is refused |
-| `concurrent_remote_requests` | Real `RepoInspector` worker scheduling, deduplication and unordered strict matching | Bounded rendezvous fails if execution becomes serial; missing/duplicate captures fail |
-| `native_process_observer` | Production `CommandRunner` preserves binary stdout/stderr, exit 7 and signal termination through native and replay paths | Owned sleeping child exceeds its deadline, is killed/reaped and yields no fabricated observation |
-| `immutable_skill_object_read` | `PromptRenderer` through the native runner: exact offline environment, immutable blob bytes, genuine exit status and replay through the same parser | Dirty working text is ignored; missing pinned commit exits 128 and preserves the same `InvalidState` classification through replay |
+| `authoritative_refs_snapshot_and_dirty_state` | Chosen baseline, independently edited staged/unstaged/untracked files, local divergence and unchanged remote | Empty, duplicate, wrong-ref, invalid-SHA rows; falsely clean bytes; false success |
+| `nul_status_parser_and_refusal` | Golden NUL rename pair and explicit expected paths/index-worktree flags, including newline/non-ASCII paths | Changed path bytes; mixed staged/working versions refuse |
+| `linked_worktree_ownership` | Exact base/path/registry, materialized admin and physical backpointer | Foreign registry, wrong HEAD and physical backpointer corruption; restored positive |
+| `commit_contents_modes_and_ref_movement` | Independently authored binary/plain bytes, executable/regular modes and deleted path; remote main advances, release stays fixed | Changed committed blob or mode refuses |
+| `failures_and_exceptions` | Missing ref has empty streams/exit 2; nonrepository exit 128; actual absent-cwd/executable exceptions | Production classification and unchanged exceptional semantics |
+| `strict_replay` | Fixed binary streams and false success | Wrong argv/cwd/order, missing/duplicate requests and boolean raw-status fabrication refuse |
+| `concurrent_remote_requests` | Fixed independent ref rows; real scheduling and deduplication | Bounded rendezvous detects serialization; strict single consumption |
+| `native_process_observer` | Actual permitted Ruby child emits fixed invalid-UTF-8/NUL bytes, exit 7 or TERM | Watchdog kills/reaps owned sleeping child; no fabricated timeout observation |
+| `immutable_skill_object_read` | Authored immutable text/hash and exact offline env/revision/path; dirty text ignored | Missing pinned object exit 128 and `InvalidState`; replay preserves classification |
 
-Diagnostics, temporary paths, object IDs, registry order and Git version text
-may vary by platform/version. They are obtained from the native invocation and
-retained exactly within that invocation; the relevant known bytes/ref/path/mode
-contracts are asserted separately. No cross-platform stderr golden is assumed.
-The path fixture uses UTF-8 non-ASCII bytes and a newline, represented as binary
-strings. Invalid-UTF-8 file contents and process streams are also checked;
-invalid-UTF-8 filenames require separate filesystem qualification on hosts that
-permit creating them. Fixture creation failures are errors, never skips.
+Apply-handoff contracts retain independent physical bytes/modes and index
+snapshots, parent/path effects, exact consent counts and corruption matrices.
+`test_complete_run_decision_matrices_with_native_parity` is a retained historical
+identity, not a live-native parity claim. Retry contracts exercise real durable
+closeout/state/evidence and physical backpointer corruption against the shared
+world; no empty Open3 recording is used as ownership proof. Feedback/progress
+contracts qualify real non-Git status/streams, descendants, coverage census,
+case accounting and failure presentation using bounded synthetic fixtures.
+
+## Identity and fixture-entry accounting
+
+The ordinary publisher class is now `PublisherDecisionTest`. For every entry
+under `test/publisher_test.rb`, old `PublisherTest#test_SUFFIX` maps one-to-one to
+`PublisherDecisionTest#test_SUFFIX`, preserving all 16 bodies and assertions.
+The integration file retains its `PublisherTest` class and identities. This
+removes their collision without changing sibling manifest entries.
+
+The earlier parallel-launch identity
+`ParallelLaunchTest#test_explicit_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint`
+maps to
+`ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint`.
+It retains separate prepared roots, active sibling checks and preserved stale
+checkpoint assertions while covering the subsequently implemented default admission.
+
+Default discovery is `test/**/*_test.rb`; integration discovery is
+`test/integration/*_git_integration.rb`; contracts use `**/*_contract.rb` in this
+directory. Fixed child/verifier fixtures and manual recipes are outside those
+patterns. The opt-in `manual_parallel_native_sandbox.rb`,
+`terminal_attempt_reproduction.rb`, `act24_continuity.rb`, `act24_worker.rb`,
+`act24_recipe_checks.rb` and old profiling helpers are historical/manual tools,
+not suite entrypoints or zero-Git acceptance evidence. Their external commands
+must not be admitted into test discovery. Required inventory checks reject such
+additions until their explicit migration and review. Inherited guards still
+refuse undeclared execution; fixture executables grant no standalone authority.

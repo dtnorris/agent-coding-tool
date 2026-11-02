@@ -5,7 +5,7 @@ require_relative "../apply_handoff_observations"
 
 # Records one composed memory-Git run with a permitted real Ruby validator, then
 # exercises full decision workflows against finite transcripts and real files.
-# Native public CLI tests retain Git mutation, PTY and hook contracts separately.
+# Public CLI tests retain modeled Git mutation and real non-Git PTY contracts.
 class ApplyHandoffContract < Minitest::Test
   include ApplyHandoffFixtures
 
@@ -204,7 +204,8 @@ class ApplyHandoffContract < Minitest::Test
 
   # Records modeled application/commit plus real sibling validation, then checks
   # every migrated permutation. The historical test ID remains inventory-stable;
-  # native Git parity is owned by the separate native contracts.
+  # its name does not claim live Git conformance. Independent bytes, modes,
+  # parent/ref effects and deliberate corruptions below establish the contract.
   # Assertions and strict request consumption fail closed on lost transitions.
   def test_complete_run_decision_matrices_with_native_parity
     fixture(nonportable: true) do

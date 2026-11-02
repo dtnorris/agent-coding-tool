@@ -8,8 +8,8 @@ require "timeout"
 require_relative "../support/memory_git/broker"
 require_relative "../support/child_processes"
 
-# Public CLI integration with real local Git, terminal consent and sibling
-# validation. Every mutation is confined to disposable, locally remoted repos.
+# Public CLI integration with modeled Git, real terminal consent and sibling
+# validation. Every mutation is confined to disposable fixture repositories.
 class ApplyHandoffGitIntegrationTest < Minitest::Test
   include TestHelpers
   CLI = File.expand_path("../../bin/agent-coding-tool", __dir__)
@@ -160,7 +160,7 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
           unless untracked
             @manifest.fetch("repositories").each_value { |spec| spec["baseline"] = "a" * 40 }
             [@a, @b].each do |repo|
-              _out, _err, status = Open3.capture3("git", "cat-file", "-e", "#{'a' * 40}^{commit}", chdir: repo)
+              status = @memory_world.call(["git", "cat-file", "-e", "#{'a' * 40}^{commit}"], cwd: repo)
               refute status.success?, "declared baseline must be absent"
             end
           end
@@ -481,8 +481,6 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       save_manifest
       only_git = File.join(@root, "only-git")
       Dir.mkdir(only_git, 0o700)
-      git_path = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "git") }.find { |path| File.executable?(path) }
-      File.symlink(git_path, File.join(only_git, "git"))
       stdout, stderr, status = cli(%w[y y y], environment: { "PATH" => only_git })
       assert_equal 127, status.exitstatus, stdout + stderr
       assert_includes stderr, "Errno::ENOENT"

@@ -1024,7 +1024,8 @@ class RunEvidenceTest < Minitest::Test
       wire.write(JSON.generate(rpc("ping")) + "\n")
       assert IO.select([wire], [], [], 3), "lifecycle probe response missing"
       assert JSON.parse(wire.gets)["result"]
-      before = cli("status", "--session", path)
+      # The live adapter may briefly hold the ledger lock between observations.
+      before = cli_status_when_available(path)
       arguments = ["evidence", "open",
         "--session", path, "--grant", File.join(@temporary, "controller-loss-grant.json"),
         "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
@@ -1033,7 +1034,7 @@ class RunEvidenceTest < Minitest::Test
       refute status.success?
       assert_empty output
       assert_includes error, "tunnel.session_reused"
-      assert_equal "active", cli("status", "--session", path)["status"]
+      assert_equal "active", cli_status_when_available(path)["status"]
       # A separately approved new admission still cannot take this endpoint.
       occupied = File.join(@temporary, "occupied")
       proposal = @grant.merge("session_path" => occupied)
@@ -1098,7 +1099,7 @@ class RunEvidenceTest < Minitest::Test
       grant_path = write_json(File.join(@temporary, "#{name}-grant.json"), proposal)
       arguments = ["evidence", "open",
         "--session", path, "--grant", grant_path, "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime]
-      evidence_process(*arguments, environment: { "OPENAI_TUNNEL_KEY" => nil }) do |input, output, error, waiter|
+      evidence_process(*arguments, environment: { "OPENAI_TUNNEL_KEY" => nil, "ACT_FIXTURE_TUNNEL_CLIENT" => client }) do |input, output, error, waiter|
         input.close
         if name == "stopped-startup"
           Timeout.timeout(3) { IO.select(nil, nil, nil, 0.02) until File.exist?(File.join(path, "tunnel.json")) }

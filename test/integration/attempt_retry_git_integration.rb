@@ -128,11 +128,12 @@ class AttemptRecoveryTest < Minitest::Test
     [status.exitstatus, output, error]
   end
 
-  # One finite 60s authority covers the multi-command retry/reset case under
-  # full guard/coverage overhead; the default 20s and 2s request deadline remain
-  # unchanged. No renewal, retry or accepted runtime budget is introduced.
+  # One finite 120s authority covers multi-command retry/reset cases, including
+  # CI process-startup delays that can outlast 60s. The default 20s lease, 2s
+  # request deadline and child deadlines stay unchanged; no renewal or retry.
+  # This fixture lease is not an accepted whole-program runtime budget.
   def retry_broker
-    @retry_broker ||= MemoryGit::Broker.new(world: @retry_world, directory: @authority_root, case_id: 'retry-public', lease: 60)
+    @retry_broker ||= MemoryGit::Broker.new(world: @retry_world, directory: @authority_root, case_id: 'retry-public', lease: 120)
   end
 
   # Exact test-owned boundaries; public CLI argv and lifecycle stay production.

@@ -356,7 +356,9 @@ class AttemptRecoveryTest < Minitest::Test
   def test_partial_creation_before_and_after_native_add_is_preserved
     %w[before after].each do |fault|
       fixture do
-        assert_equal 2, cli("launch", "T", "--codex", fault: fault).first
+        status, output, error = cli("launch", "T", "--codex", fault: fault)
+        assert_equal 2, status,
+          "#{fault} creation fault: stdout=#{output.inspect}; stderr=#{error.inspect}"
         first = reports.fetch(0)
         inventory_bytes = File.binread(first.fetch("worktrees_path"))
         inventory = JSON.parse(inventory_bytes)
@@ -912,7 +914,8 @@ class AttemptRecoveryTest < Minitest::Test
   end
 
   # Uses the same explicit boot/lsof host boundaries as cold CLI fixtures for
-  # deterministic confirmation-race checks. Native PID checks remain enabled.
+  # deterministic confirmation-race checks. Yields the reset handler and real
+  # liveness decision with modeled lsof exit facts; native PID checks stay enabled.
   def with_reset_handler(**options)
     previous_path = ENV.fetch("PATH")
     ENV["PATH"] = "#{@fixture}:#{previous_path}"
@@ -922,14 +925,35 @@ class AttemptRecoveryTest < Minitest::Test
       paths = checkouts.values.flat_map { |checkout| checkout.repository.worktrees.keys }
       raise MemoryGit::Mismatch, 'undeclared warm reset lsof' unless argv.take(4) == %w[lsof -n -P +D] &&
         argv.length == 5 && paths.include?(argv.last) && fields.empty?
-      ChildProcesses.capture('status', arguments: ['1'])
+      AgentCodingTool::CommandResult.new(stdout: "".b, stderr: "".b, exitstatus: 1).to_ary
     end
     liveness = AgentCodingTool::RetryLiveness.new(capture: capture)
     AgentCodingTool::RetryLiveness.stub(:host_identity, { "fixture_boot" => "deterministic external identity" }) do
-      yield AgentCodingTool::TaskReset.new(data_root: @data, liveness: liveness, **options)
+      yield AgentCodingTool::TaskReset.new(data_root: @data, liveness: liveness, **options), liveness
     end
   ensure
     ENV["PATH"] = previous_path
+  end
+
+  # A real reaped PID qualifies the host probe, while modeled lsof exit facts
+  # must require no child. Contradictory child evidence still refuses recovery.
+  def test_reset_lsof_observations_do_not_launch_status_children
+    fixture do
+      host_pid = RecoveryObservations.status(0).pid
+      report = { "status" => "child_start_failed", "host_pid" => host_pid,
+        "host_identity" => { "fixture_boot" => "deterministic external identity" } }
+      inventory = { "entries" => [{ "path" => File.join(@fixture, "writer") }] }
+      with_reset_handler do |_handler, liveness|
+        before = NoGitExecution.audit
+        assert_equal :clear, liveness.check(report, inventory)
+        assert_equal before, NoGitExecution.audit, "lsof observations must not manufacture process status"
+        stale_child = report.merge("status" => "exited", "child_pid" => host_pid,
+          "child_started_at" => "2026-01-01T00:00:00Z", "ended_at" => "2026-01-01T00:00:02Z",
+          "heartbeat_at" => "2026-01-01T00:00:01Z", "heartbeat_child_pid" => host_pid + 1)
+        assert_equal :unknown, liveness.check(stale_child, inventory)
+        assert_equal before, NoGitExecution.audit
+      end
+    end
   end
 
   # The same continuous public journey must fail if retirement handoff is removed.

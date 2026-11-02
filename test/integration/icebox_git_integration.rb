@@ -12,7 +12,8 @@ class IceboxGitIntegrationTest < Minitest::Test
   include LauncherSupport
 
   # Proves deferral, factual inventory, refusal without side effects and explicit
-  # restoration continuously, using a fresh process for every public command.
+  # restoration continuously. Mutations and one of each view stay cold; repeated
+  # view variants use a fresh public CLI against the same case authority.
   def test_public_cli_journey
     journey_fixture do
       before = definition_bytes
@@ -23,11 +24,12 @@ class IceboxGitIntegrationTest < Minitest::Test
       cli!("icebox", "TST-A", "--reason", "Revisit after profiling")
       state = @store.load("TST-A")
       details = cli!("status", "TST-A", "--full")
+      assert_equal details, view!("status", "TST-A", "--full")
       assert_includes details, "TST-A: ICEBOX"
       assert_includes details, "Revisit after profiling"
       assert_includes details, "act unicebox TST-A"
-      assert_includes cli!("status", "--icebox", "--full"), "TST-A: ICEBOX"
-      document = JSON.parse(cli!("next", "--json"))
+      assert_includes view!("status", "--icebox", "--full"), "TST-A: ICEBOX"
+      document = JSON.parse(view!("next", "--json"))
       assert_equal "agent-coding-tool-next/v0.1", document.fetch("schema_version")
       deferred = document.dig("facts", "tasks").find { |row| row.fetch("id") == "TST-A" }
       assert_equal "ICEBOX", deferred.fetch("status")
@@ -38,7 +40,7 @@ class IceboxGitIntegrationTest < Minitest::Test
       blocked = document.dig("facts", "tasks").find { |row| row.fetch("id") == "TST-C" }
       assert_equal "BLOCKED", blocked.fetch("status")
       assert_includes blocked.fetch("reason"), "TST-A"
-      human_next = cli!("next")
+      human_next = view!("next")
       refute_includes human_next, "act prepare TST-A"
       refute_includes human_next, "act start TST-A"
       assert_includes human_next, "act prepare TST-B"
@@ -52,14 +54,14 @@ class IceboxGitIntegrationTest < Minitest::Test
         refute File.exist?("#{@data}-runs/TST-A")
         refute File.exist?(File.join(@root, "worker-pid"))
       end
-      dashboard = cli!("status", "--full")
+      dashboard = view!("status", "--full")
       refute_match(/^TST-A:/, dashboard)
       assert_equal "1 Icebox task from families (TST)\n", dashboard.lines.last
       assert_equal 1, dashboard.scan(/^\d+ Icebox/).length
-      minimal = cli!("status", "--min")
-      assert_equal minimal, cli!("status")
+      minimal = view!("status", "--min")
+      assert_equal minimal, view!("status")
       assert_equal ["TST-B: READY (NEXT)  Task\n", "TST-C: BLOCKED       Task\n"], minimal.lines
-      all = cli!("status", "--all", "--full")
+      all = view!("status", "--all", "--full")
       assert_operator all.index("TST-C: BLOCKED"), :<, all.index("TST-A: ICEBOX")
 
       # Report reality while deliberately deferred: every public projection
@@ -68,18 +70,18 @@ class IceboxGitIntegrationTest < Minitest::Test
                                "--kind", "fake-codex", "--scope-complete"))
       observation = report.fetch("active").fetch("observation_id")
       [%w[status --full], %w[next]].each do |command|
-        view = cli!(*command)
+        view = view!(*command)
         assert_includes view, "EXTERNAL WORK REPORTED"
         assert_includes view, "unauthorized by ACT"
         assert_includes view, "liveness unknown"
       end
-      assert_includes cli!("status", "--full"), "TST-A: ICEBOX"
-      minimal = cli!("status", "--icebox", "--min")
-      assert_equal minimal, cli!("status", "--icebox")
+      assert_includes view!("status", "--full"), "TST-A: ICEBOX"
+      minimal = view!("status", "--icebox", "--min")
+      assert_equal minimal, view!("status", "--icebox")
       assert_equal "TST-A: ICEBOX [external repor..  Task\n".b, minimal
-      assert_includes cli!("next"), "TST-A (ICEBOX)"
-      assert_includes cli!("next"), "act unicebox TST-A"
-      reported = JSON.parse(cli!("next", "--json"))
+      assert_includes view!("next"), "TST-A (ICEBOX)"
+      assert_includes view!("next"), "act unicebox TST-A"
+      reported = JSON.parse(view!("next", "--json"))
       fact = reported.dig("facts", "tasks").find { |row| row["id"] == "TST-A" }
       assert_equal ["ICEBOX", "READY", state.fetch("icebox"), observation],
                    [fact["status"], fact["lifecycle_status"], fact["icebox"], fact.dig("external_activity", "observation_id")]
@@ -87,10 +89,10 @@ class IceboxGitIntegrationTest < Minitest::Test
       refute_includes reported.dig("recommendations", "starts").map { |row| row["id"] }, "TST-A"
       cli!("external", "end", "TST-A", observation, "--disposition", "ended")
       assert_equal state, @store.load("TST-A")
-      refute_match(/^TST-A:/, cli!("status", "--full"))
+      refute_match(/^TST-A:/, view!("status", "--full"))
 
       cli!("unicebox", "TST-A")
-      assert_equal "READY", JSON.parse(cli!("next", "--json")).dig("facts", "tasks").find { |row| row["id"] == "TST-A" }.fetch("status")
+      assert_equal "READY", JSON.parse(view!("next", "--json")).dig("facts", "tasks").find { |row| row["id"] == "TST-A" }.fetch("status")
       cli!("prepare", "TST-A")
       assert @store.load("TST-A")["snapshot"]
       report = JSON.parse(cli!("external", "report", "TST-A", "--reporter", "operator", "--kind", "fake-codex"))
@@ -131,6 +133,33 @@ class IceboxGitIntegrationTest < Minitest::Test
     assert_equal "text\n".b + [0, 255].pack("C*"), output
     assert_equal [254, 0].pack("C*"), error
     assert_equal 7, status.exitstatus
+  end
+
+  # Repeated views observe persisted decisions with independent streams and no
+  # processes. Failed parsing restores input, environment and source authority;
+  # a subsequent successful view must still reflect this case's fresh world.
+  def test_view_variants_preserve_state_and_restore_process_globals
+    journey_fixture do
+      input, environment = $stdin, ENV.to_h
+      source = MemoryGit::Session.skill_transport
+      before = NoGitExecution.audit
+      first = JSON.parse(view!('next', '--json'))
+      assert_equal %w[TST-A TST-B], first.dig('recommendations', 'starts').map { |row| row.fetch('id') }
+      assert_equal 0, AgentCodingTool::CLI.run(%w[icebox TST-A], root: Dir.pwd, data_root: @data,
+        out: StringIO.new, err: StringIO.new)
+      state_path = @store.state_path('TST-A')
+      bytes, mode = File.binread(state_path), File.stat(state_path).mode
+      assert_includes view!('status', 'TST-A', '--full'), 'TST-A: ICEBOX'
+      assert_equal view!('status', '--min'), view!('status')
+      assert_equal ['TST-B'], JSON.parse(view!('next', '--json')).dig('recommendations', 'starts').map { |row| row.fetch('id') }
+      assert_raises(Minitest::Assertion) { view!('next', '--unknown-option') }
+      assert_same input, $stdin
+      assert_equal environment, ENV.to_h
+      assert_same source, MemoryGit::Session.skill_transport
+      assert_includes view!('status', 'TST-A'), 'ICEBOX'
+      assert_equal [bytes, mode], [File.binread(state_path), File.stat(state_path).mode]
+      assert_equal before, NoGitExecution.audit
+    end
   end
 
   # File barriers pause a real state writer while it holds the shared launch
@@ -203,6 +232,24 @@ class IceboxGitIntegrationTest < Minitest::Test
     output, error, status = cli(*args)
     assert status.success?, "#{args.inspect}: #{error}"
     output
+  end
+
+  # Runs read-only view variants through a fresh CLI, streams and configuration.
+  # Explicit transport retains broker serialization after a cold mutation. Input
+  # is restored even on refusal; unknown commands raise without mutating state.
+  def view!(*args)
+    raise ArgumentError, 'not an Icebox view' unless %w[status next].include?(args.first)
+    output, error = StringIO.new, StringIO.new
+    previous_input = $stdin
+    begin
+      $stdin = StringIO.new
+      result = AgentCodingTool::CLI.run(args, root: Dir.pwd, data_root: @data, out: output, err: error,
+        transport: MemoryGit::Session::Transport.new(@memory_broker || @memory_world))
+      assert_equal 0, result, error.string
+      output.string.b
+    ensure
+      $stdin = previous_input
+    end
   end
 
   # Returns exact task-definition bytes for preservation assertions.

@@ -170,17 +170,24 @@ class AttemptRecoveryTest < Minitest::Test
     assert replay.verify! if replay
   end
 
-  # Runs repeated recovery commands through the real public parser in-process.
-  # Returns the CLI's integer result and raw streams; unexpected external
-  # requests raise. Full launches and cold restart journeys remain native.
-  def decision_cli(*args, liveness_checks: 0)
-    raise ArgumentError, "not a recovery decision command" unless %w[record worktrees close-attempt prepare].include?(args.first)
+  # Runs repeated decision commands through the real public parser in-process.
+  # Returns the CLI's integer result and binary streams, matching cold capture.
+  # Unexpected external requests raise; launches and cold restarts stay native.
+  def decision_cli(*args, liveness_checks: 0, transport: nil)
+    raise ArgumentError, "not a recovery decision command" unless %w[record worktrees close-attempt prepare status].include?(args.first)
 
     out, err = StringIO.new, StringIO.new
     with_decision_liveness(liveness_checks) do
-      result = AgentCodingTool::CLI.run(args, root: Dir.pwd, data_root: @data, out: out, err: err)
-      [result, out.string, err.string]
+      result = AgentCodingTool::CLI.run(args, root: Dir.pwd, data_root: @data, out: out, err: err, transport: transport)
+      [result, out.string.b, err.string.b]
     end
+  end
+
+  # Creates a fresh client for each in-process decision so cold mutations remain
+  # visible through the same broker-owned world used by public child commands.
+  # Routes immutable skill reads separately; undeclared requests still raise.
+  def retry_decision_transport
+    MemoryGit::Session::Transport.new(MemoryGit::Client.new(retry_broker.endpoint))
   end
 
   # Requires success from a real in-process decision command and returns stdout.
@@ -1121,6 +1128,7 @@ class AttemptRecoveryTest < Minitest::Test
   # Cold repeats at archive/native/evidence/lifecycle boundaries either resume
   # the exact operation or refuse new material. No old evidence is rewritten.
   def test_hard_reset_interruptions_fence_admission_and_resume_same_archive
+    parity_checked = false
     ["before_archive", "before_archive_verified", "after_archive", "before_remove:0", "after_remove:0",
      "after_move:original/runs", "before_state", "after_state"].each do |phase|
       hard_reset_fixture do
@@ -1131,9 +1139,29 @@ class AttemptRecoveryTest < Minitest::Test
         assert_includes error, "injected #{phase}"
         receipt = reset_receipts.fetch(0)
         refute_equal "complete", receipt.fetch("phase")
-        assert_equal 2, cli("prepare", "T").first
+        if parity_checked
+          assert_equal 2, decision_cli("prepare", "T", transport: retry_decision_transport).first
+        else
+          before_refusal = bytes
+          cold_prepare = cli("prepare", "T")
+          warm_prepare = decision_cli("prepare", "T", transport: retry_decision_transport)
+          assert_equal 2, cold_prepare.first, cold_prepare.last
+          assert_equal cold_prepare, warm_prepare
+          assert_equal before_refusal, bytes
+          parity_checked = true
+        end
         assert_equal 2, cli("launch", "T", "--codex").first
-        assert_includes succeeds("status", "T", "--full"), "unfinished hard reset"
+        if phase == "before_archive"
+          cold_status = cli("status", "T", "--full")
+          warm_status = decision_cli("status", "T", "--full", transport: retry_decision_transport)
+          assert_equal cold_status, warm_status
+          assert_equal 0, warm_status.first, warm_status.last
+          assert_includes warm_status[1], "unfinished hard reset"
+        else
+          status, output, error = decision_cli("status", "T", "--full", transport: retry_decision_transport)
+          assert_equal 0, status, error
+          assert_includes output, "unfinished hard reset"
+        end
         hard_reset_succeeds("reset", "--hard", "T")
         assert_equal [receipt.fetch("archive")], reset_receipts.map { |record| record.fetch("archive") }
         assert_equal "complete", reset_receipts.fetch(0).fetch("phase")
@@ -1356,9 +1384,14 @@ class AttemptRecoveryTest < Minitest::Test
       hard_reset_succeeds("reset", "T", "--hard")
       refute @states.load("T").key?("icebox")
       %w[prepared blocked failed needs_judgment candidate_complete complete].each do |state|
-        succeeds("prepare", "T")
+        prepared = decision_cli("prepare", "T", transport: retry_decision_transport)
+        assert_equal 0, prepared.first, prepared.last
         succeeds("launch", "T", "--codex") unless state == "prepared"
-        succeeds("record", "T", state) unless state == "prepared"
+        unless state == "prepared"
+          recorded = decision_cli("record", "T", state, transport: retry_decision_transport)
+          assert_equal 0, recorded.first, recorded.last
+          assert_equal state, @states.load("T").dig("result", "outcome")
+        end
         previous = File.binread(@states.state_path("T"))
         output = hard_reset_succeeds("reset", "T", "--hard")
         assert_includes output, "DEPENDENT"
@@ -1385,6 +1418,7 @@ class AttemptRecoveryTest < Minitest::Test
       task["depends_on"] = []
       task.fetch("repositories").fetch("writer")["path"] = File.join(@fixture, "missing-repository")
       File.write(task_path, YAML.dump(task))
+      # Keep the cold adapter's native missing-directory error before broker RPC.
       output = succeeds("status", "T", "--full")
       assert_includes output, "T: BLOCKED"
       assert_includes output, "configuration: writer: repository path does not exist"

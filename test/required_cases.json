@@ -484,6 +484,7 @@
       "IceboxGitIntegrationTest#test_public_cli_journey",
       "IceboxGitIntegrationTest#test_guard_removal_negative_control",
       "IceboxGitIntegrationTest#test_process_observer_preserves_bytes_and_status",
+      "IceboxGitIntegrationTest#test_view_variants_preserve_state_and_restore_process_globals",
       "IceboxGitIntegrationTest#test_cli_preparation_and_auto_launch_races"
     ],
     "test/integration/attempt_retry_git_integration.rb": [

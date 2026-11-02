@@ -1,0 +1,9 @@
+{
+  "test/support/verify_retry_processes.rb": [
+    "RetryProcessCostVerifier#test_lsof_bytes_exit_and_zero_launches",
+    "RetryProcessCostVerifier#test_lsof_changed_envelopes_refuse",
+    "RetryProcessCostVerifier#test_preflight_raw_observations_and_fresh_streams",
+    "RetryProcessCostVerifier#test_preflight_changed_envelope_and_source_refuse",
+    "RetryProcessCostVerifier#test_real_preflight_process_parity"
+  ]
+}

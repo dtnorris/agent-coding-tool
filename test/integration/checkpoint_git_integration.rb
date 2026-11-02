@@ -13,7 +13,7 @@ class CheckpointTest < Minitest::Test
   include RecoveryObservations
   include CheckpointProcesses
 
-  # Uses the real public CLI and local bare remote for the preserved-attempt
+  # Uses the real public CLI and modeled remote for the preserved-attempt
   # journey; cold verification proves no process-local lifecycle workaround.
   def test_forced_gate_public_journey_preserves_attempt_and_lifecycle_bytes
     fixture do |root, data, ordinary, workspace, _base|
@@ -243,13 +243,33 @@ class CheckpointTest < Minitest::Test
     out.strip
   end
 
+  # Yields an exclusive private root within TMPDIR, short enough for Darwin's
+  # broker socket even under retained attempt paths. Collisions are retried;
+  # exhausted names or filesystem failures raise, and only our root is removed.
+  def with_fixture_root
+    root = nil
+    32.times do
+      candidate = File.join(File.realpath(Dir.tmpdir), SecureRandom.hex(1))
+      begin
+        Dir.mkdir(candidate, 0o700)
+        root = candidate
+        break
+      rescue Errno::EEXIST
+        next
+      end
+    end
+    raise "no private checkpoint fixture root" unless root
+    yield root
+  ensure
+    FileUtils.remove_entry(root) if root
+  end
+
   # Yields disposable task/state, candidate files and modeled baseline identity.
   # Native-family cases use fresh modeled repository authority; refusal-only
   # cases declare exact reads at the call site. Setup/model errors
   # propagate and all fixture files are removed afterward.
   def fixture(native: true)
-    # Keep the broker socket below macOS's path limit with its default TMPDIR.
-    Dir.mktmpdir("act-cp-") do |root|
+    with_fixture_root do |root|
       root = File.realpath(root)
       ordinary = File.join(root, "ordinary")
       remote = File.join(root, "remote.git")

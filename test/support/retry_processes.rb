@@ -2,9 +2,32 @@
 
 require_relative 'child_processes'
 require_relative 'memory_git/session'
-# Real guarded fake-worker children at the declared Codex/lsof boundaries.
+# Finite capability/lsof responses and guarded real worker process boundaries.
 # Public parsing, worktree creation, lifecycle and reports stay production code.
 module RetryProcesses
+  # Raw observations of the reviewed retry worker's five static capabilities.
+  # Worker execution and sandbox effects still cross the real process boundary.
+  PREFLIGHT_OUTPUTS = {
+    ['--version'] => "codex-cli 0.162.1\n",
+    ['exec', '--help'] => "--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model\n",
+    ['login', '--help'] => "status\n",
+    ['login', 'status'] => "Logged in using ChatGPT\n",
+    ['sandbox', '--help'] => "Usage: codex sandbox [OPTIONS] [COMMAND]...\n"
+  }.freeze
+
+  # Returns fresh raw streams/exit facts for one declared capability request.
+  # Changed source, environment or options refuse before any child can start.
+  def self.preflight(environment, arguments, options)
+    ENV.fetch('ACT_RETRY_ROOT') # Preserve the real adapter's required case binding.
+    expected = %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact
+    source = File.join(ChildProcesses::FIXTURES, 'retry_worker.rb')
+    NoGitExecution.refuse!('changed retry preflight envelope') unless environment == expected &&
+      options == { unsetenv_others: true } &&
+      Digest::SHA256.file(source).hexdigest == ChildProcesses::HASHES.fetch('retry_worker')
+    AgentCodingTool::CommandResult.new(stdout: PREFLIGHT_OUTPUTS.fetch(arguments).b,
+      stderr: ''.b, exitstatus: 0).to_ary
+  end
+
   # Adapts one exact requested worker envelope; stream handles stay real IO.
   def self.spawn_worker(environment, *argv, **options)
     root = ENV.fetch('ACT_RETRY_ROOT')
@@ -40,13 +63,16 @@ module RetryProcesses
     def capture3(*argv, **options)
       if argv.first.is_a?(Hash) && argv[1] == File.join(ChildProcesses::FIXTURES, 'retry_worker.rb')
         environment, _executable, *arguments = argv
+        if PREFLIGHT_OUTPUTS.key?(arguments)
+          return RetryProcesses.preflight(environment, arguments, options)
+        end
         forwarded = environment.merge('ACT_RETRY_ROOT' => ENV.fetch('ACT_RETRY_ROOT'))
         forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
         approval = ChildProcesses.permit('retry_worker', arguments: arguments, environment: forwarded, options: options)
         return NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options) }
       end
       if argv.first == 'lsof' && argv.take(4) == %w[lsof -n -P +D] && argv.length == 5 && options.empty?
-        return ChildProcesses.capture('status', arguments: ['1'])
+        return AgentCodingTool::CommandResult.new(stdout: ''.b, stderr: ''.b, exitstatus: 1).to_ary
       end
       super
     end

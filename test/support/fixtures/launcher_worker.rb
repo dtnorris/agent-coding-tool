@@ -105,6 +105,18 @@ end
 puts JSON.generate(type: 'item.completed', text: 'progress')
 STDOUT.flush
 warn 'stderr progress'
-sleep 30 if mode == 'sleep'
+if mode == 'sleep'
+  # Explicit release ends normal work. The safety lease covers the parent's
+  # readiness (8s), sibling delivery (20s), and reaping (10s) bounds plus margin.
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 40
+  File.write(File.join(root, 'worker-ready.tmp'), Process.pid.to_s)
+  File.rename(File.join(root, 'worker-ready.tmp'), File.join(root, 'worker-ready'))
+  loop do
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    exit 75 unless remaining.positive?
+    break if File.file?(File.join(root, 'worker-release'))
+    sleep [remaining, 0.025].min
+  end
+end
 File.binwrite(path, mode == 'invalid' ? "\xff" : 'Final worker response') unless mode == 'missing'
 exit(mode == 'failure' ? 7 : 0)

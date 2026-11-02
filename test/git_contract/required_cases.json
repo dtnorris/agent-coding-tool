@@ -11,6 +11,7 @@
     "FeedbackContract#test_unloaded_denominator_branch_and_coverage_violation",
     "FeedbackContract#test_nested_layout_isolation_and_changed_source_refusal",
     "FeedbackContract#test_missing_stale_and_contradictory_coverage",
+    "FeedbackContract#test_coverage_publication_is_atomic_and_exclusive",
     "FeedbackContract#test_cold_child_visibility_and_missing_instrumentation",
     "FeedbackContract#test_fixed_reference_noncomparable_advisory_and_budget",
     "FeedbackContract#test_required_case_summary_and_freshness_refusals",

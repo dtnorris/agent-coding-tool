@@ -355,7 +355,9 @@ class AttemptRecoveryTest < Minitest::Test
   def test_partial_creation_before_and_after_native_add_is_preserved
     %w[before after].each do |fault|
       fixture do
-        assert_equal 2, cli("launch", "T", "--codex", fault: fault).first
+        status, output, error = cli("launch", "T", "--codex", fault: fault)
+        assert_equal 2, status,
+          "#{fault} creation fault: stdout=#{output.inspect}; stderr=#{error.inspect}"
         first = reports.fetch(0)
         inventory_bytes = File.binread(first.fetch("worktrees_path"))
         inventory = JSON.parse(inventory_bytes)

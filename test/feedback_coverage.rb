@@ -195,7 +195,14 @@ module FeedbackCoverage
       observed = nodes(result)
       previous = files[relative_path]
       raise "coverage: contradictory executable layout" if previous && previous.keys.sort != observed.keys.sort
-      files[relative_path] = observed.to_h { |node, hits| [node, [hits, previous&.fetch(node, 0) || 0].max] }
+      # nodes already owns a fresh map. Most files have one observed path;
+      # avoid rebuilding every node entry during TERM.
+      # Identical cold copies still contribute the maximum for every node.
+      if previous
+        observed.each { |node, hits| previous[node] = hits if hits > previous.fetch(node) }
+      else
+        files[relative_path] = observed
+      end
     end
     result = { "invocation" => context.fetch("invocation"), "selection" => context.fetch("selection"),
       "stage" => context.fetch("stage"), "sources" => context.fetch("sources"),

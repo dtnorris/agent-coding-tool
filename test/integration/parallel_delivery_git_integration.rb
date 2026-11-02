@@ -449,12 +449,19 @@ class ParallelDeliveryTest < Minitest::Test
           loop do
             paths = Dir.glob("#{@data}-runs/T/*/handoff.json")
             report = JSON.parse(File.binread(paths.first)) unless paths.empty?
-            break report if report && report["status"] == "running" && File.file?(File.join(@root, "worker-pid"))
+            break report if report && report["status"] == "running" && File.file?(File.join(@root, "worker-ready"))
             sleep 0.01
           end
         end
         child = running.fetch("child_pid")
+        assert_equal child, Integer(File.binread(File.join(@root, "worker-ready")))
+        assert_equal child, FeedbackRuntime.identity(child).fetch("pid")
         sibling_state = File.binread(@store.state_path("T"))
+        sibling_paths = [File.join(@ordinary, "file.txt"),
+          File.join(running.fetch("workspace"), "file.txt"),
+          File.join(running.fetch("workspace"), "worker-change.txt")]
+        sibling_candidate = candidate_bytes(sibling_paths)
+        sibling_modes = sibling_paths.map { |path| File.stat(path).mode & 0o777 }
         install_contract("B")
         write_fake("success")
         provider, guard = Provider.new, Guard.new
@@ -468,14 +475,26 @@ class ParallelDeliveryTest < Minitest::Test
         assert_equal "CANDIDATE", @coordinator.status("B").fetch("status")
         assert_equal "running", run_for("T").first.fetch("status")
         assert_equal sibling_state, File.binread(@store.state_path("T"))
+        assert_equal sibling_candidate, candidate_bytes(sibling_paths)
+        assert_equal sibling_modes, sibling_paths.map { |path| File.stat(path).mode & 0o777 }
+        assert FeedbackRuntime.identity(child), "sibling worker exited before release"
         assert_equal ["act/B/attempt-1"], provider.pushes
+        File.write(File.join(@root, "worker-release"), "release")
+        _host_pid, host_status = Timeout.timeout(10) { Process.waitpid2(host) }
+        host = nil
+        assert host_status.exited?, "launcher host was not reaped with an exit status"
+        assert_equal 0, host_status.exitstatus
+        assert_nil FeedbackRuntime.identity(child), "released worker remained live after host reaping"
+        child = nil
       ensure
         Process.kill("TERM", -child) rescue Errno::ESRCH if child
-        begin
-          Timeout.timeout(5) { Process.waitpid(host) }
-        rescue Timeout::Error
-          Process.kill("TERM", host) rescue Errno::ESRCH
-          Process.waitpid(host) rescue Errno::ECHILD
+        if host
+          begin
+            Timeout.timeout(5) { Process.waitpid(host) }
+          rescue Timeout::Error
+            Process.kill("TERM", host) rescue Errno::ESRCH
+            Process.waitpid(host) rescue Errno::ECHILD
+          end
         end
       end
     end

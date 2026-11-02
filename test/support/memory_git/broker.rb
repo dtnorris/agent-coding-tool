@@ -2,6 +2,7 @@
 
 require "socket"
 require "json"
+require "pathname"
 require "securerandom"
 require "timeout"
 require_relative "session"
@@ -101,6 +102,17 @@ module MemoryGit
   class Broker
     attr_reader :endpoint, :startup_seconds, :events
 
+    # Returns a bounded address for the canonical socket from this interpreter's
+    # cwd without changing it. Unrepresentable paths refuse; no external fallback.
+    def self.socket_path(absolute_path)
+      cwd = File.realpath(Dir.pwd)
+      path = absolute_path.bytesize < 104 ? absolute_path :
+        Pathname.new(absolute_path).relative_path_from(Pathname.new(cwd)).to_s
+      raise Mismatch, "broker socket path exceeds sockaddr_un limit" unless
+        path.bytesize < 104 && File.expand_path(path, cwd) == absolute_path
+      path
+    end
+
     # Binds a socket in an existing canonical private directory under the world.
     # Paths must fit sockaddr_un; no fallback to a shared or external directory.
     # Filesystem/bind failures propagate; lease/request bounds are positive finite.
@@ -113,11 +125,14 @@ module MemoryGit
       @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + lease
       @events, @seen, @closed = [], {}, false
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      path = File.join(directory, "w.sock")
+      absolute_path = File.join(directory, "w.sock")
+      @cwd = File.realpath(Dir.pwd)
+      path = self.class.socket_path(absolute_path)
       @server = UNIXServer.new(path)
       File.chmod(0o600, path)
       @identity = File.lstat(path).then { |item| [item.dev, item.ino] }
-      @endpoint = { "path" => path.freeze, "case" => case_id.dup.freeze, "token" => SecureRandom.hex(32).freeze, "seconds" => seconds }.freeze
+      @endpoint = { "path" => path.freeze, "directory" => directory.freeze, "cwd" => @cwd.freeze,
+        "case" => case_id.dup.freeze, "token" => SecureRandom.hex(32).freeze, "seconds" => seconds }.freeze
       @thread = Thread.new { serve }
       @thread.report_on_exception = false
       @startup_seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
@@ -144,7 +159,7 @@ module MemoryGit
       raise Mismatch, "broker did not stop" if @thread.alive?
       @world.verify!
     ensure
-      path = @endpoint&.fetch("path")
+      path = @endpoint && File.expand_path(@endpoint.fetch("path"), @cwd)
       if path && File.socket?(path) && File.lstat(path).then { |item| [item.dev, item.ino] } == @identity
         File.unlink(path)
       end
@@ -219,10 +234,12 @@ module MemoryGit
     def call(argv, **fields)
       @lock.synchronize do
         raise Mismatch, "broker client unusable after failure" if @failed
-        path = @endpoint.fetch("path")
-        directory = File.dirname(path)
-        socket_stat, parent_stat = [path, directory].map { |item| File.lstat(item) }
-        raise Mismatch, "unsafe broker endpoint" unless File.realpath(directory) == directory && parent_stat.directory? &&
+        absolute_path = File.expand_path(@endpoint.fetch("path"), @endpoint.fetch("cwd"))
+        directory = @endpoint.fetch("directory")
+        path = Broker.socket_path(absolute_path)
+        socket_stat, parent_stat = [absolute_path, directory].map { |item| File.lstat(item) }
+        raise Mismatch, "unsafe broker endpoint" unless File.dirname(absolute_path) == directory &&
+          File.realpath(directory) == directory && parent_stat.directory? &&
           parent_stat.uid == Process.uid && (parent_stat.mode & 0o077).zero? && socket_stat.socket? &&
           socket_stat.uid == Process.uid && (socket_stat.mode & 0o777) == 0o600
         identifier = "#{@prefix}:#{@sequence += 1}"

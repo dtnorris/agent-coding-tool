@@ -78,20 +78,23 @@ module AgentCodingTool
         return { "tasks" => inventory,
           "_release" => { "operation" => "discover", "tasks" => tasks.to_h { |task| [task, task_scope!(state, task).fetch("generation")] } } }
       end
-      identities = RunEvidenceReader::IDENTITIES
+      identities = RunEvidenceReader.request_identity_fields(request)
       identity = request.slice(*identities)
       raise Refused, "selection.identity" unless identity.keys.sort == identities.sort &&
         identity["task_id"].is_a?(String) && identity["task_id"].match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) &&
-        identity["attempt"].is_a?(Integer) && identity["attempt"].positive? &&
-        %w[invocation_id session_id].all? { |key| identity[key].is_a?(String) && identity[key].match?(/\A[A-Za-z0-9_-]{1,128}\z/) }
+        (identities == RunEvidenceReader::EXTERNAL_IDENTITIES ? identity["invocation_id"].is_a?(String) && identity["invocation_id"].match?(/\Aexternal-[0-9a-f]{32}\z/) :
+          identity["attempt"].is_a?(Integer) && identity["attempt"].positive? &&
+          %w[invocation_id session_id].all? { |key| identity[key].is_a?(String) && identity[key].match?(/\A[A-Za-z0-9_-]{1,128}\z/) })
       scope = task_scope!(state, identity.fetch("task_id"))
       if operation == "select"
         raise Refused, "reader.fields" unless request.keys.sort == (identities + ["operation"]).sort
         raise Refused, "selection.limit" if state.fetch("selections").length >= 64
+        identity = identity.merge("source" => "external_codex_cli") if identities == RunEvidenceReader::EXTERNAL_IDENTITIES
         config = RunEvidenceStore.new(grant.fetch("data_root")).select(identity,
           artifacts: grant.fetch("artifacts"), manager: grant.dig("transport", "manager"), shared: true)
         manifest = RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(
-          identity.merge("operation" => "manifest", "revision" => nil), caller: config.fetch("manager"))
+          identity.slice(*RunEvidenceReader.identity_fields(config.fetch("binding"))).merge("operation" => "manifest", "revision" => nil),
+          caller: config.fetch("manager"))
         handle = Digest::SHA256.hexdigest("#{state.fetch('grant_sha256')}:#{manifest.fetch('revision')}:#{scope.fetch('generation')}")
         state.fetch("selections")[handle] = { "config" => config, "generation" => scope.fetch("generation") }
         manifest.merge("handle" => handle)
@@ -134,7 +137,7 @@ module AgentCodingTool
         event = { "at" => Time.now.utc.iso8601(6), "operation" => operation,
           "bytes" => released, "wire_bytes" => wire, "result" => result }
         if evidence.is_a?(Hash) && evidence["binding"]
-          evidence["binding"].slice(*RunEvidenceReader::IDENTITIES).each do |key, value|
+          evidence["binding"].slice(*RunEvidenceReader.identity_fields(evidence["binding"])).each do |key, value|
             event[key] = value if value.is_a?(Integer) || value.is_a?(String) && value.match?(/\A[A-Za-z0-9_-]{1,128}\z/)
           end
           artifact = evidence["artifact"]

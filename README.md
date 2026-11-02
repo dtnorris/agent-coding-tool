@@ -1777,6 +1777,39 @@ be recalled**. A new tunnel has a fresh identity and starts with no task shares;
 explicitly re-share before retrieving durable artifacts again. A failed startup
 reservation can be closed with `act share stop` after its controller exits.
 
+To preserve one separately launched headless Codex CLI follow-up for the same
+task, run the explicit host capture command after sharing the task:
+
+```sh
+act evidence capture --task TASK -- codex exec --sandbox workspace-write "follow-up prompt"
+```
+
+ACT adds JSONL capture and `--output-last-message` to that one `codex exec`,
+retains bounded binary stdout/stderr plus the final message under its private
+`<data-directory>-followups` root, records the observed exit or signal, and
+registers a durable copy for discovery. The generated `external-<hex>` identity
+and `external_codex_cli` source label distinguish this invocation from managed
+ACT runs; they are not Codex session or ACT launch identities. A nonzero exit is
+still registered as evidence. If the host is interrupted before registration,
+use the exact task, invocation and receipt digest printed by capture:
+
+```sh
+act evidence register-followup --task TASK --invocation external-HEX --sha256 RECEIPT_SHA256
+```
+
+Recovery marks output pending and the outcome unknown when the finished receipt
+was not retained. If interruption leaves the recorded child alive or its status
+uncertain, registration refuses until that PID is verified stopped; rerun the
+same registration command with the printed digest afterward. Active, changed,
+foreign, symlinked, duplicate or ambiguous captures refuse before discovery.
+Missing or truncated output stays explicit; an oversized final message retains
+only its bounded prefix and hash. Registration does not establish worker
+success. After capture, the manager uses explicit `refresh`, then selects using
+the existing `task_id` and exact `invocation_id` fields; `external_codex_cli`
+remains a discovery/manifest source label, not a tool input. The existing task
+lease, read budgets, activity and selection rules apply. A new tunnel still
+requires a fresh explicit task share.
+
 Managers use `read_run_evidence` with `operation: discover` to inventory shared
 task IDs, then `discover` or explicit `refresh` with `task_id` to obtain context
 and exact attempt/invocation/session identities. Run pages contain at most 16

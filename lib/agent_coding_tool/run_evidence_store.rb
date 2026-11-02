@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "run_evidence_reader"
+require_relative "external_followup"
 
 module AgentCodingTool
   # Resolves exact managed run identities from existing ACT records. This class
@@ -65,6 +66,16 @@ module AgentCodingTool
     # immutable file approvals. Returns reader constructor arguments. Ambiguity,
     # missing provenance, unsafe paths or mismatched source bytes refuse.
     def select(identity, artifacts:, manager:, shared: false)
+      if identity["source"] == "external_codex_cli"
+        raise Refused, "selection.source" unless shared
+        task_root = File.join(@root, identity.fetch("task_id"))
+        managed_match = File.exist?(task_root) && children(task_root).any? do |entry|
+          report = self.class.parse(self.class.bytes(File.join(task_root, entry, "handoff.json"), root: @root))
+          report["task_id"] == identity["task_id"] && report["invocation_id"] == identity["invocation_id"]
+        end
+        raise Refused, "selection.missing_or_ambiguous" if managed_match
+        return ExternalFollowup.new(@data).select(identity, artifacts: artifacts, manager: manager)
+      end
       task = identity.fetch("task_id")
       raise Refused, "selection.task" unless task.is_a?(String) && task.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       task_root = File.join(@root, task)
@@ -147,17 +158,20 @@ module AgentCodingTool
       context = self.class.task_context(@data, task)
       task_root = File.join(@root, task)
       entries = !File.exist?(task_root) ? [] : children(task_root)
-      raise Refused, "selection.offset" if offset > entries.length
-      runs = entries.slice(offset, 16).map do |entry|
+      external = ExternalFollowup.new(@data).discover(task)
+      total = entries.length + external.length
+      raise Refused, "selection.offset" if offset > total
+      runs = entries.map do |entry|
         report = self.class.parse(self.class.bytes(File.join(task_root, entry, "handoff.json"), root: @root))
         identity = report.slice(*RunEvidenceReader::IDENTITIES)
         raise Refused, "selection.foreign" unless report["task_id"] == task && report["schema_version"] == "agent-coding-tool-run/v1" &&
           identity["attempt"].is_a?(Integer) && identity["attempt"].positive? &&
           %w[invocation_id session_id].all? { |key| report[key].nil? || report[key].is_a?(String) && report[key].match?(/\A[A-Za-z0-9_-]{1,128}\z/) }
-        identity.merge("status" => identity["session_id"] ? "available" : "pending")
+        identity.merge("evidence_source" => "act_managed", "status" => identity["session_id"] ? "available" : "pending")
       end
+      runs = (runs + external).slice(offset, 16)
       { "task_id" => task, "context" => context, "runs" => runs,
-        "next_offset" => offset + runs.length < entries.length ? offset + runs.length : nil }
+        "next_offset" => offset + runs.length < total ? offset + runs.length : nil }
     end
 
     # Host-owned import of one explicit worker package from the launch-recorded

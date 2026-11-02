@@ -131,7 +131,7 @@ module AgentCodingTool
         @stage = "reader.dispatch"
         begin
           evidence = @session.call(params["arguments"], wait: LOCK_WAIT)
-          @release_request = evidence.delete("_release") || (evidence["handle"] && evidence.fetch("binding").slice(*RunEvidenceReader::IDENTITIES).merge("handle" => evidence["handle"]))
+          @release_request = evidence.delete("_release") || (evidence["handle"] && evidence.fetch("binding").slice(*RunEvidenceReader.identity_fields(evidence.fetch("binding"))).merge("handle" => evidence["handle"]))
           @evidence = evidence
           { "content" => [{ "type" => "text", "text" => JSON.generate(evidence) }], "isError" => false }
         rescue RunEvidenceReader::Refused

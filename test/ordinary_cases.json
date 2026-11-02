@@ -286,6 +286,7 @@
   },
   "test/run_evidence_test.rb": {
     "RunEvidenceTest#test_shared_oversized_transcript_chunks_and_source_refusals": [],
+    "RunEvidenceTest#test_external_oversized_final_is_truncated_and_hashed": [],
     "RunEvidenceTest#test_modern_transport_and_lossless_artifacts": [],
     "RunEvidenceTest#test_metadata_refusals_and_duplicate_json": [],
     "RunEvidenceTest#test_business_refusals": [],

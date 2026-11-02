@@ -182,6 +182,8 @@ module AgentCodingTool
     def evidence_command(argv)
       action = argv.shift
       return register_evidence_command(argv) if action == "register"
+      return capture_followup_command(argv) if action == "capture"
+      return register_followup_command(argv) if action == "register-followup"
       require_relative "evidence_tunnel" if action == "open"
       options = {}
       parser = OptionParser.new do |opts|
@@ -253,6 +255,48 @@ module AgentCodingTool
       end
       detail = error.is_a?(RunEvidenceReader::Refused) && error.message == "session.busy" ? " (session.busy)" : ""
       @err.puts "ERROR: evidence session refused#{detail}; check private grant, exact run identity and session status"
+      2
+    end
+
+    # Explicitly wraps one independently launched codex exec, then registers its
+    # captured bytes for the named task. The child never receives ACT authority.
+    def capture_followup_command(argv)
+      separator = argv.index("--")
+      raise RunEvidenceReader::Refused, "followup.command" unless separator && separator.positive?
+      options, command = argv.take(separator), argv.drop(separator + 1)
+      parser = OptionParser.new do |opts|
+        opts.on("--task TASK") { |value| @followup_task = value }
+      end
+      parser.require_exact = true
+      parser.parse!(options)
+      raise RunEvidenceReader::Refused, "followup.fields" unless options.empty? && @followup_task && command.any?
+      status = ExternalFollowup.new(@data_root).capture(@followup_task, command, out: @out, err: @err)
+      status&.exitstatus || (status&.termsig && 128 + status.termsig) || 2
+    rescue RunEvidenceReader::Refused, SystemCallError, OptionParser::ParseError
+      @err.puts "ERROR: follow-up capture refused; check task, codex exec argv, private storage and capture receipt."
+      2
+    ensure
+      @followup_task = nil
+    end
+
+    # Publishes an interrupted capture only after its exact receipt digest and
+    # private task-bound source have been verified.
+    def register_followup_command(argv)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--task TASK") { |value| options["task"] = value }
+        opts.on("--invocation ID") { |value| options["invocation"] = value }
+        opts.on("--sha256 HASH") { |value| options["sha256"] = value }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      raise RunEvidenceReader::Refused, "followup.fields" unless argv.empty? && options.keys.sort == %w[invocation sha256 task]
+      result = ExternalFollowup.new(@data_root).register(options.fetch("task"), options.fetch("invocation"), options.fetch("sha256"))
+      @out.puts JSON.generate("task_id" => result.fetch("task_id"), "source" => result.fetch("source"),
+        "invocation_id" => result.fetch("invocation_id"), "capture_status" => result.fetch("status"), "outcome" => result.fetch("outcome"))
+      0
+    rescue RunEvidenceReader::Refused, SystemCallError, OptionParser::ParseError
+      @err.puts "ERROR: follow-up registration refused; check task, exact invocation, receipt digest and completed capture."
       2
     end
 
@@ -1855,6 +1899,10 @@ module AgentCodingTool
           evidence register --task TASK --attempt N --invocation ID --codex-session ID
                               --package PATH --sha256 SHA
                               host copy from the exact recorded fixture; worker claims, not acceptance
+          evidence capture --task TASK -- codex exec ...
+                              bounded local follow-up capture and exact task registration
+          evidence register-followup --task TASK --invocation ID --sha256 SHA
+                              recover one interrupted local follow-up capture
           apply FILE.json     review a patch; separately confirm apply, validation and local commit
                               terminal consent required; each defaults to no; no publication
                               baseline drift/unrelated untracked files warn; later changes refuse

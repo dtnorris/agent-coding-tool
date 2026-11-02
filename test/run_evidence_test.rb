@@ -46,6 +46,27 @@ class RunEvidenceTest < Minitest::Test
     path
   end
 
+  # Resolves a disposable owned Codex stand-in without consulting the host PATH.
+  def fake_codex_path
+    path = File.join(@temporary, "fake-codex")
+    FileUtils.cp(File.join(ChildProcesses::FIXTURES, "fake_codex.rb"), path)
+    File.chmod(0o700, path)
+    File.realpath(path)
+  end
+
+  # Runs the repository-owned Codex stand-in under the exact native test permit.
+  def run_fake_codex(followup, executable, argv, pipes)
+    raise "wrong fake executable" unless argv.first == executable
+    approval = ChildProcesses.permit("fake_codex", arguments: argv.drop(1), options: { pgroup: true })
+    pid = NoGitExecution.with_permit(approval) do
+      Process.spawn(approval.environment, *approval.argv, **approval.options, out: pipes.fetch(:out), err: pipes.fetch(:err))
+    end
+    followup.instance_variable_set(:@writer_pid, pid)
+    _, status = Process.wait2(pid)
+    followup.instance_variable_set(:@writer_pid, nil)
+    status
+  end
+
   # Creates one distinct managed run plus optional current checkpoint/failed gate.
   # Returns exact public identity, run path and original bytes for host oracles.
   def write_run(number, checkpoint: true, status: "exited")
@@ -116,7 +137,7 @@ class RunEvidenceTest < Minitest::Test
 
   # Builds a complete closed read request bound to one manifest.
   def read_request(manifest, artifact = "final", offset: 0, length: 16_384)
-    manifest.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES).merge(
+    manifest.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader.identity_fields(manifest.fetch("binding"))).merge(
       "operation" => "read", "handle" => manifest.fetch("handle"), "revision" => manifest.fetch("revision"),
       "artifact" => artifact, "offset" => offset, "length" => length)
   end
@@ -328,6 +349,182 @@ class RunEvidenceTest < Minitest::Test
     File.unlink(File.join(pending[:run], "stderr.txt"))
     fresh = select(pending)
     assert_equal "missing", tool(read_request(fresh, "stderr"))["status"]
+  end
+
+  # Preserves an oversized final message as a bounded, hashed prefix.
+  def test_external_oversized_final_is_truncated_and_hashed
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE"))
+    followup = AgentCodingTool::ExternalFollowup.new(@data)
+    executable = fake_codex_path
+    followup.define_singleton_method(:resolve_codex) { [executable, executable_facts(executable)] }
+    status = Struct.new(:exitstatus, :termsig) { def signaled? = !termsig.nil? }.new(0, nil)
+    capture_final = lambda do |final|
+      followup.define_singleton_method(:run_process) do |argv, pipes|
+        pipes.fetch(:out).write("stdout")
+        pipes.fetch(:err).write("stderr")
+        File.binwrite(argv.fetch(4), final)
+        status
+      end
+      output = StringIO.new
+      followup.capture("FIXTURE", ["codex", "exec", "fixture"], out: output, err: StringIO.new)
+      JSON.parse(output.string.lines.last)
+    end
+    maximum = AgentCodingTool::RunEvidenceReader::MAX_FILE
+    exact = "x".b * maximum
+    boundary = capture_final.call(exact)
+    boundary_identity = boundary.slice("task_id", "invocation_id").merge("source" => "external_codex_cli")
+    boundary_config = AgentCodingTool::RunEvidenceStore.new(@data).select(boundary_identity,
+      artifacts: ["final"], manager: "fixture", shared: true)
+    boundary_spec = boundary_config.fetch("approvals").fetch("final")
+    assert_equal "complete", boundary_spec.fetch("status")
+    assert_equal maximum, boundary_spec.fetch("bytes")
+    assert_equal Digest::SHA256.hexdigest(exact), boundary_spec.fetch("sha256")
+
+    failed_status = Struct.new(:exitstatus, :termsig) { def signaled? = !termsig.nil? }.new(9, nil)
+    followup.define_singleton_method(:run_process) do |_argv, pipes|
+      pipes.fetch(:out).write("available stdout")
+      pipes.fetch(:err).write("available stderr")
+      failed_status
+    end
+    missing_output = StringIO.new
+    followup.capture("FIXTURE", ["codex", "exec", "missing final"], out: missing_output, err: StringIO.new)
+    missing_receipt = JSON.parse(missing_output.string.lines.last)
+    missing_identity = missing_receipt.slice("task_id", "invocation_id").merge("source" => "external_codex_cli")
+    missing_config = AgentCodingTool::RunEvidenceStore.new(@data).select(missing_identity,
+      artifacts: ["final"], manager: "fixture", shared: true)
+    assert_equal "missing", missing_config.dig("approvals", "final", "status")
+    assert_equal "exited", missing_receipt.fetch("outcome")
+    assert_equal 9, missing_receipt.fetch("exit_status")
+
+    oversized = "x".b * (maximum + 1)
+    receipt = capture_final.call(oversized)
+    identity = receipt.slice("task_id", "invocation_id").merge("source" => "external_codex_cli")
+    config = AgentCodingTool::RunEvidenceStore.new(@data).select(identity, artifacts: ["final"], manager: "fixture", shared: true)
+    spec = config.fetch("approvals").fetch("final")
+    retained = "x".b * maximum
+    assert_equal "truncated", spec.fetch("status")
+    assert_equal retained.bytesize, spec.fetch("bytes")
+    assert_equal Digest::SHA256.hexdigest(retained), spec.fetch("sha256")
+    assert_equal retained, File.binread(spec.fetch("path"))
+  end
+
+  # Exercises interrupt recovery only with a guarded live test-owned child.
+  def test_native_external_followup_waits_for_interrupted_child_termination
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE"))
+    share_path = File.join(@temporary, "followup-sharing")
+    grant = @grant.merge("schema" => "agent-coding-tool-task-sharing/v2", "session_path" => share_path, "tasks" => [])
+    AgentCodingTool::EvidenceSession.start(share_path, write_json(File.join(@temporary, "followup-grant.json"), grant))
+    @session = AgentCodingTool::EvidenceSession.new(share_path)
+    @session.sharing_ready
+    @session.share_task("FIXTURE", seconds: 60)
+    @adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
+    executable = fake_codex_path
+    bin = File.join(@temporary, "codex-bin")
+    Dir.mkdir(bin, 0o700)
+    FileUtils.cp(executable, File.join(bin, "codex"))
+    File.chmod(0o700, File.join(bin, "codex"))
+    previous_path = ENV["PATH"]
+    ENV["PATH"] = bin
+    followup = AgentCodingTool::ExternalFollowup.new(@data)
+    unregistered_final = File.join(@temporary, "unregistered-final")
+    direct_out, direct_err, direct_status = ChildProcesses.capture("fake_codex",
+      arguments: ["exec", "--json", "--output-last-message", unregistered_final], seconds: 5)
+    assert direct_status.success?, direct_err.inspect
+    assert_equal "fake codex stdout\x80".b, direct_out.b
+    assert_equal "fake final\x00\xff".b, File.binread(unregistered_final)
+    before_registration = tool({ "operation" => "discover", "task_id" => "FIXTURE" }).fetch("tasks").first.fetch("runs")
+    assert_equal ["act_managed"], before_registration.map { |run| run.fetch("evidence_source") }
+    assert @adapter.dispatch(rpc("tools/call", { "operation" => "select", "task_id" => "FIXTURE",
+      "invocation_id" => "external-#{'f' * 32}" })).dig("result", "isError")
+    pidfile = File.join(@temporary, "fake-codex.pid")
+    output = StringIO.new
+    spawned_pid = nil
+    child_reaped = false
+    runner = lambda do |argv, pipes|
+      run_fake_codex(followup, File.realpath(File.join(bin, "codex")), argv, pipes)
+    end
+    followup.define_singleton_method(:run_process) { |argv, pipes| runner.call(argv, pipes) }
+    successful_output = StringIO.new
+    status = followup.capture("FIXTURE", ["codex", "exec", "--fixture-exit=9"], out: successful_output, err: StringIO.new)
+    assert_equal 9, status.exitstatus
+    complete_receipt = JSON.parse(successful_output.string.lines.last)
+    complete_identity = complete_receipt.slice("task_id", "invocation_id").merge("source" => "external_codex_cli")
+    complete_config = followup.select(complete_identity, artifacts: %w[final transcript stderr], manager: "fixture")
+    complete_reader = AgentCodingTool::RunEvidenceReader.new(**complete_config.transform_keys(&:to_sym))
+    complete_manifest = complete_reader.call(complete_identity.slice("task_id", "invocation_id").merge(
+      "operation" => "manifest", "revision" => nil), caller: "fixture")
+    { "final" => "fake final\x00\xff".b, "transcript" => "fake codex stdout\x80".b,
+      "stderr" => "fake codex stderr\x00".b }.each do |artifact, source_bytes|
+      response = complete_reader.call(complete_identity.slice("task_id", "invocation_id").merge(
+        "operation" => "read", "revision" => complete_manifest.fetch("revision"), "artifact" => artifact,
+        "offset" => 0, "length" => 1024), caller: "fixture")
+      assert_equal source_bytes, response.fetch("data").unpack1("m0")
+      assert_equal Digest::SHA256.hexdigest(source_bytes), response.fetch("sha256")
+    end
+    capture_thread = Thread.new do
+      followup.capture("FIXTURE", ["codex", "exec", "--fixture-pidfile=#{pidfile}"], out: output, err: StringIO.new)
+    end
+    Timeout.timeout(5) { sleep 0.01 until File.file?(pidfile) }
+    child_pid = Integer(File.read(pidfile))
+    spawned_pid = followup.instance_variable_get(:@writer_pid)
+    assert_equal child_pid, spawned_pid
+    capture_thread.raise(Interrupt, "owned test interruption")
+    assert_nil capture_thread.value
+    receipt = JSON.parse(output.string.lines.last)
+    assert_equal "pending", receipt.fetch("capture_status")
+    assert_equal "unknown", receipt.fetch("outcome")
+    source = File.join(@data + "-followups", "captures", "FIXTURE", receipt.fetch("invocation_id").delete_prefix("external-"))
+    pending = JSON.parse(File.binread(File.join(source, "capture.json")))
+    assert_equal child_pid, pending.fetch("writer_pid")
+    error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("FIXTURE", receipt.fetch("invocation_id"), receipt.fetch("receipt_sha256"))
+    end
+    assert_equal "followup.writer_active", error.message
+    retained_record = File.binread(File.join(source, "capture.json"))
+    uncertain = JSON.parse(retained_record).merge("writer_pid" => "uncertain")
+    File.binwrite(File.join(source, "capture.json"), JSON.generate(uncertain))
+    unknown_sha = Digest::SHA256.file(File.join(source, "capture.json")).hexdigest
+    error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("FIXTURE", receipt.fetch("invocation_id"), unknown_sha)
+    end
+    assert_equal "followup.writer_unknown", error.message
+    File.binwrite(File.join(source, "capture.json"), retained_record)
+    visible = followup.discover("FIXTURE").map { |run| run.fetch("invocation_id") }
+    assert_equal [complete_receipt.fetch("invocation_id")], visible
+    assert_equal 1, Process.kill("TERM", child_pid)
+    assert_equal child_pid, Process.waitpid(child_pid)
+    child_reaped = true
+    registered = followup.register("FIXTURE", receipt.fetch("invocation_id"), receipt.fetch("receipt_sha256"))
+    assert_equal "incomplete", registered.fetch("status")
+    assert_equal "unknown", registered.fetch("outcome")
+    discovered = followup.discover("FIXTURE").find { |run| run.fetch("invocation_id") == receipt.fetch("invocation_id") }
+    refute_nil discovered
+    assert_equal "external_codex_cli", discovered.fetch("evidence_source")
+    assert_equal "unknown", discovered.fetch("outcome")
+    assert_nil discovered.fetch("exit_status")
+    config = followup.select(discovered.slice("task_id", "source", "invocation_id"),
+      artifacts: %w[final transcript stderr], manager: "fixture")
+    manifest = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(
+      discovered.slice("task_id", "invocation_id").merge("operation" => "manifest", "revision" => nil), caller: "fixture")
+    assert_equal "pending", manifest.dig("artifacts", "transcript", "status")
+    assert_equal Digest::SHA256.hexdigest("fake codex stdout\x80".b), manifest.dig("artifacts", "transcript", "sha256")
+    response = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(
+      discovered.slice("task_id", "invocation_id").merge("operation" => "read", "revision" => manifest.fetch("revision"),
+        "artifact" => "transcript", "offset" => 0, "length" => 1024), caller: "fixture")
+    assert_equal "fake codex stdout\x80".b, response.fetch("data").unpack1("m0")
+  ensure
+    ENV["PATH"] = previous_path if defined?(previous_path)
+    owned_pid = spawned_pid || followup&.instance_variable_get(:@writer_pid)
+    if owned_pid && !child_reaped
+      begin
+        Process.kill("TERM", owned_pid)
+        Process.waitpid(owned_pid)
+      rescue Errno::ESRCH, Errno::ECHILD
+      end
+    end
+    capture_thread&.join(5)
   end
 
   # Regular Finder metadata in either inventory leaves exact run/checkpoint
@@ -686,6 +883,172 @@ class RunEvidenceTest < Minitest::Test
     pending = select(second)
     assert_equal "pending", pending.dig("artifacts", "final", "status")
     assert_equal "codex-1", tool(read_request(manifest)).dig("binding", "session_id")
+
+    # Deterministic fake Codex children exercise actual capture, durable host
+    # registration, refresh, exact selection and bounded binary reader paths.
+    followup = AgentCodingTool::ExternalFollowup.new(@data)
+    executable = fake_codex_path
+    followup.define_singleton_method(:resolve_codex) { [executable, executable_facts(executable)] }
+    fake_status = Struct.new(:exitstatus, :termsig) do
+      def signaled? = !termsig.nil?
+    end
+    sources = []
+    captures = []
+    [0, 9].each_with_index do |exit_code, index|
+      final = ("final-#{index}\x00\xff".b + "f" * 17_000)
+      stdout, stderr = "stdout-#{index}\x80".b, "stderr-#{index}\x00".b
+      sources << { "final" => final, "transcript" => stdout, "stderr" => stderr }
+      captured_out = StringIO.new
+      followup.define_singleton_method(:run_process) do |argv, pipes|
+        raise "capture identity was not emitted before launch" if captured_out.string.empty?
+        pipes.fetch(:out).write(stdout)
+        pipes.fetch(:err).write(stderr)
+        File.binwrite(argv[4], final)
+        fake_status.new(exit_code, nil)
+      end
+      status = followup.capture("FIXTURE", ["codex", "exec", "fixture prompt"], out: captured_out, err: StringIO.new)
+      assert_equal exit_code, status.exitstatus
+      capture_lines = captured_out.string.lines.map { |line| JSON.parse(line) }
+      assert_equal "pending", capture_lines.first.fetch("capture_status")
+      captures << capture_lines.last
+      identity = captures.last.slice("task_id", "invocation_id")
+      assert_equal %w[invocation_id operation task_id], identity.merge("operation" => "select").keys.sort
+      refute AgentCodingTool::EvidenceAdapter.schema.fetch("properties").key?("source")
+      manifest = tool(identity.merge("operation" => "select"))
+      assert_equal "external_codex_cli", manifest.dig("binding", "source")
+      %w[final transcript stderr].each do |artifact|
+        entry = manifest.dig("artifacts", artifact)
+        assert_equal Digest::SHA256.hexdigest(sources.last.fetch(artifact)), entry.fetch("sha256")
+        assert_equal sources.last.fetch(artifact).bytesize, entry.fetch("bytes")
+        chunk = tool(read_request(manifest, artifact))
+        data = chunk.fetch("data").unpack1("m0")
+        if chunk["next_offset"]
+          chunk = tool(read_request(manifest, artifact, offset: chunk.fetch("next_offset")))
+          data << chunk.fetch("data").unpack1("m0")
+        end
+        assert_equal sources.last.fetch(artifact), data
+      end
+      assert_equal exit_code, tool(read_request(manifest))["worker_exit_status"]
+      if index.zero?
+        @pinned_followup = manifest
+      else
+        pinned = tool(read_request(@pinned_followup))
+        pinned_data = pinned.fetch("data").unpack1("m0")
+        if pinned["next_offset"]
+          pinned = tool(read_request(@pinned_followup, "final", offset: pinned.fetch("next_offset")))
+          pinned_data << pinned.fetch("data").unpack1("m0")
+        end
+        assert_equal sources.first.fetch("final"), pinned_data
+      end
+    end
+    @adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
+    refreshed = tool({ "operation" => "refresh", "task_id" => "FIXTURE" }).fetch("tasks").first
+    assert_equal 4, refreshed.fetch("runs").length
+    assert_equal %w[act_managed act_managed external_codex_cli external_codex_cli], refreshed.fetch("runs").map { |run| run.fetch("evidence_source") }
+    failed = refreshed.fetch("runs").find { |run| run["invocation_id"] == captures.last.fetch("invocation_id") }
+    assert_equal "exited", failed.fetch("outcome")
+    assert_equal 9, failed.fetch("exit_status")
+    external_request = { "operation" => "select", "task_id" => "FIXTURE", "invocation_id" => captures.first.fetch("invocation_id") }
+    assert @adapter.dispatch(rpc("tools/call", external_request.merge("source" => "external_codex_cli"))).dig("result", "isError")
+    handoff_path = File.join(@first.fetch(:run), "handoff.json")
+    original_handoff = File.binread(handoff_path)
+    handoff = JSON.parse(original_handoff)
+    handoff["invocation_id"] = captures.first.fetch("invocation_id")
+    write_json(handoff_path, handoff)
+    assert @adapter.dispatch(rpc("tools/call", external_request)).dig("result", "isError")
+    File.binwrite(handoff_path, original_handoff)
+    assert @adapter.dispatch(rpc("tools/call", { "operation" => "select", "task_id" => "FIXTURE",
+      "invocation_id" => "external-#{'0' * 32}" })).dig("result", "isError")
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("FIXTURE", captures.first.fetch("invocation_id"), captures.first.fetch("receipt_sha256"))
+    end
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("OTHER", captures.first.fetch("invocation_id"), captures.first.fetch("receipt_sha256"))
+    end
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("FIXTURE", captures.first.fetch("invocation_id"), "0" * 64)
+    end
+    stale_output = "stale source bytes".b
+    followup.define_singleton_method(:run_process) do |argv, pipes|
+      pipes.fetch(:out).write("out".b)
+      pipes.fetch(:err).write("err".b)
+      File.binwrite(argv[4], "final".b)
+      fake_status.new(0, nil)
+    end
+    stale_console = StringIO.new
+    followup.capture("FIXTURE", ["codex", "exec", "fixture"], out: stale_console, err: StringIO.new)
+    stale_identity = JSON.parse(stale_console.string.lines.last)
+    stale_directory = File.join(@data + "-followups", "captures", "FIXTURE", stale_identity.fetch("invocation_id").delete_prefix("external-"))
+    FileUtils.remove_entry(File.join(@data + "-followups", "registrations", "FIXTURE", stale_identity.fetch("invocation_id")))
+    File.binwrite(File.join(stale_directory, "final"), stale_output)
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+      followup.register("FIXTURE", stale_identity.fetch("invocation_id"), stale_identity.fetch("receipt_sha256"))
+    end
+    symlink_console = StringIO.new
+    followup.capture("FIXTURE", ["codex", "exec", "fixture"], out: symlink_console, err: StringIO.new)
+    symlink_identity = JSON.parse(symlink_console.string.lines.last)
+    symlink_source = File.join(@data + "-followups", "captures", "FIXTURE", symlink_identity.fetch("invocation_id").delete_prefix("external-"))
+    symlink_registration = File.join(@data + "-followups", "registrations", "FIXTURE", symlink_identity.fetch("invocation_id"))
+    FileUtils.remove_entry(symlink_registration)
+    outside = File.join(@temporary, "followup-outside")
+    File.binwrite(outside, "foreign source", perm: 0o600)
+    stream_path = File.join(symlink_source, "gate-external.stdout")
+    File.rename(stream_path, "#{stream_path}.saved")
+    begin
+      File.symlink(outside, stream_path)
+      assert_raises(AgentCodingTool::RunEvidenceReader::Refused) do
+        followup.register("FIXTURE", symlink_identity.fetch("invocation_id"), symlink_identity.fetch("receipt_sha256"))
+      end
+    ensure
+      File.unlink(stream_path)
+      File.rename("#{stream_path}.saved", stream_path)
+    end
+    incomplete = File.join(@data + "-followups", "registrations", "FIXTURE", ".incomplete.tmp")
+    Dir.mkdir(incomplete, 0o700)
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { followup.discover("FIXTURE") }
+    FileUtils.remove_entry(incomplete)
+    recovery_out = StringIO.new
+    followup.define_singleton_method(:run_process) do |argv, pipes|
+      pipes.fetch(:out).write("recovered stdout".b)
+      pipes.fetch(:err).write("recovered stderr".b)
+      File.binwrite(argv[4], "recovered final".b)
+      fake_status.new(0, nil)
+    end
+    followup.capture("FIXTURE", ["codex", "exec", "fixture"], out: recovery_out, err: StringIO.new)
+    pending_receipt, finished_receipt = recovery_out.string.lines.map { |line| JSON.parse(line) }
+    recovery_source = File.join(@data + "-followups", "captures", "FIXTURE", pending_receipt.fetch("invocation_id").delete_prefix("external-"))
+    finished_record = JSON.parse(File.binread(File.join(recovery_source, "capture.json")))
+    started_record = finished_record.slice("schema", "task_id", "invocation_id", "executable", "started_at")
+      .merge("status" => "pending", "outcome" => "unknown", "exit_status" => nil, "signal" => nil)
+    File.binwrite(File.join(recovery_source, "capture.json"), JSON.generate(started_record))
+    FileUtils.remove_entry(File.join(@data + "-followups", "registrations", "FIXTURE", pending_receipt.fetch("invocation_id")))
+    recovery_cli_out, recovery_cli_err = StringIO.new, StringIO.new
+    assert_equal 0, AgentCodingTool::CLI.run(["evidence", "register-followup", "--task", "FIXTURE",
+      "--invocation", pending_receipt.fetch("invocation_id"), "--sha256", pending_receipt.fetch("receipt_sha256")],
+      data_root: @data, out: recovery_cli_out, err: recovery_cli_err)
+    recovered = JSON.parse(recovery_cli_out.string)
+    assert_equal "incomplete", recovered.fetch("capture_status")
+    assert_equal "unknown", recovered.fetch("outcome")
+    assert_equal finished_receipt.fetch("invocation_id"), recovered.fetch("invocation_id")
+    cli_status = Struct.new(:exitstatus, :termsig).new(9, nil)
+    cli_capture = Object.new
+    cli_capture.define_singleton_method(:capture) do |task, command, out:, err:|
+      raise "wrong task" unless task == "FIXTURE"
+      raise "wrong codex argv" unless command == ["codex", "exec", "--sandbox", "workspace-write", "follow-up"]
+      cli_status
+    end
+    cli_out, cli_err = StringIO.new, StringIO.new
+    cli_result = nil
+    AgentCodingTool::ExternalFollowup.stub(:new, cli_capture) do
+      cli_result = AgentCodingTool::CLI.run(%w[evidence capture --task FIXTURE -- codex exec --sandbox workspace-write follow-up],
+        data_root: @data, out: cli_out, err: cli_err)
+      assert_equal 2, AgentCodingTool::CLI.run(%w[evidence capture --task FIXTURE codex exec follow-up],
+        data_root: @data, out: cli_out, err: cli_err)
+    end
+    assert_equal 9, cli_result
+    FileUtils.remove_entry(File.join(@data + "-followups", "registrations", "FIXTURE", captures.first.fetch("invocation_id")))
+    assert @adapter.dispatch(rpc("tools/call", captures.first.slice("task_id", "invocation_id").merge("operation" => "select")))
+      .dig("result", "isError")
     receipt_path = File.join(directory, "gate-0001.finished.json")
     write_json(receipt_path, original.merge("invocation_id" => "foreign-invocation"))
     refused = @adapter.dispatch(rpc("tools/call", @first[:identity].merge("operation" => "select")))

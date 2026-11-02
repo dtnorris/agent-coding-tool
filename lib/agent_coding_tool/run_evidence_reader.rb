@@ -16,6 +16,21 @@ module AgentCodingTool
     ARTIFACTS = %w[final transcript stderr checkpoint candidate validation validation_output].freeze
     CONTEXT_ARTIFACTS = %w[prompt launch_input].freeze
     IDENTITIES = %w[task_id attempt invocation_id session_id].freeze
+    EXTERNAL_IDENTITIES = %w[task_id invocation_id].freeze
+
+    # Returns closed identity fields; external IDs never claim Codex sessions.
+    def self.identity_fields(binding)
+      binding["source"] == "external_codex_cli" ? EXTERNAL_IDENTITIES : IDENTITIES
+    end
+
+    # Resolves the installed public identity shape without accepting a source
+    # selector. Only an external invocation namespace can use its smaller shape.
+    def self.request_identity_fields(request)
+      external = request["source"].nil? && !request.key?("attempt") && !request.key?("session_id") &&
+        request["invocation_id"].is_a?(String) && request["invocation_id"].match?(/\Aexternal-[0-9a-f]{32}\z/)
+      external ? EXTERNAL_IDENTITIES : IDENTITIES
+    end
+
     MAX_FILE = 4 * 1024 * 1024
     MAX_CHUNK = 16 * 1024
     MAX_TRANSCRIPT = 64 * 1024 * 1024
@@ -129,12 +144,13 @@ module AgentCodingTool
         refuse!("caller mismatch") unless caller == @manager
         refuse!("invalid request") unless request.is_a?(Hash)
         operation = request["operation"]
-        allowed = IDENTITIES + %w[operation revision]
+        identities = self.class.identity_fields(@binding)
+        allowed = identities + %w[operation revision]
         allowed += %w[artifact offset length] if operation == "read"
         allowed += ["offset"] if @paged && operation == "manifest" && request.key?("offset")
         refuse!("unsupported operation or fields") unless %w[manifest read].include?(operation) &&
           (request.keys - allowed).empty? && (allowed - request.keys).empty?
-        refuse!("run identity mismatch") unless IDENTITIES.all? { |key| request[key] == @binding.fetch(key) }
+        refuse!("run identity mismatch") unless identities.all? { |key| request[key] == @binding.fetch(key) }
         # Initial manifest obtains the revision; all reads must present it.
         refuse!("stale revision") unless request["revision"] == @revision ||
           (operation == "manifest" && request["revision"].nil?)
@@ -143,6 +159,13 @@ module AgentCodingTool
           "observed_at" => Time.now.utc.iso8601(6), "handoff_sha256" => @handoff_sha256,
           "launch_status" => report["status"], "worker_exit_status" => report["exit_status"],
           "validation_assurance" => "recorded evidence only; not independently validated" }
+        metadata["evidence_source"] = @binding.fetch("source", "act_managed")
+        if @binding["source"] == "external_codex_cli"
+          metadata.delete("handoff_sha256")
+          metadata.delete("launch_status")
+          metadata.merge!("registration_sha256" => @handoff_sha256, "capture_status" => report["status"],
+            "worker_signal" => report["signal"], "outcome" => report["outcome"])
+        end
         if operation == "manifest"
           offset = request.fetch("offset", 0)
           refuse!("invalid manifest offset") unless offset.is_a?(Integer) && offset.between?(0, @approvals.length)
@@ -216,6 +239,11 @@ module AgentCodingTool
     # Rechecks the immutable approved handoff and its launch provenance. Missing
     # session binding refuses; current workspace state is not inferred from it.
     def report!
+      if @binding["source"] == "external_codex_cli"
+        report = RunEvidenceStore.parse(bytes!(File.join(@run_dir, "registration.json"), @run_dir, @handoff_sha256))
+        ExternalFollowup.validate_record(report, @binding)
+        return report
+      end
       report = JSON.parse(bytes!(File.join(@run_dir, "handoff.json"), @run_dir, @handoff_sha256))
       authority = { "pushed_sha" => @binding.fetch("base_sha"),
         "remote_url" => @binding.fetch("remote_url"), "branch" => @binding.fetch("branch") }
@@ -249,6 +277,12 @@ module AgentCodingTool
     # supplies the worker binding. Raw receipt output/status is never rewritten.
     def artifact!(name, report)
       spec = @approvals.fetch(name)
+      if @binding["source"] == "external_codex_cli"
+        recorded = report.fetch("files").fetch(name)
+        refuse!("external artifact binding") unless recorded == spec.reject { |key, _| key == "path" } &&
+          spec["path"] == File.join(@run_dir, name)
+        return bytes!(spec.fetch("path"), @run_dir, spec.fetch("sha256"))
+      end
       return transcript!(report) if name == "transcript" && spec["streamed"]
       if name.start_with?("validation_result:")
         receipt = JSON.parse(artifact!(spec.fetch("receipt"), report))

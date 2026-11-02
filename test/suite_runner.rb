@@ -112,6 +112,10 @@ module TestSuiteRunner
                       "ACT_SUITE_BATCHED" => paths.length > 1 && !selected ? "1" : nil,
                       "ACT_TEST_CODING_SKILL" => nil, "ACT_SUITE_INVOCATION" => invocation,
                       "ACT_SUITE_SELECTION" => selection, "ACT_SUITE_PROGRESS" => progress_path }
+      # CI checkout helpers and operator shells may export repository-affecting
+      # Git overrides. Test children start without ambient Git configuration;
+      # refusal contracts add the exact hostile variable they exercise.
+      ENV.each_key { |key| environment[key] = nil if key.start_with?("GIT_") }
       record = nil
       if feedback
         additions, record = TestFeedback.child(feedback, paths, required_cases)

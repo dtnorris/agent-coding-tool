@@ -8,6 +8,7 @@ class ProgressFixture < Minitest::Test
   # Cannot finish successfully until the parent has displayed its active name.
   # The finite deadline makes a disconnected progress handoff fail, not hang.
   def test_live
+    refute ENV.key?("GIT_WORK_TREE"), "suite child inherited ambient Git redirection"
     release = ENV.fetch("ACT_PROGRESS_FIXTURE_RELEASE")
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 4
     until File.file?(release) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline

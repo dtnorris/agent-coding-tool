@@ -42,9 +42,11 @@ class ProgressContract < Minitest::Test
   def test_live_redirected_progress_before_child_exit
     original_out, original_err = $stdout, $stderr
     old_release = ENV["ACT_PROGRESS_FIXTURE_RELEASE"]
+    old_git_work_tree = ENV["GIT_WORK_TREE"]
     Dir.mktmpdir("act-progress-proof-") do |directory|
       release = File.join(directory, "release")
       ENV["ACT_PROGRESS_FIXTURE_RELEASE"] = release
+      ENV["GIT_WORK_TREE"] = "/untrusted/ambient"
       output, diagnostic = StringIO.new("".b), LiveOutput.new(release)
       $stdout, $stderr = output, diagnostic
       assert run_fixture("test_live")
@@ -53,13 +55,14 @@ class ProgressContract < Minitest::Test
       assert_includes diagnostic.string, "0/1 tests completed; 1 remaining"
       assert_includes diagnostic.string, "running ProgressFixture#test_live"
       assert_includes diagnostic.string, "1/1 tests; seed"
-      assert_includes output.string, "1 runs, 1 assertions, 0 failures"
+      assert_includes output.string, "1 runs, 2 assertions, 0 failures"
       refute_includes output.string, "--name"
       refute_includes diagnostic.string, "ACT complete offline acceptance: PASS"
     end
   ensure
     $stdout, $stderr = original_out, original_err
     ENV["ACT_PROGRESS_FIXTURE_RELEASE"] = old_release
+    ENV["GIT_WORK_TREE"] = old_git_work_tree
   end
 
   # Exact failing status and binary streams survive presentation; skips and

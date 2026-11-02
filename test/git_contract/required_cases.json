@@ -21,7 +21,8 @@
   "test/git_contract/retry_recovery_contract.rb": [
     "RetryRecoveryContract#test_terminal_outcome_decisions_use_native_ownership_observations",
     "RetryRecoveryContract#test_tampered_artifacts_and_closeout_refuse_without_mutation",
-    "RetryRecoveryContract#test_ownership_delivery_candidate_and_changed_state_refusals"
+    "RetryRecoveryContract#test_ownership_delivery_candidate_and_changed_state_refusals",
+    "RetryRecoveryContract#test_missing_result_and_removed_closeout_handoff_refuse_retry"
   ],
   "test/git_contract/native_contract.rb": [
     "NativeGitContract#test_immutable_skill_object_read",

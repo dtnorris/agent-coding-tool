@@ -511,7 +511,8 @@
       "AttemptRecoveryTest#test_hard_reset_multiple_attempts_native_retirement_and_fresh_binding",
       "AttemptRecoveryTest#test_hard_reset_legacy_owned_layout_without_rewriting_history",
       "AttemptRecoveryTest#test_hard_reset_unsafe_progress_and_archive_tampering_refuse",
-      "AttemptRecoveryTest#test_hard_reset_manual_reservations_do_not_become_inactive_by_declaration"
+      "AttemptRecoveryTest#test_hard_reset_manual_reservations_do_not_become_inactive_by_declaration",
+      "AttemptRecoveryTest#test_reset_lsof_observations_do_not_launch_status_children"
     ],
     "test/integration/checkpoint_git_integration.rb": [
       "CheckpointTest#test_exempt_gate_receipt_setup_is_best_effort_without_following_symlinks",

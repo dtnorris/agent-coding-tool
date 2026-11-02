@@ -11,6 +11,7 @@ require_relative "../suite_runner"
 require "agent_coding_tool"
 require_relative "../support/child_processes"
 require_relative "../support/validation_processes"
+require_relative "../support/feedback_processes"
 Minitest::Assertions.diff = nil
 
 # Small native controls for the verifier, without running the product suite.
@@ -247,6 +248,46 @@ class FeedbackContract < Minitest::Test
       File.unlink(path)
       assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
       File.binwrite(path, bytes)
+      # Sparse maps never turn a deleted load into an unloaded zero. The load
+      # census lives outside the result envelope and binds its own exact files.
+      assert_equal ["lib/loaded.rb"], result.fetch("files").keys
+      assert_equal ["lib/loaded.rb"], result.fetch("loaded").values
+      unpublished = File.join(context.fetch("directory"), "missing-native-map")
+      state = { context: context, pid: Process.pid, loaded: result.fetch("loaded"), prefix: unpublished }
+      error = assert_raises(RuntimeError) { FeedbackCoverage.finish_state(state, {}) }
+      assert_equal "coverage: missing loaded source result", error.message
+      refute File.exist?("#{unpublished}.json")
+      [result.merge("files" => {}), result.merge("files" => {}, "loaded" => {}),
+       result.merge("complete" => false), result.merge("denominator_sha256" => "stale")].each do |changed|
+        File.write(path, JSON.generate(changed))
+        assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+        File.binwrite(path, bytes)
+        assert_equal original, FeedbackCoverage.collect(context)
+      end
+      census_path = path.delete_suffix(".json") + ".census"
+      census_bytes = File.binread(census_path)
+      File.unlink(census_path)
+      assert_raises(Errno::ENOENT) { FeedbackCoverage.collect(context) }
+      File.binwrite(census_path, census_bytes)
+      assert_equal original, FeedbackCoverage.collect(context)
+      prefix = path.delete_suffix(".json")
+      start_bytes = File.binread("#{prefix}.started")
+      File.unlink("#{prefix}.started")
+      File.unlink(path)
+      assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+      File.binwrite("#{prefix}.started", start_bytes)
+      File.binwrite(path, bytes)
+      assert_equal original, FeedbackCoverage.collect(context)
+      %w[started active census json].each do |suffix|
+        FileUtils.cp("#{prefix}.#{suffix}", File.join(context.fetch("directory"), "duplicate.#{suffix}"))
+      end
+      error = assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+      assert_equal "coverage: duplicate child evidence", error.message
+      %w[started active census json].each { |suffix| File.unlink(File.join(context.fetch("directory"), "duplicate.#{suffix}")) }
+      assert_equal original, FeedbackCoverage.collect(context)
+      missing_layout = context.merge("layout" => context.fetch("layout").reject { |source, _nodes| source == "lib/unloaded.rb" })
+      assert_raises(RuntimeError) { FeedbackCoverage.collect(missing_layout) }
+      assert_equal original, FeedbackCoverage.collect(context)
       reduced = JSON.parse(bytes)
       reduced.fetch("files").fetch("lib/loaded.rb").delete_if { |node, _hits| node.start_with?("branch:") }
       File.write(path, JSON.generate(reduced))
@@ -363,6 +404,11 @@ class FeedbackContract < Minitest::Test
         end
         assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_missing"], **options) }
         assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options.merge(invocation: "stale")) }
+        original_results = result.fetch("results")
+        [original_results * 2, original_results + [original_results.first.merge("case" => "Foreign#test_extra")]].each do |changed|
+          File.write(path, JSON.generate(result.merge("results" => changed)))
+          assert_raises(SystemExit) { TestSuiteRunner.validate(summary, path, ["Example#test_one"], **options) }
+        end
         %w[skip failure error].each do |status|
           result.fetch("results").first["status"] = status
           File.write(path, JSON.generate(result))
@@ -440,19 +486,51 @@ class FeedbackContract < Minitest::Test
   # The actual delivery consumer refuses a passing ordinary ACT summary. A
   # complete accepted marker and aggregate counts remain usable by its existing
   # trusted validation contract. No provider, Git or publication path is invoked.
+  # A release barrier makes the real wait-loop body independent of child speed.
   def test_delivery_requires_complete_act_feedback
     Dir.mktmpdir("act-feedback-consumer-") do |root|
       manager = AgentCodingTool::DeliveryManager.allocate
       policy = { "max_seconds" => 2, "min_tests" => 1, "min_assertions" => 1 }
       ordinary = "ACT feedback evidence: fixture\n1 tests, 1 assertions, 0 failures, 0 errors, 0 skips\n"
-      File.write(File.join(root, 'fixture-validation.rb'), File.binread(File.join(ChildProcesses::FIXTURES, 'validation_worker.rb')))
+      File.write(File.join(root, 'fixture-validation.rb'), File.binread(FeedbackProcesses::VALIDATOR))
       command = validation_command(ordinary)
-      error = assert_raises(AgentCodingTool::InvalidState) { with_validation_processes { manager.send(:run_command!, root, root, command, 0, policy) } }
+      error = assert_raises(AgentCodingTool::InvalidState) { with_waiting_validation(root) { manager.send(:run_command!, root, root, command, 0, policy) } }
       assert_match(/partial ACT feedback/, error.message)
       full = ordinary + "ACT complete offline acceptance: PASS\n"
-      result = with_validation_processes { manager.send(:run_command!, root, root, validation_command(full), 1, policy) }
+      result = with_waiting_validation(root) { manager.send(:run_command!, root, root, validation_command(full), 1, policy) }
       assert_equal 0, result.fetch("exit_status")
       assert_equal [1, 1, 0, 0, 0], result.fetch("counts")
     end
+  end
+
+  # Adapts only this verifier's declared validator boundary. The native waiter's
+  # first actual timed join releases the child; no status or join result is
+  # fabricated. Missing release fails the child's finite lease. Other commands
+  # and changed materialized script bytes refuse before process creation.
+  def with_waiting_validation(root)
+    release = File.join(root, SecureRandom.hex(12))
+    original = Open3.method(:popen3)
+    adapter = lambda do |environment, *command, **options, &block|
+      raise GitContract::UnexpectedObservation, 'unexpected feedback validator' unless
+        command.length == 4 && command.take(2) == ['ruby', 'fixture-validation.rb'] &&
+        Digest::SHA256.file(File.join(root, 'fixture-validation.rb')).hexdigest == FeedbackProcesses::VALIDATOR_HASH
+      environment = environment.merge('ACT_COVERAGE_CONTEXT' => ENV['ACT_COVERAGE_CONTEXT']) if ENV['ACT_COVERAGE_CONTEXT']
+      approval = FeedbackProcesses.validation_permit(command.drop(2) + [release], environment: environment, options: options)
+      NoGitExecution.with_permit(approval) do
+        original.call(approval.environment, *approval.argv, **options) do |input, output, error, wait|
+          native_join = wait.method(:join)
+          # Preserve genuine join results and release only after a real timeout.
+          wait.define_singleton_method(:join) do |*arguments|
+            observed = native_join.call(*arguments)
+            File.write(release, 'parent waited') unless observed
+            observed
+          end
+          block.call(input, output, error, wait)
+        end
+      end
+    end
+    Open3.stub(:popen3, adapter) { yield }
+  ensure
+    assert_equal 'parent waited', File.read(release)
   end
 end

@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
+require_relative "support/no_git_execution"
 require "json"
 require "digest"
 require "fileutils"
 require "securerandom"
-require "shellwords"
 require "tmpdir"
 require "open3"
 require_relative "feedback_runtime"
@@ -84,7 +84,7 @@ module TestFeedback
       "platform" => RbConfig::CONFIG.values_at("host_os", "host_cpu"),
       "environment" => RELEVANT_ENV.to_h { |key| [key, ENV[key]] },
       "coverage_mode" => "ruby-lines-branches-all-production-files/v1",
-      "fixture_policy" => "fresh disposable fixtures; existing per-process immutable Git seed",
+      "fixture_policy" => "fresh disposable files and per-case in-memory Git authority; zero native Git",
       "contention" => "not observed", "workers" => 1, "stages" => [] }
     at_exit { report }
     puts "ACT feedback evidence: #{directory}"
@@ -131,14 +131,13 @@ module TestFeedback
     selection = Digest::SHA256.hexdigest(JSON.generate([paths, required_cases]))
     child = current.slice("root", "invocation", "sources", "layout").merge(
       "selection" => selection, "stage" => stage.fetch("layer"), "directory" => directory)
+    child["denominator_sha256"] = FeedbackCoverage.denominator_identity(child)
     context_path = File.join(stage.fetch("directory"), "#{index}.context.json")
     File.write(context_path, JSON.generate(child), mode: "wx")
-    preload = File.join(current.fetch("root"), "test/feedback_coverage.rb")
-    rubyopt = Shellwords.join(["-r#{preload}", *Shellwords.split(ENV.fetch("RUBYOPT", ""))])
     record = { "selection" => selection, "paths" => paths, "required_cases" => required_cases,
                "coverage_context" => child, "complete" => false }
     stage.fetch("processes") << record
-    [{ "ACT_COVERAGE_CONTEXT" => context_path, "RUBYOPT" => rubyopt }, record]
+    [{ "ACT_COVERAGE_CONTEXT" => context_path }, record]
   end
 
   # Requires every complete layer exactly once before emitting full acceptance.

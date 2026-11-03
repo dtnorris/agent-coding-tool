@@ -26,7 +26,7 @@ environment value wins over this ACT checkout's single allowlisted `.env` entry.
 The file is data: no interpolation, shell evaluation, unrelated environment
 loading or dependency `.env` discovery occurs. Invalid modes refuse startup.
 
-`split-composition.json` binds all three published scaffold revisions and exact
+`split-composition.json` binds all three published component revisions and exact
 Ruby source hashes. Only task loading/validation delegates initially; checkpoint
 policy, ranking, scheduling, status and command authority stay in main. Split
 verifies every required package before loading production and never falls back.
@@ -34,13 +34,13 @@ The default component parent is `../agent-coding-tool-components` relative to
 this checkout; `ACT_COMPONENT_ROOT` explicitly selects another published root.
 Legacy needs no component checkout or optional Bundler resolution.
 
-The current published task scaffold has no TaskStore. The reviewed migration
-is qualified only through explicit `ACT_SPLIT_DEVELOPMENT_ROOT` pointing to a
-parent containing all three candidates. Its separately pinned development bytes
-cannot establish published acceptance. Adopt and publish act-tasks first, then
-review/update its revision and source inventory here before qualifying installed
-ACT in published split mode. Never invent the future commit. Removing a package,
-changing its revision or modifying pinned source refuses split startup.
+The task pin selects the merged TaskStore implementation at
+`44968fc303668c8fd0483f3c2500ee83bdc1247b`, with all four production Ruby
+sources verified before loading. Published split mode uses `ACT_COMPONENT_ROOT`
+or the default component parent. `ACT_SPLIT_DEVELOPMENT_ROOT` remains an explicit
+development qualifier and cannot establish installed published acceptance.
+Removing a package, changing its revision or modifying pinned source refuses
+split startup. Legacy remains the default until explicitly selected otherwise.
 
 `act implementation` prints the resolved mode, actual roots, checkout revisions
 and source digests, with development qualification marked explicitly. The frozen

@@ -8,8 +8,9 @@ require_relative "support/child_processes"
 class BootstrapTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
 
-  # Copies production sources to a disposable invocation root plus all three
-  # component sources. Missing package inputs fail; no fake replaces TaskStore.
+  # Copies production and byte-identical pinned component sources into a fresh
+  # invocation root. Explicit component roots qualify real checkouts; the default
+  # offline fixture needs no sibling repositories. No fake replaces TaskStore.
   # Yields main/root/lock; fixture I/O failures propagate. Covered runs retain
   # copied sources under the supervisor's directory until census verification;
   # its owner then cleans up. Standalone focused runs clean up immediately.
@@ -23,13 +24,26 @@ class BootstrapTest < Minitest::Test
       FileUtils.cp_r([File.join(ROOT, "lib"), File.join(ROOT, "bin")], main)
       FileUtils.cp(File.join(ROOT, "split-composition.json"), main)
       lock = JSON.parse(File.read(File.join(main, "split-composition.json")))
-      parent = ENV["ACT_SPLIT_DEVELOPMENT_ROOT"] || ENV["ACT_COMPONENT_ROOT"] ||
-        File.expand_path("../agent-coding-tool-components", ROOT)
+      parent = ENV["ACT_SPLIT_DEVELOPMENT_ROOT"] || ENV["ACT_COMPONENT_ROOT"]
+      snapshot = JSON.parse(File.binread(File.join(ROOT,
+        "test/support/fixtures/bootstrap_components.json"))) unless parent
       components = File.join(directory, "components")
       lock.fetch("packages").each do |name, pin|
         package = File.join(components, name)
         FileUtils.mkdir_p(File.join(package, ".git"))
-        FileUtils.cp_r(File.join(parent, name, "lib"), package)
+        if parent
+          FileUtils.cp_r(File.join(parent, name, "lib"), package)
+        else
+          sources = snapshot.fetch("packages").fetch(name).fetch("files")
+          expected = pin.fetch("development_files", pin.fetch("files"))
+          assert_equal expected, sources.transform_values { |bytes| Digest::SHA256.hexdigest(bytes) },
+            "offline component fixture differs from reviewed composition: #{name}"
+          sources.each do |path, bytes|
+            destination = File.join(package, path)
+            FileUtils.mkdir_p(File.dirname(destination))
+            File.binwrite(destination, bytes)
+          end
+        end
         File.write(File.join(package, ".git/HEAD"), pin.fetch("revision") + "\n")
       end
       yield main, components, lock

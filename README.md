@@ -51,6 +51,14 @@ both retained writer paths against disposable state and reconcile incompatible
 older writers as required by the [breakup plan](https://github.com/dtnorris/agent-coding-tool-data/blob/007deb1093e58c2848cfa99b3477965351736fb3/plans/ab/AB-PLN-01A/plan.md).
 
 
+Bootstrap contract tests use exact component source snapshots in
+`test/support/fixtures/bootstrap_components.json`, checked against the reviewed
+composition digests before materialization. This keeps the required suite offline
+and independent of sibling checkouts. Explicit component-root overrides still
+exercise real checkouts; synthetic fixture revisions do not prove published or
+installed adoption. Refresh the snapshots with the composition when package
+source pins change. Tunnel tests separately pin the reviewed CLI entrypoint.
+
 ## V1 contract
 
 - Pushed `main` is authoritative.

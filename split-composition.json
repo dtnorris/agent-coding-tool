@@ -2,10 +2,12 @@
   "packages": {
     "act-tasks": {
       "remote_url": "git@github.com:dtnorris/act-tasks.git",
-      "revision": "748d87e7c7bbea37efde0023f6fe789cc1f49ed3",
+      "revision": "44968fc303668c8fd0483f3c2500ee83bdc1247b",
       "files": {
-        "lib/act_tasks.rb": "cacf965d56567988636743774ddc41f69549d3fdd3529caea2941064278dd36a",
-        "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b"
+        "lib/act_tasks/errors.rb": "b4417e0caf0d04d84ff4d29d652392ac78dc7ca5f795647c6bbbc8a42d2fd1a7",
+        "lib/act_tasks/task_store.rb": "19fa0f8b59147266e7f424d34156a4a7cae49447b54222e58609d5fcd65cb391",
+        "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b",
+        "lib/act_tasks.rb": "50fae1585054cd9d8a1a6175cec5fac4927e560292fe3b43eeaa003a1ffa359b"
       },
       "development_files": {
         "lib/act_tasks/errors.rb": "b4417e0caf0d04d84ff4d29d652392ac78dc7ca5f795647c6bbbc8a42d2fd1a7",

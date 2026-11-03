@@ -535,6 +535,8 @@ module AgentCodingTool
       match = url.match(/\Ahttps:\/\/github\.com\/#{Regexp.escape(repository)}\/pull\/([1-9][0-9]*)\z/)
       raise InvalidState, "cleanup: foreign PR URL" unless match
       pr = request("GET", "repos/#{repository}/pulls/#{match[1]}")
+      raise InvalidState, "cleanup: PR repository identity changed" unless
+        pr.fetch("base").fetch("repo").fetch("full_name").casecmp?(repository) && pr.fetch("html_url") == url
       { "merged" => !pr["merged_at"].nil?, "head" => pr.fetch("head").fetch("sha"),
         "base" => pr.fetch("base").fetch("ref"), "merge_commit_sha" => pr["merge_commit_sha"] }
     end
@@ -545,13 +547,18 @@ module AgentCodingTool
         base: base, body: body, draft: "true" })
     end
 
-    private
-
-    def repository!(remote)
+    # Returns the GitHub owner/repository bound by an SSH/HTTPS remote. Unsupported
+    # remotes raise InvalidState; this name parser grants no worktree ownership.
+    def self.repository!(remote)
       match = remote.match(/\A(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\z/)
       raise InvalidState, "delivery: unsupported publication remote" unless match
       match[1]
     end
+
+    private
+
+    # Reuses the shared remote-name parser for existing publication operations.
+    def repository!(remote) = self.class.repository!(remote)
 
     def request(method, endpoint, fields: {}, missing: false)
       argv = ["gh", "api", "-X", method, endpoint]

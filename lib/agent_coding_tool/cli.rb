@@ -497,18 +497,30 @@ module AgentCodingTool
     # retaining valid rows; unsafe arguments/cleanup preconditions raise Error.
     def worktree_command(argv, cleanup:)
       id = argv.shift
-      if !id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) ||
-         (cleanup ? ![[], ["--dry-run"]].include?(argv) : !argv.empty?)
-        raise Error, "usage: agent-coding-tool #{cleanup ? 'cleanup TASK [--dry-run]' : 'worktrees TASK'}"
-      end
+      usage = "usage: agent-coding-tool #{cleanup ? 'cleanup TASK [--dry-run] [--pr URL|ALIAS-NUMBER]' : 'worktrees TASK'}"
+      raise Error, usage unless id&.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       if cleanup
-        dry_run = argv == ["--dry-run"]
+        dry_run, pr = false, nil
+        until argv.empty?
+          case argv.shift
+          when "--dry-run"
+            raise Error, usage if dry_run
+            dry_run = true
+          when "--pr"
+            raise Error, usage if pr || argv.empty? || argv.first.start_with?("--")
+            pr = argv.shift
+          else
+            raise Error, usage
+          end
+        end
         handler = CleanupManager.new(data_root: @data_root, transport: @transport)
-        result = dry_run ? handler.preflight(id) : handler.remove(id)
+        options = pr ? { pr: pr } : {}
+        result = dry_run ? handler.preflight(id, **options) : handler.remove(id, **options)
         @out.puts JSON.pretty_generate(result.merge("dry_run" => dry_run,
                                                      "attempts" => [result.fetch("attempts")]))
         return 0
       end
+      raise Error, usage unless argv.empty?
       root = File.join("#{@data_root}-runs", id)
       resets = TaskReset.new(data_root: @data_root, transport: @transport).history(id)
       unless resets.empty? || File.directory?(root)
@@ -1968,7 +1980,7 @@ module AgentCodingTool
                               --observations PATH (fresh private command-report JSON)
           checkpoint recover TASK --destination PATH --confirm-disconnected [--attempt NUMBER]
           worktrees TASK      verify and show task-owned worktree ownership
-          cleanup TASK [--dry-run]
+          cleanup TASK [--dry-run] [--pr URL|ALIAS-NUMBER]
                               inspect removal targets and blockers; changes nothing
           abandon-preflight TASK [--dry-run]
                               verify and explicitly abandon one failed pre-worker launch

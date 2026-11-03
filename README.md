@@ -1112,6 +1112,29 @@ the recorded task worktrees, one at a time; an interrupted removal has a durable
 marker and is checked again on resume. Feature branches and private handoffs,
 logs, validation and PR records remain.
 
+After manually publishing and merging a task branch, use
+`act cleanup TST-35 --pr ACT-38`; preview with
+`act cleanup TST-35 --pr ACT-38 --dry-run`. `--pr` accepts a full GitHub PR URL
+or a case-insensitive `ALIAS-NUMBER`. ACTD `config.yml` can set
+`repository_aliases: { DEMO: owner/repository }`; explicit aliases use 3–4
+letters and extend the defaults `ACT: dtnorris/agent-coding-tool`,
+`ACTD: dtnorris/agent-coding-tool-data`, and `AGS: dtnorris/agent-skills`.
+Malformed mappings, case-fold collisions and unknown aliases are refused.
+Aliases resolve names only: the PR must match exactly one recorded owned writable
+repository/attempt, its exact worktree HEAD and authorized target, and be merged
+with its merge result integrated in the ordinary checkout. Existing completion,
+cleanliness (including ignored files), ownership and liveness checks still apply
+to every repository and attempt. No fetch or checkout update is performed.
+
+Once every preflight check passes, cleanup saves a separate
+`external-delivery-REPOSITORY.json` receipt in the private attempt directory
+before normal non-forced removal. A retry can omit `--pr`; it rechecks the
+receipt against fresh PR and local ownership/integration evidence. Conflicting
+evidence or a receipt-write failure refuses removal. Original lifecycle,
+checkpoint, gate and delivery evidence and branch refs survive. Dry-run writes
+no receipt or other state. Plain cleanup without a receipt retains its existing
+delivery requirements.
+
 An unsuccessful managed attempt can instead be preserved **in place** for an
 explicit retry. For a worker that produced no candidate, the operator sequence is:
 

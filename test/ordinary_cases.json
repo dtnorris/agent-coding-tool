@@ -87,7 +87,8 @@
   },
   "test/config_test.rb": {
     "ConfigTest#test_missing_config_uses_data_directory_parent_as_repo_root": [],
-    "ConfigTest#test_relative_repo_root_is_resolved_from_data_directory": []
+    "ConfigTest#test_relative_repo_root_is_resolved_from_data_directory": [],
+    "ConfigTest#test_repository_aliases_and_pull_request_references": []
   },
   "test/coordinator_test.rb": {
     "CoordinatorTest#test_start_preserves_preparation_and_rejects_double_start": ["coding"],

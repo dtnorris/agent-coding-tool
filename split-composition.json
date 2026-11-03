@@ -1,0 +1,34 @@
+{
+  "packages": {
+    "act-tasks": {
+      "remote_url": "git@github.com:dtnorris/act-tasks.git",
+      "revision": "748d87e7c7bbea37efde0023f6fe789cc1f49ed3",
+      "files": {
+        "lib/act_tasks.rb": "cacf965d56567988636743774ddc41f69549d3fdd3529caea2941064278dd36a",
+        "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b"
+      },
+      "development_files": {
+        "lib/act_tasks/errors.rb": "b4417e0caf0d04d84ff4d29d652392ac78dc7ca5f795647c6bbbc8a42d2fd1a7",
+        "lib/act_tasks/task_store.rb": "19fa0f8b59147266e7f424d34156a4a7cae49447b54222e58609d5fcd65cb391",
+        "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b",
+        "lib/act_tasks.rb": "50fae1585054cd9d8a1a6175cec5fac4927e560292fe3b43eeaa003a1ffa359b"
+      }
+    },
+    "act-observability": {
+      "remote_url": "git@github.com:dtnorris/act-observability.git",
+      "revision": "f2bca8f49d281903c1c687dc5a050716f7191ce4",
+      "files": {
+        "lib/act_observability.rb": "35b3a139e5ca8067d794bd0a79d2d54df1f64eeff83176caddcfaca8c046c3f3",
+        "lib/act_observability/version.rb": "f6faf04c70d09ad9a4d3d82599c08fcedcf0f8dd4baa16149dc5f4de1f505074"
+      }
+    },
+    "act-lifecycle": {
+      "remote_url": "git@github.com:dtnorris/act-lifecycle.git",
+      "revision": "8e6265ddae3dcc51fd9a97c8f3126c5c06af8574",
+      "files": {
+        "lib/act_lifecycle.rb": "782bceb651c5f9b54a47a3b3af9f1d52dfe3f3a68436105c0757096808ae76dd",
+        "lib/act_lifecycle/version.rb": "5f6a5617d03fdeafbce84fe51da7748e72f7326b6e31dac6e810bb0f88491841"
+      }
+    }
+  }
+}

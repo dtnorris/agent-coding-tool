@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "agent_coding_tool/bootstrap"
 require_relative "agent_coding_tool/errors"
 require_relative "agent_coding_tool/incidental_metadata"
 require_relative "agent_coding_tool/config"

@@ -1,0 +1,32 @@
+{
+  "schema": "act-bootstrap-source-fixtures/v1",
+  "purpose": "Byte-identical component sources for offline bootstrap contracts; synthetic checkout metadata is not published adoption evidence.",
+  "packages": {
+    "act-tasks": {
+      "repository": "dtnorris/act-tasks",
+      "source_revision": "48a85158c05c52dfb5ee8ab4c4b27cc0587dc4b4",
+      "files": {
+        "lib/act_tasks.rb": "# frozen_string_literal: true\n\nrequire_relative \"act_tasks/version\"\nrequire_relative \"act_tasks/task_store\"\n\n# Task YAML loading and schema validation, independent of main ACT policy.\nmodule ActTasks\nend\n",
+        "lib/act_tasks/task_store.rb": "# frozen_string_literal: true\n\nrequire \"yaml\"\nrequire_relative \"errors\"\n\nmodule ActTasks\n  # Loads registered YAML and validates explicit task metadata without inferring roles.\n  class TaskStore\n    VALID_ACCESS = %w[write read_only].freeze\n\n    # Binds the task directory without I/O. Filesystem errors occur on reads.\n    def initialize(root)\n      @root = root\n    end\n\n    # Returns one validated YAML task by ID. InvalidTask marks absent tasks or\n    # invalid metadata; native filesystem, YAML and shape exceptions propagate.\n    def load(id)\n      path = task_path(id)\n      raise InvalidTask, \"task not found: #{id}\" unless File.file?(path)\n\n      task = YAML.safe_load_file(path, aliases: false) || {}\n      validate!(task, path)\n      task\n    end\n\n    # Returns validated tasks in filename order; raises the same errors as load.\n    def all\n      Dir.glob(File.join(@root, \"*.yml\")).sort.map do |path|\n        task = YAML.safe_load_file(path, aliases: false) || {}\n        validate!(task, path)\n        task\n      end\n    end\n\n    # Returns the YAML path for an ID without checking existence or reading it.\n    def task_path(id)\n      File.join(@root, \"#{id}.yml\")\n    end\n\n    private\n\n    # Validates a loaded task mapping, preserving unrelated metadata. Callers\n    # ignore its return; InvalidTask identifies invalid fields or guidance/policy.\n    def validate!(task, path)\n      id = task[\"id\"]\n      title = task[\"title\"]\n      repositories = task[\"repositories\"]\n\n      raise InvalidTask, \"#{path}: id is required\" unless id.is_a?(String) && !id.empty?\n      raise InvalidTask, \"#{path}: title is required\" unless title.is_a?(String) && !title.empty?\n      unless repositories.is_a?(Hash) && !repositories.empty?\n        raise InvalidTask, \"#{path}: repositories must be a non-empty mapping\"\n      end\n\n      repositories.each do |name, spec|\n        raise InvalidTask, \"#{path}: repository name must be a string\" unless name.is_a?(String) && !name.empty?\n        unless spec.is_a?(Hash) && VALID_ACCESS.include?(spec[\"access\"])\n          raise InvalidTask, \"#{path}: #{name} access must be write or read_only\"\n        end\n      end\n\n      depends_on = task.fetch(\"depends_on\", [])\n      raise InvalidTask, \"#{path}: depends_on must be an array\" unless depends_on.is_a?(Array)\n\n      if task.key?(\"planning_guidance\") && task[\"planning_guidance\"] != \"required\"\n        raise InvalidTask, \"#{path}: planning_guidance must be the scalar string required when present\"\n      end\n\n      if task.key?(\"checkpoint\")\n        policy = task[\"checkpoint\"]\n        unless policy.is_a?(Hash) && %w[required exempt].include?(policy[\"mode\"]) &&\n               (policy.keys - %w[mode category reason]).empty?\n          raise InvalidTask, \"#{path}: checkpoint mode must be required or exempt\"\n        end\n        if policy[\"mode\"] == \"exempt\"\n          unless %w[planning inspection no_code].include?(policy[\"category\"]) &&\n                 policy[\"reason\"].is_a?(String) && !policy[\"reason\"].strip.empty?\n            raise InvalidTask, \"#{path}: checkpoint exemption requires category and reason\"\n          end\n        elsif policy.keys != [\"mode\"]\n          raise InvalidTask, \"#{path}: required checkpoint takes only mode\"\n        end\n      end\n\n      if task.key?(\"worker_recommendation\")\n        recommendation = task[\"worker_recommendation\"]\n        unless recommendation.is_a?(Hash)\n          raise InvalidTask, \"#{path}: worker_recommendation must be a mapping\"\n        end\n        %w[model thinking].each do |field|\n          value = recommendation[field]\n          unless value.is_a?(String) && !value.empty?\n            raise InvalidTask, \"#{path}: worker_recommendation #{field} must be a non-empty string\"\n          end\n        end\n      end\n\n      %w[constraints acceptance].each do |field|\n        value = task.fetch(field, [])\n        raise InvalidTask, \"#{path}: #{field} must be an array\" unless value.is_a?(Array)\n      end\n    end\n  end\nend\n",
+        "lib/act_tasks/errors.rb": "# frozen_string_literal: true\n\nmodule ActTasks\n  # Invalid registered task metadata; filesystem and YAML exceptions stay native.\n  class InvalidTask < StandardError; end\nend\n",
+        "lib/act_tasks/version.rb": "# frozen_string_literal: true\n\n# Version of the independently installable task package.\nmodule ActTasks\n  VERSION = \"0.1.0\"\nend\n"
+      }
+    },
+    "act-observability": {
+      "repository": "dtnorris/act-observability",
+      "source_revision": "f2bca8f49d281903c1c687dc5a050716f7191ce4",
+      "files": {
+        "lib/act_observability.rb": "# frozen_string_literal: true\n\nrequire_relative \"act_observability/version\"\n\n# Independent observability package identity; domain behavior is introduced separately.\nmodule ActObservability\nend\n",
+        "lib/act_observability/version.rb": "# frozen_string_literal: true\n\n# Version of the independently installable observability package.\nmodule ActObservability\n  VERSION = \"0.1.0\"\nend\n"
+      }
+    },
+    "act-lifecycle": {
+      "repository": "dtnorris/act-lifecycle",
+      "source_revision": "8e6265ddae3dcc51fd9a97c8f3126c5c06af8574",
+      "files": {
+        "lib/act_lifecycle.rb": "# frozen_string_literal: true\n\nrequire_relative \"act_lifecycle/version\"\n\n# Independent lifecycle package identity; domain behavior is introduced separately.\nmodule ActLifecycle\nend\n",
+        "lib/act_lifecycle/version.rb": "# frozen_string_literal: true\n\n# Version of the independently installable lifecycle package.\nmodule ActLifecycle\n  VERSION = \"0.1.0\"\nend\n"
+      }
+    }
+  }
+}

@@ -14,7 +14,7 @@ module TunnelProcesses
   CLIENT = File.join(__dir__, 'fixtures/tunnel_client.rb').freeze
   CLIENT_HASH = '42643463e393d10f17c24c6adbb53c6f6a55d443edbf3652e1c3f11b813d8a69'
   ENTRY = File.join(ROOT, 'bin/agent-coding-tool').freeze
-  ENTRY_HASH = '35cd5470b2bddf672a1c43763ac6aece470517c5adc909b3dd9d34c2693ca309'
+  ENTRY_HASH = '72b0919549257cd1dae1039ad6fd21a3b892aca52386cb1697484b5fc35378f6'
 
   # Exact-envelope native capability, with process/source/callsite and file-byte
   # bindings in addition to Permit's thread/cwd/environment/single-use checks.

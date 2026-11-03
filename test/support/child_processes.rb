@@ -12,7 +12,7 @@ module ChildProcesses
   HASHES = {
     "process_family" => "ac335450fd2d2acf30f9a3503a41878108c40784b362fbefc9aee5359f3aebec",
     "native_observer" => "42dc07d57751164e7180ccd17bfa7f5991f746828711d719723eba5c7c5c27a7",
-    "feedback_worker" => "64b4781273cdf1bf8cb4ff539a62d23f0875f41db5acb9002603609df8d043a8",
+    "feedback_worker" => "21dd58ac5596c110732afb351af9900f77ee02126e09da77d0d8d266d953cf89",
     "retry_probe" => "2ac042125d3e8334ec69a79fcd8be39703648edafe529b2609e6f687d6b93fa3",
     "retry_worker" => "682291fe5581214252854c591db0599f5ff6197f4c0109442f22aa247c4dff93",
     "retry_cli" => "44d599341d8f53b78c7204f18a20ed5c1f2ad7cba5418db8186d7bf8a364c709",

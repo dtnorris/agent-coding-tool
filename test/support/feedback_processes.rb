@@ -6,7 +6,7 @@ require_relative 'no_git_execution'
 # killed non-ACT children cannot borrow or lose production coverage evidence.
 module FeedbackProcesses
   WORKER = File.realpath(File.join(__dir__, 'fixtures/feedback_worker.rb')).freeze
-  HASH = '64b4781273cdf1bf8cb4ff539a62d23f0875f41db5acb9002603609df8d043a8'
+  HASH = '21dd58ac5596c110732afb351af9900f77ee02126e09da77d0d8d266d953cf89'
   VALIDATOR = File.realpath(File.join(__dir__, 'fixtures/feedback_validation.rb')).freeze
   VALIDATOR_HASH = 'ef8044aa154873f8ddc7996aa25c0be3c147d850d79aa04bc8fe3ee13dcec004'
 

@@ -56,6 +56,7 @@ when 'probe'
   Dir.chdir(context.fetch('root'))
   require File.join(Dir.pwd, 'lib/loaded.rb') if variant == 'late'
   FeedbackCoverage.start_probe(context_path) unless variant == 'cold_missing'
+  Process.kill('KILL', Process.pid) if variant == 'fixture_only_kill'
   require File.join(Dir.pwd, 'lib/loaded.rb')
   CoveredExample.choose(variant == 'cold_false' || variant == 'cold_missing' ? false : true)
   case variant

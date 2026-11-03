@@ -1,6 +1,11 @@
 # frozen_string_literal: true
 
 require "yaml"
+require_relative "bootstrap"
+
+if AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "split"
+  require_relative "split_task_store"
+else
 
 module AgentCodingTool
   # Loads registered YAML and validates explicit task metadata without inferring roles.
@@ -96,4 +101,5 @@ module AgentCodingTool
       end
     end
   end
+end
 end

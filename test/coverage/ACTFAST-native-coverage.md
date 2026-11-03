@@ -2,6 +2,24 @@
 
 This TST-16 inventory is a baseline-bound handoff for TST-17/18/19/20 (D/E/F/G). Its enduring purpose is to prevent loss of named safety behaviors when test selection changes. It proposes placement; it changes no executable selection and grants no authority to remove tests. [AGENTS.md](../../AGENTS.md), [README Development](../../README.md#development), the [Rakefile](../../Rakefile), and operator-approved task definitions remain authoritative. [TST-08 PROFILE.md](../profile/TST-08/PROFILE.md) is historical measurement evidence, not today's acceptance result.
 
+## AB-TK-01A task loading and composition proof placement
+
+All existing main cases remain mandatory. Package schema cases intentionally
+overlap the retained main compatibility/policy consumers; no scheduling, skill,
+checkpoint-policy or lifecycle scenario transfers to the component.
+
+| Original source / obligation | Package or main owner | Physical oracle / negative control |
+| --- | --- | --- |
+| `TaskStoreTest` validation and generic worker strings | act-tasks `test/task_store_test.rb`; original main identities remain | Real YAML reads, exact messages, schema negatives, aliases/parser/missing-file behavior; package imports no main code. |
+| `PlanningGuidanceTest#test_strict_designation_validation_before_public_prepare_writes` | Package designation table plus unchanged main public preparation case | Every original invalid scalar/container; preserved unrelated metadata and main no-write checks. |
+| TaskStore original executable lines and branch arms | Package `test/task_store_migration.json` and `test/coverage_floors.json` | Source-bound numeric seed and covered-node map; package default gate requires fresh coverage with 100% line/branch floors. |
+| Main bootstrap, adapter and public status | `BootstrapTest` in required native default scope | Actual bin/parser/YAML loader; TracePoint observes real package calls. Missing package, wrong revision/digest, invalid mode and invalid metadata refuse; legacy starts without components. |
+
+The complete main gate still owns its all-production denominator, including
+unselected adapter sources. Composition JSON joins its source fingerprint.
+Package default commands and installed published adoption remain separate gates;
+fixture source refs and a development composition never establish publication.
+
 ## TST-26 delivery refusal proof placement
 
 These two `DeliveryManagerTest` identities retain their mandatory native suite

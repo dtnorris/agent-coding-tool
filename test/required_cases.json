@@ -473,6 +473,15 @@
       "SourceBrowsingTest#test_audience_binding_and_remote_grant_fields_refuse",
       "SourceBrowsingTest#test_adapter_stream_accounts_source_bytes_and_denies_next_chunk",
       "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation"
+    ],
+    "test/bootstrap_test.rb": [
+      "BootstrapTest#test_mode_resolution_and_inherited_composition",
+      "BootstrapTest#test_invalid_modes_and_package_refusals",
+      "BootstrapTest#test_public_status_delegation_and_compatible_refusals",
+      "BootstrapTest#test_adapter_collection_errors_and_yaml_exceptions",
+      "BootstrapTest#test_published_composition_and_scaffold_api_refusal",
+      "BootstrapTest#test_revision_files_and_source_digest_refusal",
+      "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias"
     ]
   },
   "integration": {
@@ -736,6 +745,15 @@
       "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
       "RunEvidenceTest#test_native_share_continuous_public_journey",
       "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
+    ],
+    "test/bootstrap_test.rb": [
+      "BootstrapTest#test_mode_resolution_and_inherited_composition",
+      "BootstrapTest#test_invalid_modes_and_package_refusals",
+      "BootstrapTest#test_public_status_delegation_and_compatible_refusals",
+      "BootstrapTest#test_adapter_collection_errors_and_yaml_exceptions",
+      "BootstrapTest#test_published_composition_and_scaffold_api_refusal",
+      "BootstrapTest#test_revision_files_and_source_digest_refusal",
+      "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias"
     ]
   }
 }

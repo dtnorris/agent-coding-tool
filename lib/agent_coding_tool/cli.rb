@@ -70,6 +70,7 @@ module AgentCodingTool
     def run(argv)
       command = argv.shift
       case command
+      when "implementation" then @out.puts JSON.generate(Bootstrap::COMPOSITION)
       when "share" then return share_command(argv)
       when "apply" then return apply_command(argv)
       when "manage" then return manage_command(argv)
@@ -1912,6 +1913,7 @@ module AgentCodingTool
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
         Commands:
+          implementation             resolved mode and verified package source identities
           share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)
           share TASK [--min MINUTES]    grant/renew task visibility, default 30 (maximum 60)
           share {status|stop}; share revoke TASK; share help

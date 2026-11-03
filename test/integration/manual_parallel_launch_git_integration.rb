@@ -155,7 +155,15 @@ class ManualParallelLaunchTest < Minitest::Test
       before = older_bytes
       _output, error, status = cli("launch", "T", "--codex")
       assert_equal 2, status.exitstatus
-      assert_match(/write collision/, error)
+      assert_equal <<~MESSAGE, error.dup.force_encoding(Encoding::UTF_8)
+        ERROR: T was not started: another task has overlapping write scope.
+          • Repository/s: repo
+          • Other task/s: A
+        Next steps:
+          • If you have reviewed the overlap and explicitly authorize parallel
+            development, retry with:
+          • act launch T --codex --allow-write-collision
+      MESSAGE
       refute File.exist?(File.join(@root, "worker-pid"))
       refute @store.load("T")["started_at"]
       assert_equal before, older_bytes

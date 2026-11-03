@@ -102,7 +102,8 @@
     ],
     "test/config_test.rb": [
       "ConfigTest#test_missing_config_uses_data_directory_parent_as_repo_root",
-      "ConfigTest#test_relative_repo_root_is_resolved_from_data_directory"
+      "ConfigTest#test_relative_repo_root_is_resolved_from_data_directory",
+      "ConfigTest#test_repository_aliases_and_pull_request_references"
     ],
     "test/coordinator_test.rb": [
       "CoordinatorTest#test_start_preserves_preparation_and_rejects_double_start",
@@ -603,6 +604,19 @@
       "PublisherTest#test_remote_push_race_preserves_local_commit_without_reconciliation",
       "PublisherTest#test_external_observations_are_structurally_outside_all_public_selections",
       "PublisherTest#test_metadata_selection_and_repository_inspection"
+    ],
+    "test/integration/external_cleanup_git_integration.rb": [
+      "ExternalCleanupGitIntegration#test_external_pr_public_cleanup_and_dry_run",
+      "ExternalCleanupGitIntegration#test_external_pr_identity_negative_controls",
+      "ExternalCleanupGitIntegration#test_external_pr_safety_gates",
+      "ExternalCleanupGitIntegration#test_external_pr_conflicting_evidence",
+      "ExternalCleanupGitIntegration#test_external_pr_ambiguous_attempt",
+      "ExternalCleanupGitIntegration#test_external_pr_receipt_failure_and_cold_retry",
+      "ExternalCleanupGitIntegration#test_external_pr_boundary_drift_and_partial_removal",
+      "ExternalCleanupGitIntegration#test_external_pr_malformed_and_foreign_inputs",
+      "ExternalCleanupGitIntegration#test_external_pr_evidence_drift_refuses",
+      "ExternalCleanupGitIntegration#test_external_pr_head_drift_at_native_boundary",
+      "ExternalCleanupGitIntegration#test_github_provider_binds_returned_pr_repository"
     ]
   },
   "native_default": {

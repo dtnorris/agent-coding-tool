@@ -133,7 +133,9 @@ module AgentCodingTool
 
     # Returns verified native ownership without writes. Explicit pre-worker
     # inspection may verify pending/creating markers; ordinary consumers still
-    # refuse partial creation. Wrong identity, absent or ambiguous resources raise.
+    # refuse partial creation. The optional block receives structurally validated
+    # recorded paths for diagnostics before native verification, not removal authority.
+    # Wrong identity, absent or ambiguous resources raise.
     def inspect!(head_overrides: {}, allow_partial: false)
       raise InvalidState, "worktrees: missing/foreign ownership record" if File.symlink?(@record_path) || !File.file?(@record_path)
       inventory = JSON.parse(File.read(@record_path))
@@ -158,6 +160,9 @@ module AgentCodingTool
                entry["branch"] == (entry["access"] == "write" ? "act/#{inventory.fetch('task_id')}/attempt-#{inventory.fetch('attempt')}" : nil)
           raise InvalidState, "worktrees: partial or conflicting ownership; inspect #{@record_path}"
         end
+      end
+      yield inventory if block_given?
+      inventory.fetch("entries").each do |entry|
         if %w[pending creating].include?(entry["state"])
           if entry["state"] == "creating" && File.directory?(entry.fetch("path"))
             verify_entry!(entry, expected_head: entry.fetch("base_sha"))
@@ -193,6 +198,8 @@ module AgentCodingTool
 
     # Called only after a task-wide, read-only cleanup preflight. The marker
     # distinguishes an interrupted native removal from an unowned missing path.
+    # An optional block rechecks host evidence immediately before native removal;
+    # refusal raises and retains the marker and resource for an explicit retry.
     def remove_entry!(name, head_overrides: {})
       inventory = inspect!(head_overrides: head_overrides)
       entry = inventory.fetch("entries").find { |item| item["name"] == name }
@@ -213,6 +220,8 @@ module AgentCodingTool
         Tempfile.create("act-metadata-excludes-") do |excludes|
           excludes.write(".DS_Store\n")
           excludes.flush
+          yield if block_given?
+          verify_entry!(entry, expected_head: head_overrides.fetch(name, entry.fetch("base_sha")))
           raise InvalidState, "worktrees: worktree contains changes" unless
             IncidentalMetadata.git_status(entry.fetch("path"), ignored: true) { |*args| git!(entry.fetch("path"), *args) }.empty?
           git!(entry.fetch("parent"), "-c", "core.excludesFile=#{excludes.path}", "worktree", "remove", "--", entry.fetch("path"))

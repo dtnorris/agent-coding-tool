@@ -200,13 +200,58 @@ class LauncherTest < Minitest::Test
     end
   end
 
+  # Public diagnostics preserve supported options and refuse before reservation
+  # or worker handoff. External boundaries use the existing finite fixture.
   def test_collision_is_not_implicitly_overridden
-    fixture do
-      write_task(@data, id: 'OTHER', repositories: { 'alias' => { 'access' => 'write', 'path' => @ordinary } })
-      @coordinator.prepare('OTHER')
-      @coordinator.start('OTHER')
-      assert_preflight_failure(/write collision/)
-      refute @store.load('T')['write_collision_override']
+    [false, true].each do |multiple|
+      fixture do
+        names = multiple ? %w[zeta af-workloads] : %w[af-workloads]
+        others = multiple ? %w[MDL-02 MDL-01] : %w[MDL-01]
+        names.each do |name|
+          @inspector.heads[name] = @base
+          @inspector.remote_urls[name] = File.join(@root, "#{name}.git")
+          FileUtils.mkdir_p(@inspector.remote_urls.fetch(name))
+        end
+        repositories = names.to_h { |name| [name, { 'access' => 'write', 'path' => @ordinary }] }
+        write_task(@data, id: 'FO-30', repositories: repositories)
+        others.each do |id|
+          write_task(@data, id: id, repositories: repositories)
+          @coordinator.prepare(id)
+          @coordinator.start(id)
+        end
+        prepared = @coordinator.prepare('FO-30')
+        assert_equal others.sort, prepared.fetch('write_collisions').map { |row| row.fetch('task_id') }.sort
+        before = File.binread(File.join(@data, 'state', 'FO-30.yml'))
+        cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data, out: @out, err: @err)
+        worker = launcher
+        AgentCodingTool::Launcher.stub(:new, worker) do
+          [[], %w[--reasoning high], %w[--model gpt-6.1-sol], %w[--model gpt-6.1-sol --reasoning high]].each do |options|
+            @err.truncate(0)
+            @err.rewind
+            assert_equal 2, cli.run(['launch', 'FO-30', '--codex', *options])
+            retry_argv = ['act', 'launch', 'FO-30', '--codex', *options, '--allow-write-collision']
+            assert_equal <<~MESSAGE, @err.string
+              ERROR: FO-30 was not started: another task has overlapping write scope.
+                • Repository/s: #{names.sort.join(', ')}
+                • Other task/s: #{others.sort.join(', ')}
+              Next steps:
+                • If you have reviewed the overlap and explicitly authorize parallel
+                  development, retry with:
+                • #{Shellwords.join(retry_argv)}
+            MESSAGE
+            assert_equal retry_argv, Shellwords.split(@err.string.lines.last.strip.delete_prefix('• '))
+            assert_equal before, File.binread(File.join(@data, 'state', 'FO-30.yml'))
+            refute File.exist?(File.join(@root, 'worker-pid'))
+            refute File.exist?(File.join(@root, 'argv'))
+            refute File.exist?(File.join("#{@data}-runs", 'FO-30'))
+          end
+          @err.truncate(0)
+          @err.rewind
+          assert_equal 2, cli.run(['launch', 'FO-30', '--codex', '--model', 'model;unsafe'])
+          assert_equal "ERROR: launch: invalid explicit model\n", @err.string
+        end
+        refute @store.load('FO-30')['write_collision_override']
+      end
     end
   end
 
@@ -370,6 +415,14 @@ class LauncherTest < Minitest::Test
       ))
 
       assert_preflight_failure(/unknown execution evidence/)
+      cli = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data, out: @out, err: @err)
+      worker = launcher
+      AgentCodingTool::Launcher.stub(:new, worker) do
+        assert_equal 2, cli.run(%w[launch T --codex --allow-write-collision --allow-write-collision])
+      end
+      assert_includes @err.string, 'unknown execution evidence'
+      refute_includes @err.string, 'Next steps:'
+      refute @store.load('T')['started_at']
       assert_equal "Finder bytes\x00".b, File.binread(finder)
     end
   end

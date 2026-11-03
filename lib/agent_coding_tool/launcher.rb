@@ -15,6 +15,19 @@ module AgentCodingTool
     TERMINAL = %w[exited invalid_final interrupted child_start_failed preflight_failed preflight_abandoned].freeze
     REASONING = %w[minimal low medium high xhigh].freeze
 
+    # Carries unresolved manual collision rows to CLI presentation without
+    # authorizing launch. Inputs are observed reservation rows; returns an error.
+    class WriteCollision < InvalidState
+      attr_reader :collisions
+
+      # Retains collision identities and guarded guidance for non-CLI callers;
+      # construction performs no writes. The launch CLI renders its compact form.
+      def initialize(id, collisions)
+        @collisions = collisions
+        super("#{id}: unresolved in-flight reservation: write collision; manual worker isolation and activity are unverified; launch requires --allow-write-collision; managed delivery refuses manual overlap")
+      end
+    end
+
     def initialize(coordinator:, data_root:, source_root:, out: $stdout, err: $stderr,
                    codex: "codex", spawner: Process.method(:spawn), transport: NativeCommandTransport.new)
       @coordinator, @data_root, @source_root = coordinator, File.realpath(data_root), File.realpath(source_root)
@@ -495,9 +508,6 @@ module AgentCodingTool
            all_reports.none? { |report| report["task_id"] == other_id } &&
            !File.exist?(File.join(@run_root, other_id)) && !File.symlink?(File.join(@run_root, other_id)) &&
            !other_state.dig("write_collision_override", "launch")
-          unless allow_manual_overlap
-            raise InvalidState, "launch: #{other_id} has an unresolved in-flight reservation: manual write collision; manual worker isolation and activity are unverified; launch requires --allow-write-collision; managed delivery refuses manual overlap"
-          end
           target = store.load(id).fetch("snapshot")
           repositories = target.keys.select { |name| bases.include?(target.fetch(name)) &&
             shared.any? { |key| other_state.fetch("snapshot").fetch(key).values_at("remote_url", "branch") ==
@@ -539,6 +549,9 @@ module AgentCodingTool
         if report_writes_overlap?(report, bases)
           raise InvalidState, "launch: #{report['task_id']} has partial, interrupted or unknown execution evidence; inspect #{report['_report_path']} and confirm liveness before recovery"
         end
+      end
+      unless allow_manual_overlap || @manual_conflicts.empty?
+        raise WriteCollision.new(id, @collisions + @manual_conflicts)
       end
       verified.sort_by { |row| row.fetch("task_id") }
     end

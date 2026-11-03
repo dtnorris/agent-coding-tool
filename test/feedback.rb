@@ -48,7 +48,7 @@ module TestFeedback
   # Returns exact bytes' hashes for production, harness, selections and locked
   # dependencies. Discovery is repeated at completion to reject added files.
   def self.source_files(root)
-    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + %w[bin/agent-coding-tool test/support/bin/rake Rakefile Gemfile Gemfile.lock]).sort
+    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + %w[bin/agent-coding-tool test/support/bin/rake Rakefile Gemfile Gemfile.lock split-composition.json]).sort
     paths.to_h { |path| [path, Digest::SHA256.file(File.join(root, path)).hexdigest] }
   end
 

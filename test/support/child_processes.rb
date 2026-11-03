@@ -10,6 +10,7 @@ module ChildProcesses
   FIXTURES = File.realpath(File.join(__dir__, "fixtures")).freeze
 
   HASHES = {
+    "bootstrap_cli" => "afa0f903558dfa53bb58706e99d676cc94d2fc76e82f99c69f0e4526fcdac697",
     "process_family" => "ac335450fd2d2acf30f9a3503a41878108c40784b362fbefc9aee5359f3aebec",
     "native_observer" => "42dc07d57751164e7180ccd17bfa7f5991f746828711d719723eba5c7c5c27a7",
     "feedback_worker" => "21dd58ac5596c110732afb351af9900f77ee02126e09da77d0d8d266d953cf89",

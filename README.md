@@ -18,6 +18,39 @@ Human review and integration remain required. The explicit `publish`
 command commits and pushes selected changes in the configured private data
 checkout only.
 
+## Optional task package composition
+
+Legacy remains the default. Before production requires, the library and public
+entrypoint share one `ACT_IMPLEMENTATION=legacy|split` resolver: an explicit
+environment value wins over this ACT checkout's single allowlisted `.env` entry.
+The file is data: no interpolation, shell evaluation, unrelated environment
+loading or dependency `.env` discovery occurs. Invalid modes refuse startup.
+
+`split-composition.json` binds all three published scaffold revisions and exact
+Ruby source hashes. Only task loading/validation delegates initially; checkpoint
+policy, ranking, scheduling, status and command authority stay in main. Split
+verifies every required package before loading production and never falls back.
+The default component parent is `../agent-coding-tool-components` relative to
+this checkout; `ACT_COMPONENT_ROOT` explicitly selects another published root.
+Legacy needs no component checkout or optional Bundler resolution.
+
+The current published task scaffold has no TaskStore. The reviewed migration
+is qualified only through explicit `ACT_SPLIT_DEVELOPMENT_ROOT` pointing to a
+parent containing all three candidates. Its separately pinned development bytes
+cannot establish published acceptance. Adopt and publish act-tasks first, then
+review/update its revision and source inventory here before qualifying installed
+ACT in published split mode. Never invent the future commit. Removing a package,
+changing its revision or modifying pinned source refuses split startup.
+
+`act implementation` prints the resolved mode, actual roots, checkout revisions
+and source digests, with development qualification marked explicitly. The frozen
+composition is inherited by children; changed inherited identities refuse. It
+does not migrate preparation/attempt schemas, rewrite active records or qualify
+an installed composition. Before any live split mutator, David must qualify
+both retained writer paths against disposable state and reconcile incompatible
+older writers as required by the [breakup plan](https://github.com/dtnorris/agent-coding-tool-data/blob/007deb1093e58c2848cfa99b3477965351736fb3/plans/ab/AB-PLN-01A/plan.md).
+
+
 ## V1 contract
 
 - Pushed `main` is authoritative.

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "test/support/no_git_execution"
 require_relative "test/feedback"
 require "yaml"
 require_relative "lib/agent_coding_tool"
@@ -19,7 +20,7 @@ namespace :test do
     TestFeedback.run(:git_contract, root: __dir__)
   end
 
-  desc "Run all required offline native Git suites in separate Ruby processes"
+  desc "Run required modeled integration journeys and real non-Git process contracts"
   task :native_integration do
     TestFeedback.run(:native_integration, root: __dir__)
   end

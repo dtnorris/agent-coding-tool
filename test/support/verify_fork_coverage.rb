@@ -47,7 +47,7 @@ class ForkCoverageVerifier < Minitest::Test
     with_owner('positive') do |context, _output|
       records = Dir.glob(File.join(context.fetch('directory'), '*.json')).map { |path| [path, JSON.parse(File.read(path))] }
       assert_equal 2, records.length
-      child_path, child = records.find { |_path, row| row.fetch('files').fetch('lib/child_probe.rb').values.any?(&:positive?) }
+      child_path, child = records.find { |_path, row| row.fetch('files').fetch('lib/child_probe.rb', {}).values.any?(&:positive?) }
       assert child
       assert child.fetch('files').fetch('lib/parent_probe.rb').values.all?(&:zero?)
       assert FeedbackCoverage.collect(context)

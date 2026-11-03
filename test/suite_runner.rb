@@ -20,6 +20,9 @@ module TestSuiteRunner
     git_contract: "test/git_contract/**/*_contract.rb"
   }.freeze
   SUMMARY = /\A(\d+) (?:runs|tests), (\d+) assertions, (\d+) failures, (\d+) errors, (\d+) skips\r?$/n
+  # These modeled families share bootstrap and restore process state per case.
+  # Native adapter stubs and verifier at_exit/signal controls remain isolated.
+  CONTRACT_BATCH = %w[test/git_contract/apply_handoff_contract.rb test/git_contract/retry_recovery_contract.rb].freeze
 
   # Runs a named suite at root; returns true only for complete passing case evidence.
   # Exits with a child's exact nonzero status (128+signal for signals), or 1 for
@@ -50,6 +53,7 @@ module TestSuiteRunner
         abort "#{suite}: invalid required cases for #{path}"
       end
     end
+    abort "#{suite}: duplicate required identity across files" unless required.values.flatten.uniq == required.values.flatten
     if %i[default ordinary native_default].include?(suite)
       ordinary = JSON.parse(File.binread(File.join(root, "test/ordinary_cases.json")))
       abort "ordinary: empty required scope" if ordinary.empty?
@@ -77,7 +81,11 @@ module TestSuiteRunner
       groups << { layer: "native_default", paths: native.keys.sort, cases: native.values.flatten, ordinary: false, selected: true } unless suite == :ordinary
       return groups
     end
-    files.map { |path| { layer: suite.to_s, paths: [path], cases: required.fetch(path), ordinary: false, selected: false } }
+    batches = files.map { |path| [path] }
+    if suite == :git_contract
+      batches = [CONTRACT_BATCH] + batches.reject { |paths| CONTRACT_BATCH.include?(paths.first) }
+    end
+    batches.map { |paths| { layer: suite.to_s, paths: paths, cases: paths.flat_map { |path| required.fetch(path) }, ordinary: false, selected: false } }
   end
 
   # Executes selected root-relative files with live advisory progress and raw logs.
@@ -101,8 +109,13 @@ module TestSuiteRunner
       invocation = SecureRandom.uuid
       selection = required_cases.sort.join("\n")
       environment = { "ACT_SUITE_EVIDENCE" => evidence_path, "ACT_ORDINARY_SUITE" => nil,
+                      "ACT_SUITE_BATCHED" => paths.length > 1 && !selected ? "1" : nil,
                       "ACT_TEST_CODING_SKILL" => nil, "ACT_SUITE_INVOCATION" => invocation,
                       "ACT_SUITE_SELECTION" => selection, "ACT_SUITE_PROGRESS" => progress_path }
+      # CI checkout helpers and operator shells may export repository-affecting
+      # Git overrides. Test children start without ambient Git configuration;
+      # refusal contracts add the exact hostile variable they exercise.
+      ENV.each_key { |key| environment[key] = nil if key.start_with?("GIT_") }
       record = nil
       if feedback
         additions, record = TestFeedback.child(feedback, paths, required_cases)
@@ -121,7 +134,6 @@ module TestSuiteRunner
       preload_paths << File.join(root, "test/suite_reporter.rb")
       preload_paths.each { |path| preloads[path] = Digest::SHA256.file(path).hexdigest }
       environment["ACT_ORDINARY_SUITE"] = "1" if ordinary
-      environment.delete("RUBYOPT")
       permit_class = ordinary ? SuiteProcesses::OrdinaryPermit : NoGitExecution::Permit
       approval = permit_class.new(script: entry, sha256: "3bb1305fb5d9b0cd0478fd8d80c98aa5e97661495ce33053adcab08d90b0bfe7",
         arguments: arguments, preloads: preloads, environment: environment,
@@ -167,12 +179,16 @@ module TestSuiteRunner
         end
       end
       exit(status.exitstatus || 128 + status.termsig) unless status.success?
+      verification_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       evidence = validate(stdout, evidence_path, required_cases, label: paths.join(", "), invocation: invocation, selection: selection)
       if record
+        record["case_verification_seconds"] = Process.clock_gettime(Process::CLOCK_MONOTONIC) - verification_started
         record["seed"] = evidence.fetch("seed")
         record["tests"] = evidence.fetch("results").length
         record["assertions"] = evidence.fetch("results").sum { |result| result.fetch("assertions") }
+        coverage_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         record["coverage"] = FeedbackCoverage.collect(record.fetch("coverage_context"))
+        record["coverage_collect_seconds"] = Process.clock_gettime(Process::CLOCK_MONOTONIC) - coverage_started
         child_directory = record.fetch("coverage_context").fetch("directory")
         record["instrumented_interpreters"] = Dir.glob(File.join(child_directory, "*.started")).map do |path|
           prefix = path.delete_suffix(".started")

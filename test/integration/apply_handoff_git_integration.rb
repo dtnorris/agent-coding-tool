@@ -388,7 +388,9 @@ class ApplyHandoffGitIntegrationTest < Minitest::Test
       end
     end
     fixture do
-      cli(%w[y n])
+      # Establish the pre-applied target through the fixture seam. Public apply
+      # and validation-decline behavior is covered by the consent matrix above.
+      git(@a, "apply", input: @patch)
       before = state(@a)
       _stdout, stderr, status = cli(%w[y y y])
       assert_equal 2, status.exitstatus

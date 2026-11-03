@@ -2,6 +2,15 @@
 # frozen_string_literal: true
 
 # A bounded Codex CLI stand-in used only by the guarded native evidence tests.
+# Signal termination skips ordinary at_exit completion. Under feedback only,
+# publish complete native coverage before preserving the genuine TERM result.
+if ENV["ACT_COVERAGE_CONTEXT"]
+  Signal.trap("TERM") do
+    FeedbackCoverage.finish
+    raise SignalException.new("TERM")
+  end
+end
+
 arguments = ARGV
 final_index = arguments.index("--output-last-message")
 abort "missing final path" unless final_index && arguments[final_index + 1]

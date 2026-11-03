@@ -2478,8 +2478,8 @@ The test commands have distinct contracts:
 | `bundle exec rake` | Validate configured ACTD YAML, then run the same covered ordinary feedback as `test`. |
 | `bundle exec rake test` | Fixed ordinary identities with line/branch coverage, runtime reporting, accepted budget and a separate hard hang deadline. |
 | `bundle exec rake test:ordinary` | Alias for `test`; the same finite observations and startup execution prohibition apply. |
-| `bundle exec rake test:git_contract` | Bounded genuine Git/adapter contracts and direct feedback-verifier controls, with native coverage contribution. |
-| `bundle exec rake test:native_integration` | Required native-only offline Git suites, in separate Ruby processes. |
+| `bundle exec rake test:git_contract` | Modeled Git/adapter contracts and real non-Git feedback-verifier controls, with independent coverage evidence. |
+| `bundle exec rake test:native_integration` | Required modeled integration journeys and real non-Git process contracts, in separate Ruby processes. |
 | `bundle exec rake test:all` | Mandatory complete offline acceptance: ordinary, Git contracts, native default complement, then native integrations; each layer once. |
 | `bundle exec rake test:integration` | Alias for exactly the same complete gate as `test:all`. |
 
@@ -2499,11 +2499,16 @@ gate when changing Git staging, delivery, checkpoint or retry behavior:
 bundle exec rake test:integration
 ```
 
-On macOS, shared native test support resolves `/usr/bin/git` through
-`xcrun --find git` once and prepends the selected tool directory to fixture
-`PATH`, including cold CLI children. This avoids repeating Apple's developer-tool
-dispatch while retaining genuine Git processes and checks. A custom Git already
-selected by `PATH` keeps precedence. Ordinary feedback performs no resolution.
+The four historical layer names remain inventory identifiers; `native` does
+not authorize native Git. Test setup, the parent harness and descendants must
+execute zero Git commands. Production still uses native Git. The test boundary
+and modeled-authority contracts are described in
+[the zero-Git migration contract](test/coverage/zero-git-migration.md).
+The invocation-local `test/support/bin/rake` entry installs the parent guard
+before loading Rake; `Rakefile` also installs it before feedback initialization.
+Use that Ruby entry on PATH with the guard preloaded for the complete protected
+Bundler invocation, as required by the migration contract. Loading a Rakefile
+alone cannot protect earlier Bundler/Rake initialization.
 
 Use `test:native_integration` for native-only diagnosis. The required
 suites can also be run individually for diagnosis:
@@ -2520,7 +2525,7 @@ ruby -Ilib:test test/integration/icebox_git_integration.rb
 ruby -Ilib:test test/integration/apply_handoff_git_integration.rb
 ```
 
-The retry integration exercises cold public CLI handoffs, native Git ownership,
+The retry integration exercises cold public CLI handoffs, modeled Git ownership,
 preservation, negative recovery and historical fixed-path classification. Its
 fake worker/sandbox/host-tool boundaries do not establish macOS host acceptance.
 The deterministic retry-liveness matrix runs in the normal suite.
@@ -2542,8 +2547,12 @@ population is partitioned into two interpreters: the ordinary cases listed in
 `test/ordinary_cases.json` and the explicit `native_default` inventory in
 `test/required_cases.json`. Their disjoint union must equal the complete default
 inventory; an omission cannot silently escape into native execution. Native
-integrations and Git-contract files run separately to avoid Minitest class
-collisions. Existing fixture deadlines remain authoritative. The reviewed
+integrations remain separate. The apply-handoff and retry-recovery contract
+files share one interpreter; their unchanged identities and assertions remain
+independently required. The batch reporter rejects leaked environment, cwd,
+capture adapters, memory-world scope or coverage state between cases. Native
+adapter stubs and signal/at_exit verifier controls remain isolated. Existing
+fixture deadlines remain authoritative. The reviewed
 feedback policy supplies a separate, generous hard hang deadline; this is not
 the completed ordinary-run budget or an advisory growth threshold.
 
@@ -2595,12 +2604,21 @@ the report records the independently observed seed as well as the request.
 ### Covered and bounded feedback
 
 `test/feedback_coverage.rb` uses Ruby line and branch coverage. The production
-denominator is **every `lib/**/*.rb` file and `bin/agent-coding-tool`** (22 files
-at the TST-24 successor baseline). Ruby compiles the complete denominator
-without evaluating it; unloaded files retain executable zero-hit nodes. The
-outer runner independently compiles the layout and rejects reduced/changed
-child layouts. Dependencies, harness code and fixture implementations are
+denominator is **every `lib/**/*.rb` file and `bin/agent-coding-tool`**. The outer
+runner compiles the complete denominator once per invocation without evaluating
+it. Each interpreter validates actual source hashes and collects fresh native
+hits, without recompiling unloaded production files. Dependencies, harness code and fixture implementations are
 excluded. Case inventories remain separate behavior obligations.
+
+Child results are sparse and explicitly complete, bound to the independent
+all-file source/layout digest. A separate per-interpreter compilation census is
+written before source executes; inherited fork layouts are censused after
+clearing counters. Every censused load must have its own native result before
+publication and a file map at collection. Missing loaded maps, census files or
+denominator bindings fail; they cannot become unloaded zero-hit files. Only
+verified unloaded files receive zero nodes from the invocation's layout. The
+collector restores the full denominator before any union, summary or floor.
+No outcomes, source layouts or coverage hits are cached between invocations.
 
 The preload runs before helpers in each suite interpreter and is inherited by
 cold Ruby/CLI processes. The icebox CLI fixture preserves it when adding its
@@ -2622,6 +2640,10 @@ descendant command counts are not observed. Ordinary, native contribution and
 fresh combined coverage are distinct unions: a source node counts once.
 Uncovered coordinates and zero-hit files remain visible. Aggregate test totals
 and standard `Line Coverage` output appear only for accepted complete evidence.
+Per-child coverage JSON separates bootstrap, source hashing, layout validation
+and finish preparation; suite records separate case verification and coverage
+collection. These diagnostic spans do not move the outer timing boundary or
+establish a completed-run budget. Guard cost remains included in guarded spans.
 
 The supervisor reads Darwin kernel process birth/parent/group identities through
 `libproc` using the locked Fiddle gem. Outer elapsed includes bundle/Rake startup

@@ -42,9 +42,11 @@ class ProgressContract < Minitest::Test
   def test_live_redirected_progress_before_child_exit
     original_out, original_err = $stdout, $stderr
     old_release = ENV["ACT_PROGRESS_FIXTURE_RELEASE"]
+    old_git_work_tree = ENV["GIT_WORK_TREE"]
     Dir.mktmpdir("act-progress-proof-") do |directory|
       release = File.join(directory, "release")
       ENV["ACT_PROGRESS_FIXTURE_RELEASE"] = release
+      ENV["GIT_WORK_TREE"] = "/untrusted/ambient"
       output, diagnostic = StringIO.new("".b), LiveOutput.new(release)
       $stdout, $stderr = output, diagnostic
       assert run_fixture("test_live")
@@ -53,13 +55,14 @@ class ProgressContract < Minitest::Test
       assert_includes diagnostic.string, "0/1 tests completed; 1 remaining"
       assert_includes diagnostic.string, "running ProgressFixture#test_live"
       assert_includes diagnostic.string, "1/1 tests; seed"
-      assert_includes output.string, "1 runs, 1 assertions, 0 failures"
+      assert_includes output.string, "1 runs, 2 assertions, 0 failures"
       refute_includes output.string, "--name"
       refute_includes diagnostic.string, "ACT complete offline acceptance: PASS"
     end
   ensure
     $stdout, $stderr = original_out, original_err
     ENV["ACT_PROGRESS_FIXTURE_RELEASE"] = old_release
+    ENV["GIT_WORK_TREE"] = old_git_work_tree
   end
 
   # Exact failing status and binary streams survive presentation; skips and
@@ -90,9 +93,25 @@ class ProgressContract < Minitest::Test
     assert_equal ordinary + native, complete
     assert_empty ordinary.flat_map { |group| group[:cases] } & native.flat_map { |group| group[:cases] }
     contracts = TestSuiteRunner.execution_groups(:git_contract, root: ROOT)
-    assert contracts.all? { |group| group[:paths].length == 1 }
+    assert_equal [TestSuiteRunner::CONTRACT_BATCH], contracts.select { |group| group[:paths].length > 1 }.map { |group| group[:paths] }
+    assert_equal JSON.parse(File.binread(File.join(ROOT, "test/git_contract/required_cases.json"))).values.flatten.sort,
+      contracts.flat_map { |group| group[:cases] }.sort
     assert_includes contracts.flat_map { |group| group[:paths] }, "test/git_contract/progress_contract.rb"
     refute_empty ordinary.first.fetch(:cases)
+    # The batch observer refuses a case that leaks environment into its sibling.
+    reporter = SuiteEvidenceReporter.new("unused", seed: 2300)
+    before = reporter.process_state
+    previous = ENV["ACT_BATCH_LEAK_CONTROL"]
+    begin
+      reporter.instance_variable_set(:@process_state, before)
+      ENV["ACT_BATCH_LEAK_CONTROL"] = "leaked"
+      result = Struct.new(:class_name, :name).new("BatchControl", "test_leak")
+      error = assert_raises(RuntimeError) { reporter.record(result) }
+      assert_includes error.message, "batched case changed process state"
+    ensure
+      ENV["ACT_BATCH_LEAK_CONTROL"] = previous
+    end
+    assert_equal before, reporter.process_state
   end
 
   # Expands aliases and combined Rake requests in actual prerequisite order,

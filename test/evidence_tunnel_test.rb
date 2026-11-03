@@ -355,6 +355,54 @@ class EvidenceTunnelTest < Minitest::Test
     [result, signals, reaped]
   end
 
+  # Runs normal owned-group cleanup with deterministic child wait results and
+  # clock advancement. Returns the result, signals, waits and bounded sleeps.
+  def cleanup_after_term(wait_results)
+    pid, signals, waits, sleeps = 987_654, [], [], []
+    clock = 0.0
+    results = wait_results.dup
+    cleanup = AgentCodingTool::EvidenceTunnel.instance_method(:cleanup_group).bind(@tunnel)
+    result = nil
+    Process.stub(:getpgid, ->(_target) { pid }) do
+      Process.stub(:kill, ->(signal, target) { signals << [signal, target]; 1 }) do
+        Process.stub(:waitpid, lambda { |target, flags = nil|
+          waits << [target, flags]
+          flags ? results.shift : target
+        }) do
+          Process.stub(:clock_gettime, ->(_source) { clock }) do
+            IO.stub(:select, lambda { |_read, _write, _error, seconds|
+              sleeps << seconds
+              clock += seconds
+              nil
+            }) { result = cleanup.call(pid) }
+          end
+        end
+      end
+    end
+    [result, signals, waits, sleeps]
+  end
+
+  # A cooperative group leader gets enough bounded time to finish TERM cleanup;
+  # descendants are still force-killed and the already reaped leader is not.
+  def test_cleanup_allows_cooperative_term_completion
+    result, signals, waits, sleeps = cleanup_after_term([nil, nil, 987_654])
+    assert_equal "owned_groups_signaled_and_reaped", result
+    assert_equal [["TERM", -987_654], ["KILL", -987_654]], signals
+    assert_equal [[987_654, Process::WNOHANG]] * 3, waits
+    assert_equal [0.05, 0.05], sleeps
+  end
+
+  # An uncooperative leader cannot extend cleanup beyond the fixed grace; its
+  # group and retained direct child are force-killed before the blocking reap.
+  def test_cleanup_forces_uncooperative_group_after_grace
+    result, signals, waits, sleeps = cleanup_after_term([])
+    assert_equal "owned_groups_signaled_and_reaped", result
+    assert_equal [["TERM", -987_654], ["KILL", -987_654], ["KILL", 987_654]], signals
+    assert waits[0...-1].all? { |entry| entry == [987_654, Process::WNOHANG] }
+    assert_equal [987_654, nil], waits.last
+    assert_in_delta AgentCodingTool::EvidenceTunnel::CLEANUP_SECONDS, sleeps.sum, 0.0001
+  end
+
   # Darwin hides a retained zombie from getpgid while ps still binds its group.
   # Only a leader-present all-zombie inventory qualifies; no group is signaled.
   def test_cleanup_qualifies_unreaped_terminal_group_after_esrch

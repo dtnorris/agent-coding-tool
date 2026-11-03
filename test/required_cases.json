@@ -396,7 +396,8 @@
       "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
       "RunEvidenceTest#test_native_share_continuous_public_journey",
       "RunEvidenceTest#test_shared_command_receipt_survives_missing_final_without_claiming_acceptance",
-      "RunEvidenceTest#test_shared_discovery_refresh_pagination_and_exact_invocation_binding"
+      "RunEvidenceTest#test_shared_discovery_refresh_pagination_and_exact_invocation_binding",
+      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
     ],
     "test/incidental_metadata_test.rb": [
       "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental",
@@ -426,6 +427,8 @@
       "EvidenceTunnelTest#test_readiness_bounds_slow_headers",
       "EvidenceTunnelTest#test_readiness_bounds_slow_body",
       "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls",
+      "EvidenceTunnelTest#test_cleanup_allows_cooperative_term_completion",
+      "EvidenceTunnelTest#test_cleanup_forces_uncooperative_group_after_grace",
       "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch",
       "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch",
       "EvidenceTunnelTest#test_activity_backpressure_is_visible_and_cannot_block_cleanup"
@@ -459,6 +462,17 @@
       "ManageTest#test_unsafe_source_types_refuse_without_copy",
       "ManageTest#test_size_limits_refuse_before_copy_without_truncation",
       "ManageTest#test_local_goal_edits_change_the_next_reminder"
+    ],
+    "test/source_browsing_test.rb": [
+      "SourceBrowsingTest#test_separate_grants_live_provenance_and_changed_chunks",
+      "SourceBrowsingTest#test_denied_files_never_enter_source_results_or_audit",
+      "SourceBrowsingTest#test_release_rechecks_lease_generation_expiry_and_budgets",
+      "SourceBrowsingTest#test_ancestor_swap_and_in_place_change_fail_closed",
+      "SourceBrowsingTest#test_bounded_listing_search_and_large_binary_reads",
+      "SourceBrowsingTest#test_git_transport_bounds_bytes_deadline_and_query_authority",
+      "SourceBrowsingTest#test_audience_binding_and_remote_grant_fields_refuse",
+      "SourceBrowsingTest#test_adapter_stream_accounts_source_bytes_and_denies_next_chunk",
+      "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation"
     ]
   },
   "integration": {
@@ -720,7 +734,8 @@
       "RunEvidenceTest#test_native_tunnel_cli_dotenv_two_sessions_and_negative_controls",
       "RunEvidenceTest#test_native_tunnel_lifecycle_and_exclusive_ownership",
       "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
-      "RunEvidenceTest#test_native_share_continuous_public_journey"
+      "RunEvidenceTest#test_native_share_continuous_public_journey",
+      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
     ]
   }
 }

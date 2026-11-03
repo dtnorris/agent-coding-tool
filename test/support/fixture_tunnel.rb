@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../../lib/agent_coding_tool/evidence_tunnel"
+require_relative "source_fixture"
 
 # Native fake-client tests own no hosted endpoint. Only their exact synthetic
 # executable and endpoint bypass host-client inventory; kernel endpoint locks,

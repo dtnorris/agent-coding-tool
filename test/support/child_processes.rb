@@ -31,7 +31,7 @@ module ChildProcesses
     "planning_consumer" => "10952eb6feabb2aa3f106494e494f782e4049964b3ff3e13d145b66e56fdb851",
 
     "status" => "2b3b1ffc56c1774ddaf4c11329d6da73984e588cf95ed74049d97a13bc0beeee",
-    "manual_worker" => "405dc429f07e250755eb0a4406d7e5afdf47338412ec7e3e517a467a3f89f2e7",
+    "manual_worker" => "f213498808f7953184bd1e751381a96951d294bb082ea40b1986a49cbc5462b5",
     "cold_cli" => "c0fcdc00673b283c718fd8c93aa3b27b92590afa76eecf26009d98af0b516a69",
     "process_probe" => "7cb7536f1c8e40e19a7e0ba49310df26098826a47860b1bf94de7ef74109bb15",
     "launcher_worker" => "bc3ac327c1c88ffab9ea177624032441f85608beca14a940daea1507c053abd1",

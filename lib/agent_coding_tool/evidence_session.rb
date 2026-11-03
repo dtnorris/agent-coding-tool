@@ -4,6 +4,7 @@ require "fileutils"
 require "securerandom"
 require_relative "run_evidence_store"
 require_relative "task_sharing"
+require_relative "source_sharing"
 
 module AgentCodingTool
   # Durable, finite read admission, separate from ACT lifecycle/checkpoint state.
@@ -11,6 +12,7 @@ module AgentCodingTool
   # neither this ledger nor MCP context authenticates a conversation.
   class EvidenceSession
     include TaskSharing
+    include SourceSharing
     Refused = RunEvidenceReader::Refused
     LIMITS = { "seconds" => 3600, "requests" => 8192,
       "wire_bytes" => 128 * 1024 * 1024, "decoded_bytes" => 64 * 1024 * 1024 }.freeze

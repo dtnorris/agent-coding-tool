@@ -113,9 +113,11 @@ module AgentCodingTool
       if action.nil? || %w[help --help].include?(action)
         @out.puts "share tunnel [--min N] (default 60); share TASK [--min N] (default 30); maximum 60 minutes"
         @out.puts "share status; share revoke TASK; share stop. Delivered bytes cannot be recalled."
+        @out.puts "share source grant ID --code-root PATH --root REPOSITORY [--min N]; share source revoke ID"
         @out.puts "share setup --env-file PATH --client PATH --runtime-dir PATH --account ACCOUNT --workspace WORKSPACE --endpoint tunnel_ID/main"
         return 0
       end
+      return source_share_command(argv) if action == "source"
       options = {}
       parser = OptionParser.new do |opts|
         (ShareController::SETTINGS + ["min"]).each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
@@ -143,6 +145,27 @@ module AgentCodingTool
     rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError
       @err.puts "ERROR: share refused; use act share help, act share setup for missing facts, or act share tunnel for a new ready tunnel; inspect act share status before retrying."
       2
+    end
+
+    # Parses local source consent separately from task sharing. Exact fields and
+    # finite minutes are validated before admission; errors use share's fixed
+    # refusal path. Returns zero after printing local grant/revocation metadata.
+    def source_share_command(argv)
+      action, repository = argv.shift(2)
+      options = {}
+      parser = OptionParser.new do |opts|
+        %w[code-root root min].each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      minutes = options.fetch("min", "30")
+      raise RunEvidenceReader::Refused, "source.fields" unless argv.empty? && repository &&
+        ((action == "grant" && (options.keys - %w[code-root root min]).empty? && options.key?("code-root") && options.key?("root")) ||
+          (action == "revoke" && options.empty?)) && minutes.match?(/\A[1-9][0-9]?\z/) && minutes.to_i <= 60
+      result = ShareController.new(@data_root, out: @out, err: @err).source(repository,
+        code_root: options["code-root"], root: options["root"], minutes: minutes.to_i, revoke: action == "revoke")
+      @out.puts JSON.generate(result)
+      0
     end
 
     # Copies a source-bound reminder through macOS pbcopy, or writes only its
@@ -1892,6 +1915,8 @@ module AgentCodingTool
           share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)
           share TASK [--min MINUTES]    grant/renew task visibility, default 30 (maximum 60)
           share {status|stop}; share revoke TASK; share help
+          share source grant ID --code-root PATH --root REPOSITORY [--min MINUTES]
+          share source revoke ID      revoke live source independently of task evidence
                               zero tasks on startup; whole configured Work workspace audience
                               setup required once; no execution/publication; delivered bytes cannot be recalled
           manage TASK [--stdout]

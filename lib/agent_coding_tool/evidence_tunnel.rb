@@ -16,6 +16,7 @@ module AgentCodingTool
     Refused = RunEvidenceReader::Refused
     ENVIRONMENT = %w[PATH HOME TMPDIR LANG].freeze
     STARTUP_SECONDS = 30
+    CLEANUP_SECONDS = 1
 
     # Uses explicit operator paths and existing grant facts. No path is discovered
     # from cwd, a task-specific package, source HEAD or historical process IDs.
@@ -306,7 +307,7 @@ module AgentCodingTool
           raise Refused, "share.activity_failed" unless event.is_a?(Hash) && (required - event.keys).empty? &&
             (event.keys - required - RunEvidenceReader::IDENTITIES - ["artifact"]).empty? &&
             event["at"].is_a?(String) && event["at"].match?(/\A[0-9TZ:.+-]{1,32}\z/) &&
-            %w[discover refresh select manifest read invalid].include?(event["operation"]) &&
+            %w[discover refresh select manifest read source_discover source_list source_search source_read invalid].include?(event["operation"]) &&
             %w[delivered refused delivery_failed].include?(event["result"]) &&
             %w[bytes wire_bytes].all? { |key| event[key].is_a?(Integer) && event[key].between?(0, EvidenceAdapter::FRAME) } &&
             event.slice(*RunEvidenceReader::IDENTITIES, "artifact").all? { |_key, value| value.is_a?(Integer) || value.is_a?(String) && value.match?(/\A[A-Za-z0-9_-]{1,128}\z/) }
@@ -337,6 +338,7 @@ module AgentCodingTool
     # Returns a fixed result; native descendant absence still needs host evidence.
     def cleanup_group(pid)
       result = "unknown"
+      reaped = nil
       group = begin
         Process.getpgid(pid)
       rescue Errno::ESRCH
@@ -346,7 +348,12 @@ module AgentCodingTool
       end
       if group == pid
         Process.kill("TERM", -pid)
-        IO.select(nil, nil, nil, 0.05)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + CLEANUP_SECONDS
+        until (reaped = Process.waitpid(pid, Process::WNOHANG))
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          break unless remaining.positive?
+          IO.select(nil, nil, nil, [0.05, remaining].min)
+        end
         Process.kill("KILL", -pid)
         result = "owned_groups_signaled_and_reaped"
       end
@@ -360,12 +367,14 @@ module AgentCodingTool
     ensure
       # Direct child ownership is retained even if group signaling is denied.
       # Damage containment does not turn a blocked group result into PASS.
-      begin
-        Process.kill("KILL", pid)
-      rescue SystemCallError
-        nil
+      unless reaped
+        begin
+          Process.kill("KILL", pid)
+        rescue SystemCallError
+          nil
+        end
+        Process.waitpid(pid)
       end
-      Process.waitpid(pid)
     end
 
     # Qualifies only Darwin ESRCH/EPERM cases with a zombie-only owned group. Numeric

@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
-require_relative "../source_fixture"
-
-# Preserve TERM while recording the exact completion attempt before the owner KILL.
+# Arm coverage cleanup before fixture loading: startup cleanup may signal this
+# interpreter while its preload chain is still running.
 Signal.trap('TERM') do
   if ENV['ACT_COVERAGE_CONTEXT']
     context = JSON.parse(File.binread(ENV.fetch('ACT_COVERAGE_CONTEXT')))
@@ -18,3 +17,5 @@ Signal.trap('TERM') do
   end
   raise SignalException.new('TERM')
 end
+
+require_relative "../source_fixture"

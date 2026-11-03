@@ -12,7 +12,7 @@ module TunnelProcesses
   SOURCE = File.join(ROOT, 'lib/agent_coding_tool/evidence_tunnel.rb').freeze
   SOURCE_HASH = '480d21cf38f84222c473b287c7eb75f8560c0ecfb2f39494cb86a6c4a045cab2'
   CLIENT = File.join(__dir__, 'fixtures/tunnel_client.rb').freeze
-  CLIENT_HASH = 'ebefd409181294a00776a8966ee20c8196641019527cc71d4adefc65a6fd4289'
+  CLIENT_HASH = '42643463e393d10f17c24c6adbb53c6f6a55d443edbf3652e1c3f11b813d8a69'
   ENTRY = File.join(ROOT, 'bin/agent-coding-tool').freeze
   ENTRY_HASH = '35cd5470b2bddf672a1c43763ac6aece470517c5adc909b3dd9d34c2693ca309'
 

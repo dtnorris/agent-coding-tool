@@ -21,9 +21,17 @@ The four inventories remain `ordinary`, `git_contract`, `native_default` and
 `native_integration`. Historical native names identify logical obligations;
 they grant no exception to zero-Git. The exact ordinary/default complement stays
 disjoint. Preserve 256 + 27 + 74 + 102 = 459 original identities, no skips,
-filtering, duplicate results or removed scenarios. The 16 separately inventoried
-TST-33 verifier cases are additional component checks, not substitutes for these
-459 identities. TST-45 integrates their mandatory registration.
+filtering, duplicate results or removed scenarios. The boundary/provenance
+verifier's 20 currently inventoried cases (including the later missing-executable
+controls) are additional checks, not substitutes for these 459 identities.
+`git_contract/zero_git_contract.rb` registers them in the required Git-contract
+inventory, so both `test:all` and the targeted `test:git_contract` task require
+their independent case evidence. They retain a separate interpreter and the
+suite's inherited production coverage context. Synthetic coverage probes use a
+disjoint denominator alongside that context; they never replace it or add fixture
+nodes to production coverage. Cached-method attacks retain actual native C methods
+even when the parent guard is already preloaded. The standalone verifier remains
+available for diagnosis.
 
 [zero_git_inventory.json](zero_git_inventory.json) records every original
 layer/file/class/method, method hash/range, documented purpose, assertion sites,

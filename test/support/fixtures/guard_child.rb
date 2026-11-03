@@ -19,7 +19,9 @@ when "coverage"
   require "json"
   context = ENV["ACT_COVERAGE_CONTEXT"]
   running = !!(defined?(Coverage) && Coverage.running?)
-  require File.join(JSON.parse(File.binread(context)).fetch("root"), "lib/coverage_probe") if running
+  probe = ARGV.fetch(1)
+  FeedbackCoverage.start_probe(probe) if running && probe != context
+  require File.join(JSON.parse(File.binread(probe)).fetch("root"), "lib/loaded") if running
   puts JSON.generate("context" => context, "running" => running, "pid" => Process.pid,
     "guard_loaded" => $LOADED_FEATURES.include?(NoGitExecution::GUARD),
     "coverage_loaded" => $LOADED_FEATURES.include?(NoGitExecution::COVERAGE))
@@ -38,8 +40,10 @@ when "attack"
 when "ordinary"
   require_relative "../../ordinary_execution"
   bundler = $LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") }
+  preloads = bundler ? { bundler => Digest::SHA256.file(bundler).hexdigest } : {}
+  preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest if ENV["ACT_COVERAGE_CONTEXT"]
   permit = NoGitExecution::Permit.new(script: __FILE__, sha256: Digest::SHA256.file(__FILE__).hexdigest,
-    arguments: ["text"], preloads: bundler ? { bundler => Digest::SHA256.file(bundler).hexdigest } : {})
+    arguments: ["text"], preloads: preloads)
   begin
     NoGitExecution.with_permit(permit) { Open3.capture3(permit.environment, *permit.argv) }
   rescue OrdinaryExecution::ProhibitedExecution

@@ -151,7 +151,7 @@ module AgentCodingTool
       bases = names.map { |name| state.fetch("snapshot").fetch(name) }
       validate_authorities!(task, state)
       verified_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_manual_overlap: allow_write_collision)
+        allow_manual_overlap: allow_write_collision, launch_admission: true)
       manual_conflicts = @manual_conflicts
       config = Config.load(File.join(@data_root, "config.yml"))
       root = WorktreeManager.canonical_system_path(config.worktree_root)
@@ -218,7 +218,7 @@ module AgentCodingTool
         changed_write!(task, state, @report.fetch("launch_heads"))
         manager.inspect!
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_manual_overlap: allow_write_collision)
+          allow_manual_overlap: allow_write_collision, launch_admission: true)
         identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees") } }
         unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
@@ -231,7 +231,7 @@ module AgentCodingTool
         heads = checked_status!(id)
         changed_write!(task, state, heads)
         current_conflicts = reject_unknown_reservations!(id, bases,
-                                                         allow_manual_overlap: allow_write_collision)
+          allow_manual_overlap: allow_write_collision, launch_admission: true)
         unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during sandbox probe; inspect and retry"
         end
@@ -263,7 +263,7 @@ module AgentCodingTool
         manager.inspect!
         verify_fixture!(inventory)
         final_conflicts = reject_unknown_reservations!(id, bases,
-          allow_manual_overlap: allow_write_collision)
+          allow_manual_overlap: allow_write_collision, launch_admission: true)
         unless identity.call(final_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed before reservation; inspect and retry"
         end
@@ -383,7 +383,7 @@ module AgentCodingTool
       heads = nil
       status = @coordinator.statuses([id], strict_freshness: true) { |observed| heads = observed }.first
       raise InvalidState, "#{id}: launch blocked: #{status['status']} #{status['reason']}" unless status.fetch("status") == "PREPARED"
-      @collisions = status.fetch("write_collisions", [])
+      @collisions = @coordinator.launch_write_reservations(id)
       status.fetch("state").fetch("snapshot").to_h do |name, repo|
         [name, repo.slice("remote_url", "branch").merge("pushed_sha" => heads.fetch(repo.values_at("remote_url", "branch")))]
       end
@@ -471,12 +471,13 @@ module AgentCodingTool
 
     # Returns verified managed siblings and separately records manual reservations.
     # Launch may admit a no-run IN_FLIGHT reservation with explicit permission;
-    # delivery never may. Damaged/partial managed evidence still raises InvalidState.
-    def reject_unknown_reservations!(id, bases, allow_manual_overlap: false)
+    # delivery never may. Only launch admits independently pinned sibling bases;
+    # damaged/partial managed evidence still raises InvalidState in either path.
+    def reject_unknown_reservations!(id, bases, allow_manual_overlap: false, launch_admission: false)
       external_activity.assert_clear!(id)
-      # Coordinator reports fresh IN_FLIGHT/CANDIDATE conflicts. This additional
-      # pass also sees stale manual starts and orphaned host evidence. Historical
-      # source movement never erases a reservation or repairs managed evidence.
+      # Discover reservations independently of freshness projections, then bind
+      # each to owned run evidence. Source movement never erases a reservation
+      # or repairs managed evidence.
       store = StateStore.new(File.join(@data_root, "state"))
       all_reports = reports
       verified = []
@@ -511,7 +512,7 @@ module AgentCodingTool
           next
         end
 
-        if shared.any? { |name|
+        if !launch_admission && shared.any? { |name|
           previous = other_state.fetch("snapshot").fetch(name)
           bases.none? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
             previous.values_at("remote_url", "branch", "pushed_sha") }
@@ -520,7 +521,7 @@ module AgentCodingTool
         end
 
         collision = @collisions.find { |row| row.fetch("task_id") == other_id }
-        unless collision && %w[IN_FLIGHT CANDIDATE].include?(collision.fetch("status"))
+        unless launch_admission || (collision && %w[IN_FLIGHT CANDIDATE].include?(collision.fetch("status")))
           raise InvalidState, "launch: #{other_id} has an unresolved in-flight reservation or candidate write reservation; operator judgment required"
         end
         matching = all_reports.select { |row| row["task_id"] == other_id &&
@@ -528,7 +529,8 @@ module AgentCodingTool
         unless matching.length == 1
           raise InvalidState, "launch: #{other_id} has no unique ACT-owned worker evidence; manual worker isolation and activity are unverified. Review its worker/worktree before retrying"
         end
-        verified << verify_conflicting_worker!(other, other_state, matching.first, shared, bases)
+        verified << verify_conflicting_worker!(other, other_state, matching.first, shared, bases,
+          launch_admission: launch_admission)
       end
       all_reports.each do |report|
         next if TERMINAL.include?(report["status"])
@@ -562,7 +564,9 @@ module AgentCodingTool
 
     # Verifies a sibling's task/state/run and shared pinned authorities, returning
     # owned roots/identity. Unverified HEAD movement, sandbox or process state raises.
-    def verify_conflicting_worker!(task, state, report, names, bases)
+    # Launch binds each sibling to its own preparation; delivery additionally
+    # requires matching shared baselines. This never asserts merge compatibility.
+    def verify_conflicting_worker!(task, state, report, names, bases, launch_admission: false)
       other_id = task.fetch("id")
       path = report.fetch("_report_path")
       run_dir = File.dirname(path)
@@ -584,7 +588,7 @@ module AgentCodingTool
       end
       names.each do |name|
         previous = state.fetch("snapshot").fetch(name)
-        unless bases.any? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
+        unless launch_admission || bases.any? { |base| base.values_at("remote_url", "branch", "pushed_sha") ==
           previous.values_at("remote_url", "branch", "pushed_sha") }
           raise InvalidState, "launch: #{other_id}/#{name} has an incompatible prepared baseline; reconcile before parallel launch"
         end
@@ -592,9 +596,12 @@ module AgentCodingTool
       root = Config.load(File.join(@data_root, "config.yml")).worktree_root
       manager = WorktreeManager.new(root: root, record_path: record_path, transport: @transport)
       # Only host-validated exact candidate commits may replace the prepared HEAD.
-      overrides = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
-                                 .verified_delivery_heads(other_id, report, run_dir)
+      delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
+      overrides = delivery.verified_delivery_heads(other_id, report, run_dir)
       inventory = manager.inspect!(head_overrides: overrides)
+      if launch_admission && inventory["invocation_id"] != report["invocation_id"]
+        raise InvalidState, "launch: #{other_id} invocation differs from its owned attempt"
+      end
       unless report["worktrees"].is_a?(Hash) &&
              immutable_inventory(report.fetch("worktrees")) == immutable_inventory(inventory) &&
              inventory["task_id"] == other_id && inventory["attempt"] == report["attempt"] &&
@@ -626,6 +633,7 @@ module AgentCodingTool
       when "running"
         verify_running_process!(report)
       when "exited"
+        delivery.send(:verify_worker_artifacts!, report, run_dir) if launch_admission
         unless CleanupLiveness.new.check(report, inventory) == :clear
           raise InvalidState, "launch: #{other_id} terminal worker liveness is uncertain; inspect before retrying"
         end

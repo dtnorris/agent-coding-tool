@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require_relative "launcher_support"
+require_relative "support/checkpoint_processes"
 require "stringio"
 require "timeout"
 
@@ -9,6 +10,16 @@ require "timeout"
 class ParallelLaunchTest < Minitest::Test
   include TestHelpers
   include LauncherSupport
+  include CheckpointProcesses
+
+  # Runs the public parser and workflow with captured output; returns CLI status
+  # and streams. Only finite Git/provider/process boundaries are modeled.
+  def public_cli(*arguments)
+    output, error = StringIO.new, StringIO.new
+    code = AgentCodingTool::CLI.run(arguments, root: File.expand_path('..', __dir__),
+      data_root: @data, out: output, err: error)
+    [code, output.string, error.string]
+  end
 
   def handoff(id)
     JSON.parse(File.binread(Dir.glob("#{@data}-runs/#{id}/*/handoff.json").fetch(0)))
@@ -160,31 +171,147 @@ class ParallelLaunchTest < Minitest::Test
     end
   end
 
-  # Verifies advanced main makes parallel prepared baselines incompatible; assertion failures raise.
-  def test_advanced_main_makes_parallel_prepared_baselines_incompatible
+  # Fresh public launches keep older running, exited and candidate reservations
+  # intact. Real workers, locks, sandbox decisions and checkpoint gates remain;
+  # the synchronous CLI shares modeled Git without requiring a socket broker.
+  def test_cross_baseline_launch_preserves_managed_reservations
     fixture(git: true, process: true, mutable_remote: true) do
-      write_task(@data, id: "B", repositories: { "repo" => { "access" => "write", "path" => @ordinary } })
-      @coordinator.prepare("T")
-      write_fake("sleep")
-      host = spawn_cli_worker("T")
-      child = nil
-      begin
-        child = wait_for_running("T").fetch("child_pid")
-        File.write(File.join(@ordinary, "file.txt"), "new main\n")
-        git("add", "-A", chdir: @ordinary)
-      git("commit", "-m", "advance main", chdir: @ordinary)
-        git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
-        @coordinator.prepare("B")
-        [false, true].each do |explicit|
-          error = assert_raises(AgentCodingTool::InvalidState) {
-            launcher.launch("B", allow_write_collision: explicit)
-          }
-          assert_match(/incompatible prepared baseline/, error.message)
+      %w[E C B D].each do |id|
+        write_task(@data, id: id, repositories: { "alias" => { "access" => "write", "path" => @ordinary } })
+      end
+      constructor = AgentCodingTool::Launcher.method(:new)
+      factory = ->(**options) { constructor.call(**options, codex: @fake, spawner: method(:spawn_fake_worker)) }
+      AgentCodingTool::Launcher.stub(:new, factory) do
+        %w[E C T].each { |id| assert_equal 0, public_cli("prepare", id).first }
+        %w[E C].each do |id|
+          code, _output, error = public_cli("launch", id, "--codex")
+          assert_equal 0, code, error
         end
-        assert_equal "STALE", @coordinator.status("T").fetch("status")
-        refute @store.load("B")["started_at"]
-      ensure
-        stop_cli_worker(host, child)
+        checkpoint = AgentCodingTool::Checkpoint.new(data_root: @data)
+        %w[E C].each { |id| checkpoint.record(id, workspace: handoff(id).fetch("workspace")) }
+        @coordinator.record("C", outcome: "candidate_complete", artifact: "fixture candidate")
+        write_fake("sleep")
+        host = Thread.new { public_cli("launch", "T", "--codex") }
+        begin
+          running = wait_for_running("T")
+          Timeout.timeout(5) do
+            sleep 0.01 until File.file?(File.join(@root, "worker-ready")) &&
+              File.binread(File.join(@root, "worker-ready")).to_i == running.fetch("child_pid")
+          end
+          refute File.exist?(running.fetch("final_path")), "running workers need no final artifact"
+          File.write(File.join(@ordinary, "file.txt"), "new main\n")
+          setup_git("add", "-A", chdir: @ordinary)
+          setup_git("commit", "-m", "advance main", chdir: @ordinary)
+          setup_git("push", "origin", "HEAD:refs/heads/main", chdir: @ordinary)
+          fresh = setup_git("rev-parse", "HEAD", chdir: @ordinary)
+          assert_equal %w[STALE STALE STALE_CANDIDATE], %w[T E C].map { |id| @coordinator.status(id).fetch("status") }
+          assert_equal 0, public_cli("prepare", "B").first
+
+          # Admission must retain fail-closed ownership/sandbox/liveness checks
+          # even though every old reservation is absent from the fresh projection.
+          report_path = Dir.glob("#{@data}-runs/E/*/handoff.json").fetch(0)
+          original = File.binread(report_path)
+          before_spawn = Dir.glob(File.join(@root, "worker-process-*")).sort
+          mutations = [
+            [/worktree ownership differs/, ->(row) { row["attempt"] = 99 }],
+            [/invocation differs from its owned attempt/, ->(row) { row["invocation_id"] = "foreign" }],
+            [/sandbox verification is unavailable/, ->(row) { row.delete("sandbox_probe") }],
+            [/launch roots or pinned heads are unverified/, ->(row) { row["workspace"] = running.fetch("workspace") }],
+            [/terminal worker liveness is uncertain/, ->(row) { row.delete("ended_at") }],
+            [/judgment_required execution evidence/, ->(row) { row["status"] = "judgment_required" }]
+          ]
+          mutations.each do |message, mutate|
+            altered = JSON.parse(original)
+            mutate.call(altered)
+            File.binwrite(report_path, JSON.generate(altered))
+            code, _output, error = public_cli("launch", "B", "--codex", "--allow-write-collision")
+            assert_equal 2, code
+            assert_match message, error
+            refute @store.load("B")["started_at"]
+            assert_equal before_spawn, Dir.glob(File.join(@root, "worker-process-*")).sort
+          ensure
+            File.binwrite(report_path, original)
+          end
+
+          final_path = handoff("E").fetch("final_path")
+          final_bytes = File.binread(final_path)
+          begin
+            File.binwrite(final_path, "altered terminal output")
+            code, _output, error = public_cli("launch", "B", "--codex", "--allow-write-collision")
+            assert_equal 2, code
+            assert_match(/missing\/altered worker artifact/, error)
+            assert_equal before_spawn, Dir.glob(File.join(@root, "worker-process-*")).sort
+          ensure
+            File.binwrite(final_path, final_bytes)
+          end
+
+          # A different live HEAD needs verified candidate evidence, even when
+          # the older preparation and worktree registration remain authentic.
+          sibling_ref = "refs/heads/act/E/attempt-1"
+          begin
+            @memory_checkout.repository.refs[sibling_ref] = fresh
+            code, _output, error = public_cli("launch", "B", "--codex", "--allow-write-collision")
+            assert_equal 2, code
+            assert_match(/delivery: missing\/private contract directory/, error)
+            assert_equal before_spawn, Dir.glob(File.join(@root, "worker-process-*")).sort
+          ensure
+            @memory_checkout.repository.refs[sibling_ref] = @base
+          end
+
+          preserved_paths = %w[T E C].flat_map do |id|
+            state = @store.load(id)
+            report = handoff(id)
+            [@store.state_path(id), state.fetch("prompt_path"), report.fetch("worktrees_path"),
+             File.join(report.fetch("workspace"), "worker-change.txt")]
+          end + %w[E C].flat_map { |id|
+            Dir.glob("#{@data}-runs/#{id}/**/*").select { |path| File.file?(path) }
+          } + Dir.glob("#{@data}-runs/checkpoints/**/*").select { |path| File.file?(path) }
+          preserved = preserved_paths.to_h { |path| [path, File.binread(path)] }
+          write_fake("success")
+          [["B", ["--allow-write-collision"], "explicit_permission"],
+           ["D", [], "default_verified_managed"]].each do |id, flags, basis|
+            assert_equal 0, public_cli("prepare", id).first if id == "D"
+            before = Dir.glob(File.join(@root, "worker-process-*")).length
+            code, _output, error = public_cli("launch", id, "--codex", "--reasoning", "high", *flags)
+            assert_equal 0, code, error
+            assert_equal before + 1, Dir.glob(File.join(@root, "worker-process-*")).length
+            admitted = handoff(id)
+            assert_equal basis, admitted.dig("collision_authorization", "admission_basis")
+            conflicts = admitted.dig("collision_authorization", "conflicts").to_h { |row| row.values_at("task_id", "status") }
+            assert_equal({ "T" => "STALE", "E" => "STALE", "C" => "STALE_CANDIDATE" }, conflicts.slice("T", "E", "C"))
+            assert_equal fresh, setup_git("rev-parse", "HEAD", chdir: admitted.fetch("workspace"))
+            siblings = admitted.dig("collision_authorization", "verified_conflicts")
+            %w[T E C].each do |sibling|
+              row = siblings.find { |entry| entry.fetch("task_id") == sibling }
+              assert_equal @base, row.fetch("authorities").values.first.fetch("pushed_sha")
+              assert_equal handoff(sibling).fetch("invocation_id"), row.fetch("invocation_id")
+              assert_equal @base, setup_git("rev-parse", "HEAD", chdir: handoff(sibling).fetch("workspace"))
+            end
+            assert_equal preserved, preserved_paths.to_h { |path| [path, File.binread(path)] }
+            error = assert_raises(AgentCodingTool::InvalidState) {
+              factory.call(coordinator: @coordinator, data_root: @data, source_root: Dir.pwd)
+                .verify_delivery_overlap!(id, File.dirname(Dir.glob("#{@data}-runs/#{id}/*/handoff.json").fetch(0)))
+            }
+            assert_match(/incompatible prepared baseline/, error.message)
+          end
+          roots = %w[T E C B D].map { |id| handoff(id).fetch("workspace") }
+          assert_equal 5, roots.uniq.length
+          assert roots.all? { |path| roots.none? { |other| path != other && path.start_with?(other + "/") } }
+          assert @store.load("T")["started_at"]
+          assert @store.load("E")["started_at"]
+          assert_equal "candidate_complete", @store.load("C").dig("result", "outcome")
+          assert_equal "running", handoff("T").fetch("status")
+          # Ordinary checkpoint operations remain eligible for the exited
+          # IN_FLIGHT sibling without a forced lifecycle exception.
+          workspace = handoff("E").fetch("workspace")
+          checkpoint.record("E", workspace: workspace)
+          assert_equal "verified", checkpoint.verify("E", workspace: workspace).fetch("status")
+          assert_equal 0, checkpoint.gate("E", workspace: workspace, command: gate_command("exit", "0"))
+          assert_equal "STALE", @coordinator.status("E").fetch("status")
+        ensure
+          File.write(File.join(@root, "worker-release"), "release")
+          assert_equal 0, Timeout.timeout(5) { host.value }.first
+        end
       end
     end
   end

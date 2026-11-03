@@ -332,6 +332,8 @@
     "EvidenceTunnelTest#test_readiness_bounds_slow_headers": [],
     "EvidenceTunnelTest#test_readiness_bounds_slow_body": [],
     "EvidenceTunnelTest#test_readiness_retains_positive_and_negative_controls": [],
+    "EvidenceTunnelTest#test_cleanup_allows_cooperative_term_completion": [],
+    "EvidenceTunnelTest#test_cleanup_forces_uncooperative_group_after_grace": [],
     "EvidenceTunnelTest#test_cleanup_qualifies_unreaped_terminal_group_after_esrch": [],
     "EvidenceTunnelTest#test_cleanup_refuses_live_or_unverified_group_after_esrch": [],
     "EvidenceTunnelTest#test_activity_backpressure_is_visible_and_cannot_block_cleanup": []

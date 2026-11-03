@@ -97,6 +97,10 @@ class ProgressContract < Minitest::Test
     assert_equal JSON.parse(File.binread(File.join(ROOT, "test/git_contract/required_cases.json"))).values.flatten.sort,
       contracts.flat_map { |group| group[:cases] }.sort
     assert_includes contracts.flat_map { |group| group[:paths] }, "test/git_contract/progress_contract.rb"
+    boundary = contracts.find { |group| group[:paths] == ["test/git_contract/zero_git_contract.rb"] }
+    refute_nil boundary, "boundary/provenance controls must remain independently required"
+    assert_equal JSON.parse(File.binread(File.join(ROOT, "test/support/zero_git_required_cases.json"))).sort,
+      boundary.fetch(:cases).sort
     refute_empty ordinary.first.fetch(:cases)
     # The batch observer refuses a case that leaks environment into its sibling.
     reporter = SuiteEvidenceReporter.new("unused", seed: 2300)

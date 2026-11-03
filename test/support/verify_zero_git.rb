@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
-# Capture originals before preload to test bypass attempts. No process is
-# invoked during bootstrap; the boundary precedes Minitest and product loading.
-ORIGINAL_ZERO_GIT_SPAWN = Process.method(:spawn)
-ORIGINAL_ZERO_GIT_READ = IO.method(:read)
-ORIGINAL_ZERO_GIT_POPEN = IO.method(:popen)
-ORIGINAL_ZERO_GIT_FOREACH = IO.method(:foreach)
-ORIGINAL_ZERO_GIT_OPEN = Kernel.instance_method(:open)
+# Retain actual C methods even when the suite loader has already installed
+# wrappers. Bypass controls must exercise native entry, not another Ruby guard.
+{
+  ORIGINAL_ZERO_GIT_SPAWN: Process.method(:spawn),
+  ORIGINAL_ZERO_GIT_READ: IO.method(:read),
+  ORIGINAL_ZERO_GIT_POPEN: IO.method(:popen),
+  ORIGINAL_ZERO_GIT_FOREACH: IO.method(:foreach),
+  ORIGINAL_ZERO_GIT_OPEN: Kernel.instance_method(:open)
+}.each do |constant, entry|
+  entry = entry.super_method while entry.source_location
+  Object.const_set(constant, entry)
+end
 require_relative "no_git_execution"
 require "bundler/setup"
 require "minitest/autorun"
@@ -21,15 +26,18 @@ require "securerandom"
 require_relative "source_identity"
 require_relative "../../lib/agent_coding_tool"
 
-# Focused boundary verifier; never loads the legacy Git-bearing test_helper.
+# Boundary verifier shared by standalone diagnosis and the complete inventory.
 class NoGitExecutionVerifier < Minitest::Test
   CHILD = File.join(__dir__, "fixtures/guard_child.rb")
   CHILD_SHA = Digest::SHA256.file(CHILD).hexdigest
 
   # Builds one finite fixture permit with exact arguments; errors propagate.
-  def permit(mode, preloads: {}, **options)
+  def permit(mode, arguments: [], preloads: {}, coverage: true, **options)
     bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
-    NoGitExecution::Permit.new(script: CHILD, sha256: CHILD_SHA, arguments: [mode],
+    if coverage && ENV["ACT_COVERAGE_CONTEXT"]
+      preloads = { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }.merge(preloads)
+    end
+    NoGitExecution::Permit.new(script: CHILD, sha256: CHILD_SHA, arguments: [mode, *arguments],
       preloads: { bundler => Digest::SHA256.file(bundler).hexdigest }.merge(preloads), **options)
   end
 
@@ -41,23 +49,27 @@ class NoGitExecutionVerifier < Minitest::Test
   end
 
   # Yields a fresh synthetic production coverage context and reviewed preload.
-  # Restores ambient context and optionally retains raw fixture/child evidence;
-  # filesystem and coverage errors propagate without starting a parent observer.
+  # Preserves inherited production instrumentation; a separate probe context
+  # supplies synthetic results. Standalone runs use that probe as their context.
+  # Yields inherited path, probe context, preload hashes and probe path. Restores
+  # the environment and retains optional evidence; IO/coverage errors propagate.
   def coverage_context
     original = ENV["ACT_COVERAGE_CONTEXT"]
     require_relative "../feedback_coverage"
     Dir.mktmpdir("zero-git-coverage-") do |root|
       FileUtils.mkdir_p([File.join(root, "lib"), File.join(root, "bin"), File.join(root, "evidence")])
-      File.write(File.join(root, "lib/coverage_probe.rb"), "if ENV['ACT_COVERAGE_CONTEXT']\n  :covered\nelse\n  raise 'missing coverage context'\nend\n")
+      File.write(File.join(root, "lib/loaded.rb"), "if ENV['ACT_COVERAGE_CONTEXT']\n  :covered\nelse\n  raise 'missing coverage context'\nend\n")
+      File.write(File.join(root, "lib/unloaded.rb"), ":unloaded\n")
       File.write(File.join(root, "bin/agent-coding-tool"), "raise 'compile only'\n")
       context = { "root" => root, "directory" => File.join(root, "evidence"),
         "invocation" => SecureRandom.uuid, "selection" => name, "stage" => "guard-child",
         "sources" => FeedbackCoverage.sources(root), "layout" => FeedbackCoverage.layout(root) }
       path = File.join(root, "context.json")
       File.write(path, JSON.generate(context))
-      ENV["ACT_COVERAGE_CONTEXT"] = path
+      ENV["ACT_COVERAGE_CONTEXT"] = original || path
       begin
-        yield path, context, { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }
+        yield ENV.fetch("ACT_COVERAGE_CONTEXT"), context,
+          { NoGitExecution::COVERAGE => Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest }, path
       ensure
         destination = ENV["ZERO_GIT_COVERAGE_EVIDENCE"]
         if destination
@@ -78,7 +90,7 @@ class NoGitExecutionVerifier < Minitest::Test
       [{}, preloads].each do |reviewed|
         [nil, "#{path}.replacement"].each do |replacement|
           assert_raises(NoGitExecution::ProhibitedExecution) do
-            permit("coverage", preloads: reviewed, environment: { "ACT_COVERAGE_CONTEXT" => replacement })
+            permit("coverage", preloads: reviewed, coverage: false, environment: { "ACT_COVERAGE_CONTEXT" => replacement })
           end
         end
       end
@@ -103,12 +115,12 @@ class NoGitExecutionVerifier < Minitest::Test
   # and branch nodes prove instrumentation, including the unloaded denominator.
   def test_approved_child_starts_coverage_and_writes_evidence
     [false, true].each do |cleared|
-      coverage_context do |path, context, preloads|
+      coverage_context do |path, context, preloads, probe_path|
         environment = cleared ? { "ACT_COVERAGE_CONTEXT" => path } : {}
         assert_raises(NoGitExecution::ProhibitedExecution) do
-          permit("coverage", environment: environment, options: { unsetenv_others: cleared })
+          permit("coverage", coverage: false, environment: environment, options: { unsetenv_others: cleared })
         end
-        approval = permit("coverage", preloads: preloads, environment: environment,
+        approval = permit("coverage", arguments: [probe_path], preloads: preloads, environment: environment,
           options: { unsetenv_others: cleared })
         output, error, status = capture(approval)
         File.write(File.join(context.fetch("root"), "transport.json"), JSON.generate(
@@ -128,8 +140,9 @@ class NoGitExecutionVerifier < Minitest::Test
         record = JSON.parse(File.binread(Dir.glob(File.join(context.fetch("directory"), "*.json")).fetch(0)))
         assert_equal status.pid, record.fetch("pid")
         files = FeedbackCoverage.collect(context)
-        assert files.fetch("lib/coverage_probe.rb").any? { |node, hits| node.start_with?("line:") && hits.positive? }
-        assert files.fetch("lib/coverage_probe.rb").any? { |node, hits| node.start_with?("branch:") && hits.positive? }
+        assert files.fetch("lib/loaded.rb").any? { |node, hits| node.start_with?("line:") && hits.positive? }
+        assert files.fetch("lib/loaded.rb").any? { |node, hits| node.start_with?("branch:") && hits.positive? }
+        assert files.fetch("lib/unloaded.rb").values.all?(&:zero?)
         assert files.fetch("bin/agent-coding-tool").values.all?(&:zero?)
       end
     end
@@ -267,8 +280,10 @@ class NoGitExecutionVerifier < Minitest::Test
       script = File.join(root, "reviewed.rb")
       File.write(script, "exit 0\n")
       bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
+      preloads = { bundler => Digest::SHA256.file(bundler).hexdigest }
+      preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest if ENV["ACT_COVERAGE_CONTEXT"]
       approval = NoGitExecution::Permit.new(script: script, sha256: Digest::SHA256.file(script).hexdigest,
-        preloads: { bundler => Digest::SHA256.file(bundler).hexdigest })
+        preloads: preloads)
       File.write(script, "exit 99\n")
       assert_raises(NoGitExecution::ProhibitedExecution) { capture(approval) }
     end
@@ -308,8 +323,10 @@ class NoGitExecutionVerifier < Minitest::Test
   # approved Ruby children. Invalid paths/options and bootstrap drift propagate.
   def missing_permit(directory, **options)
     bundler = File.realpath($LOADED_FEATURES.find { |path| path.end_with?("/bundler/setup.rb") })
+    preloads = { bundler => Digest::SHA256.file(bundler).hexdigest }
+    preloads[NoGitExecution::COVERAGE] = Digest::SHA256.file(NoGitExecution::COVERAGE).hexdigest if ENV["ACT_COVERAGE_CONTEXT"]
     NoGitExecution::MissingExecutablePermit.new(directory: directory,
-      preloads: { bundler => Digest::SHA256.file(bundler).hexdigest }, **options)
+      preloads: preloads, **options)
   end
 
   # Existing executables and live/dangling symlinks refuse both at construction
@@ -535,9 +552,13 @@ actual_cases = [NoGitExecutionVerifier, SourceIdentityVerifier].flat_map do |typ
   type.public_instance_methods.grep(/^test_/).map { |name| "#{type.name}##{name}" }
 end
 raise "zero-Git verifier case inventory differs" unless actual_cases.sort == required_cases.sort
-ENV["ACT_SUITE_INVOCATION"] = SecureRandom.uuid
-ENV["ACT_SUITE_SELECTION"] = required_cases.sort.join("\n")
-ENV["ACT_SUITE_EVIDENCE"] = ENV["ZERO_GIT_EVIDENCE"] || File.join(Dir.mktmpdir("zero-git-results-"), "results.json")
+if ENV["ACT_SUITE_EVIDENCE"]
+  raise "zero-Git verifier selection differs" unless ENV.fetch("ACT_SUITE_SELECTION") == required_cases.sort.join("\n")
+else
+  ENV["ACT_SUITE_INVOCATION"] = SecureRandom.uuid
+  ENV["ACT_SUITE_SELECTION"] = required_cases.sort.join("\n")
+  ENV["ACT_SUITE_EVIDENCE"] = ENV["ZERO_GIT_EVIDENCE"] || File.join(Dir.mktmpdir("zero-git-results-"), "results.json")
+end
 raise "zero-Git evidence already exists" if File.exist?(ENV.fetch("ACT_SUITE_EVIDENCE"))
 require_relative "../suite_reporter"
 

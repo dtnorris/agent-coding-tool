@@ -597,6 +597,8 @@ module AgentCodingTool
       0
     end
 
+    # Parses supported launch options and returns worker status. Manual overlap
+    # returns 2 with a shell-safe conditional retry; other errors remain distinct.
     def launch_command(argv)
       options = {}
       parser = OptionParser.new do |opts|
@@ -611,6 +613,19 @@ module AgentCodingTool
       end
       Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err, transport: @transport)
               .launch(argv.first, **options)
+    rescue Launcher::WriteCollision => error
+      retry_argv = ["act", "launch", argv.first, "--codex"]
+      retry_argv.concat(["--model", options[:model]]) if options[:model]
+      retry_argv.concat(["--reasoning", options[:reasoning]]) if options[:reasoning]
+      retry_argv << "--allow-write-collision"
+      @err.puts "ERROR: #{argv.first} was not started: another task has overlapping write scope."
+      @err.puts "  • Repository/s: #{error.collisions.flat_map { |row| row.fetch('repositories') }.uniq.sort.join(', ')}"
+      @err.puts "  • Other task/s: #{error.collisions.map { |row| row.fetch('task_id') }.uniq.sort.join(', ')}"
+      @err.puts "Next steps:"
+      @err.puts "  • If you have reviewed the overlap and explicitly authorize parallel"
+      @err.puts "    development, retry with:"
+      @err.puts "  • #{Shellwords.join(retry_argv)}"
+      2
     rescue Psych::Exception, TypeError, ArgumentError, KeyError => e
       raise InvalidTask, "launch: malformed configuration/task data: #{e.message}"
     end

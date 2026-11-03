@@ -707,8 +707,8 @@ module AgentCodingTool
       @codex = File.realpath(candidate)
       @codex_digest = Digest::SHA256.file(@codex).hexdigest
       version, _version_error, version_status = Open3.capture3(worker_env, @codex, "--version", unsetenv_others: true)
-      raise Error, "launch: unsupported Codex sandbox version (requires 0.162.1)" unless
-        version_status.success? && version.strip.match?(/\Acodex(?:-cli)? 0\.162\.1\z/)
+      raise Error, "launch: unsupported Codex sandbox version (requires 0.162.1 or 0.166.0)" unless
+        version_status.success? && version.strip.match?(/\Acodex(?:-cli)? 0\.162\.1|0\.166\.0\z/)
       help, stderr, status = Open3.capture3(worker_env, @codex, "exec", "--help", unsetenv_others: true)
       unless status.success? && %w[--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model].all? { |flag| help.include?(flag) }
         raise Error, "launch: installed Codex lacks required safe exec flags"

@@ -387,7 +387,7 @@ module AgentCodingTool
       unless effective.fetch("status") == "PREPARED"
         raise InvalidState, "#{id}: start blocked: #{effective['status']} #{effective['reason']}"
       end
-      collisions = effective.fetch("write_collisions", [])
+      collisions = expected_collisions ? launch_write_reservations(id) : effective.fetch("write_collisions", [])
       if expected_collisions && collisions != expected_collisions
         raise InvalidState, "#{id}: write reservations changed during launch; inspect and retry"
       end
@@ -430,6 +430,24 @@ module AgentCodingTool
       state
     end
     private :start_locked
+
+    # Returns overlapping launch reservations from authoritative lifecycle state,
+    # including stale workers/candidates. Status is diagnostic, never admission
+    # proof: Launcher must verify each owned attempt before start. Missing task
+    # or preparation data raises through the existing stores/authority checks.
+    def launch_write_reservations(id)
+      task = @task_store.load(id)
+      overlaps = write_collision_overlaps(id, task, @state_store.load(id).fetch("snapshot"))
+      return [] if overlaps.empty?
+
+      statuses(overlaps.keys).filter_map do |status|
+        state = status.fetch("state")
+        next unless state["started_at"] || state.dig("result", "outcome") == "candidate_complete"
+
+        { "task_id" => status.fetch("id"), "status" => status.fetch("status"),
+          "repositories" => overlaps.fetch(status.fetch("id")) }
+      end
+    end
 
     # Records an explicit outcome while serialized with scheduling/preparation.
     # Returns state; a designation must be explicitly removed before recording.

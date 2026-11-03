@@ -247,6 +247,15 @@ module LauncherSupport
   # Git source reads use the immutable adapter; undeclared requests raise.
   def unit_capture(*command, **options)
     return fixture_process_capture(command, options) if command.first == 'ps'
+    # Model only the open-file probe for a fixture-owned managed worktree.
+    # Real process-group liveness is checked by CleanupLiveness before this seam.
+    if command.take(4) == ['lsof', '-n', '-P', '+D'] && command.length == 5 && options.empty?
+      owned = Dir.glob("#{@data}-runs/*/*/worktrees.json").flat_map do |path|
+        JSON.parse(File.binread(path)).fetch('entries').map { |entry| entry.fetch('path') }
+      end
+      raise GitContract::UnexpectedObservation, 'unowned open-file probe' unless owned.include?(command.last)
+      return ['', '', status_result(false)]
+    end
     if command == ['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid']
       return ['00000000-0000-0000-0000-000000000000', '', status_result(true)]
     end

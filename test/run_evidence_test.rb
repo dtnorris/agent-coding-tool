@@ -1280,6 +1280,13 @@ class RunEvidenceTest < Minitest::Test
         input.close
         status = Timeout.timeout(5) { waiter.value }
         assert status.exited? || status.signaled?
+        # The client must reap its real adapter before the owner can reap it.
+        # Missing evidence also detects forced cleanup that interrupts that wait.
+        reaped_path = File.join(path, "fixture-adapter-reaped.json")
+        assert File.file?(reaped_path), "tunnel client exited before reaping its adapter"
+        reaped = JSON.parse(File.binread(reaped_path))
+        assert_operator reaped.fetch("pid"), :>, 0
+        assert reaped.fetch("exit_code").is_a?(Integer) || reaped.fetch("signal").is_a?(Integer)
         @tunnel_diagnostics = error.read
         refute_includes @tunnel_diagnostics, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
         refute_includes @tunnel_diagnostics, "unrelated-sentinel"

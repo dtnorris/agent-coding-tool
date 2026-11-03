@@ -243,7 +243,7 @@
     "test/parallel_launch_test.rb": [
       "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
-      "ParallelLaunchTest#test_advanced_main_makes_parallel_prepared_baselines_incompatible",
+      "ParallelLaunchTest#test_cross_baseline_launch_preserves_managed_reservations",
       "ParallelLaunchTest#test_manual_in_flight_worker_remains_unverified_with_launch_flag",
       "ParallelLaunchTest#test_manual_start_waits_for_launch_reservation_boundary"
     ],
@@ -700,7 +700,7 @@
     "test/parallel_launch_test.rb": [
       "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
-      "ParallelLaunchTest#test_advanced_main_makes_parallel_prepared_baselines_incompatible",
+      "ParallelLaunchTest#test_cross_baseline_launch_preserves_managed_reservations",
       "ParallelLaunchTest#test_manual_in_flight_worker_remains_unverified_with_launch_flag",
       "ParallelLaunchTest#test_manual_start_waits_for_launch_reservation_boundary"
     ],

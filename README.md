@@ -962,10 +962,17 @@ Opt-in local execution for the existing `act` wrapper. Launch prepares READY
 work or consumes an existing fresh PREPARED prompt, rechecks dependencies,
 remote freshness and collisions, then calls the existing `start` reservation
 before delivering stdin to exactly one foreground `codex exec` process.
-Launch admits compatible verified managed overlap by default, without
+Launch admits verified managed overlap by default, without
 `--allow-write-collision`. Managed siblings still require verified
-ACT-owned task/attempt evidence, distinct worktrees at the same prepared
-writable baseline, and known process state. A manual `IN_FLIGHT` reservation
+ACT-owned task/attempt evidence, distinct worktrees pinned to each sibling's own
+immutable preparation, and verified running or terminal process state. Older
+managed `IN_FLIGHT` and `CANDIDATE` reservations remain visible and may coexist
+with a fresh launch without status changes, re-preparation or cleanup solely for
+baseline drift. Their integration eligibility remains stale; admission evidence
+binds each sibling's own baseline and invocation without claiming merge safety.
+Delivery still requires matching shared baselines and all existing freshness,
+candidate, authority and publication checks, including resumed delivery.
+A manual `IN_FLIGHT` reservation
 without managed run evidence requires explicit `--allow-write-collision` and
 may then overlap even when its activity is unknown or
 active, or its historical preparation differs. The new task must be fresh and

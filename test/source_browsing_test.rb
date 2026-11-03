@@ -151,10 +151,28 @@ class SourceBrowsingTest < Minitest::Test
     assert_raises(Refused) { @session.release(release) { flunk "stopped bytes" } }
   end
 
-  # Production descriptor walking pins the old directory and detects its rename
-  # before returning bytes; a hostile new symlink never redirects the file read.
+  # Directory entry churn preserves descriptor identity, while ancestor swaps
+  # and in-place file changes still refuse before returning source bytes.
   def test_ancestor_swap_and_in_place_change_fail_closed
     approve
+    # Model changing directory nlink between adjacent fstats, independent of
+    # host timing and filesystem-specific directory link-count conventions.
+    identity = AgentCodingTool::SourceFiles.method(:identity)
+    ancestor = File.stat(@temporary)
+    observations = 0
+    changing_links = lambda do |stat|
+      if stat.directory? && [stat.dev, stat.ino] == [ancestor.dev, ancestor.ino]
+        observations += 1
+        links = stat.nlink + observations
+        stat.define_singleton_method(:nlink) { links }
+      end
+      identity.call(stat)
+    end
+    AgentCodingTool::SourceFiles.stub(:identity, changing_links) do
+      assert_equal "matches_index", source(request).fetch("worktree")
+    end
+    assert_operator observations, :>=, 2
+
     original = AgentCodingTool::SourceFiles.method(:openat)
     switched = false
     outside = File.join(@temporary, "outside")

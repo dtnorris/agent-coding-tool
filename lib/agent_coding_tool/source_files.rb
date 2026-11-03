@@ -49,9 +49,11 @@ module AgentCodingTool
     end
 
     # Returns stable identity/type/owner facts without timestamps or filenames.
-    # Accepts File::Stat and returns an array suitable for exact comparisons.
+    # Directory link counts change with unrelated child entries; only regular
+    # file link counts are identity facts. Accepts File::Stat and returns an
+    # array for exact comparisons; filesystem/stat errors propagate.
     def self.identity(stat)
-      [stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink]
+      [stat.dev, stat.ino, stat.mode, stat.uid, stat.directory? ? nil : stat.nlink]
     end
 
     # Reads at most limit bytes from one pinned owned regular file. Returns bytes

@@ -14,10 +14,12 @@ class BootstrapTest < Minitest::Test
   # Yields main/root/lock; fixture I/O failures propagate. Covered runs retain
   # copied sources under the supervisor's directory until census verification;
   # its owner then cleans up. Standalone focused runs clean up immediately.
-  def with_composition
+  # A test-only temporary_parent can exercise filesystem aliases; canonicalize
+  # before any copy/load so Ruby coverage and its source census use one spelling.
+  def with_composition(temporary_parent: nil)
     context = ENV["ACT_COVERAGE_CONTEXT"]
     retained = context && JSON.parse(File.read(context)).fetch("directory")
-    directory = Dir.mktmpdir("split-bootstrap-", retained)
+    directory = File.realpath(Dir.mktmpdir("split-bootstrap-", temporary_parent || retained))
     begin
       main = File.join(directory, "main")
       FileUtils.mkdir_p(main)
@@ -64,6 +66,27 @@ class BootstrapTest < Minitest::Test
   def cli(main, components, *arguments, env: {})
     ChildProcesses.capture("bootstrap_cli", arguments: [main, *arguments],
       environment: environment(components).merge(env))
+  end
+
+  # Exercises a real symlinked temporary parent and real covered CLI startup.
+  # Source copies stay in the supervisor's retained directory after alias cleanup;
+  # canonical paths must agree before their independent coverage is collected.
+  def test_canonical_fixture_roots_through_temporary_alias
+    context = ENV["ACT_COVERAGE_CONTEXT"]
+    retained = context && JSON.parse(File.read(context)).fetch("directory")
+    Dir.mktmpdir("bootstrap-alias-") do |directory|
+      target = retained || File.join(directory, "target")
+      FileUtils.mkdir_p(target)
+      temporary_alias = File.join(directory, "alias")
+      File.symlink(File.realpath(target), temporary_alias)
+      with_composition(temporary_parent: temporary_alias) do |main, components, _lock|
+        assert_equal File.realpath(main), main
+        assert_equal File.realpath(components), components
+        out, err, status = cli(main, components, "implementation")
+        assert status.success?, err
+        assert_equal "split", JSON.parse(out).fetch("mode")
+      end
+    end
   end
 
   # Proves env/.env/default precedence, no interpolation or unrelated imports,

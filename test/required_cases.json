@@ -480,7 +480,8 @@
       "BootstrapTest#test_public_status_delegation_and_compatible_refusals",
       "BootstrapTest#test_adapter_collection_errors_and_yaml_exceptions",
       "BootstrapTest#test_published_composition_and_scaffold_api_refusal",
-      "BootstrapTest#test_revision_files_and_source_digest_refusal"
+      "BootstrapTest#test_revision_files_and_source_digest_refusal",
+      "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias"
     ]
   },
   "integration": {
@@ -751,7 +752,8 @@
       "BootstrapTest#test_public_status_delegation_and_compatible_refusals",
       "BootstrapTest#test_adapter_collection_errors_and_yaml_exceptions",
       "BootstrapTest#test_published_composition_and_scaffold_api_refusal",
-      "BootstrapTest#test_revision_files_and_source_digest_refusal"
+      "BootstrapTest#test_revision_files_and_source_digest_refusal",
+      "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias"
     ]
   }
 }

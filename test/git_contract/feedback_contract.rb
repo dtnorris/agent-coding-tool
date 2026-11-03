@@ -233,6 +233,65 @@ class FeedbackContract < Minitest::Test
     end
   end
 
+  # A production load census survives loss of both result and activity marker.
+  # Another complete observer keeps collection meaningful while this child is
+  # rejected; a terminated fixture-only child with an empty census is ignored.
+  def test_missing_result_and_activity_marker_cannot_hide_censused_load
+    with_coverage do |context, original|
+      outcome, error, second = coverage_probe(context, 'plain')
+      assert outcome.fetch(:status).success?, error
+      assert_equal original, FeedbackCoverage.collect(second)
+      Dir.glob(File.join(second.fetch("directory"), "*.*")).each do |source|
+        FileUtils.cp(source, context.fetch("directory"))
+      end
+      assert_equal original, FeedbackCoverage.collect(context)
+      started = Dir.glob(File.join(context.fetch("directory"), "*.started")).sort
+      active_children = started.select do |path|
+        census = path.delete_suffix(".started") + ".census"
+        File.file?(census) && !File.zero?(census)
+      end
+      assert_operator active_children.length, :>=, 2
+      affected = active_children.first
+      prefix = affected.delete_suffix(".started")
+      result_path = "#{prefix}.json"
+      active_path = "#{prefix}.active"
+      result_bytes = File.binread(result_path)
+      active_bytes = File.binread(active_path)
+      census_bytes = File.binread("#{prefix}.census")
+      refute_empty census_bytes
+
+      File.unlink(result_path)
+      File.unlink(active_path)
+      error = assert_raises(RuntimeError) { FeedbackCoverage.collect(context) }
+      assert_equal "coverage: incomplete production-loaded child evidence #{affected}", error.message
+
+      File.binwrite(result_path, result_bytes)
+      File.binwrite(active_path, active_bytes)
+      assert_equal original, FeedbackCoverage.collect(context)
+
+      fixture_outcome, fixture_error, fixture_context = coverage_probe(context, 'fixture_only_kill')
+      fixture_status = fixture_outcome.fetch(:status)
+      assert_equal Signal.list.fetch("KILL"), fixture_status.termsig, fixture_error
+      fixture_started = Dir.glob(File.join(fixture_context.fetch("directory"), "*.started")).fetch(0)
+      fixture_prefix = File.join(context.fetch("directory"), "fixture-only-#{fixture_status.pid}")
+      %w[started census].each do |suffix|
+        FileUtils.cp(fixture_started.delete_suffix(".started") + ".#{suffix}", "#{fixture_prefix}.#{suffix}")
+      end
+      assert_empty File.binread("#{fixture_prefix}.census")
+      assert_equal original, FeedbackCoverage.collect(context)
+      File.unlink("#{fixture_prefix}.census")
+      assert_raises(Errno::ENOENT) { FeedbackCoverage.collect(context) }
+    ensure
+      if defined?(fixture_prefix) && fixture_prefix
+        %w[started active census json].each { |suffix| File.unlink("#{fixture_prefix}.#{suffix}") if File.exist?("#{fixture_prefix}.#{suffix}") }
+      end
+      if defined?(prefix) && prefix
+        File.binwrite(result_path, result_bytes) if defined?(result_bytes) && result_bytes
+        File.binwrite(active_path, active_bytes) if defined?(active_bytes) && active_bytes
+      end
+    end
+  end
+
   # Missing, stale, contradictory and altered-source evidence must fail. Restore
   # exact result bytes after every mutation and re-collect the positive result.
   def test_missing_stale_and_contradictory_coverage
@@ -336,6 +395,7 @@ class FeedbackContract < Minitest::Test
 
       prefix = File.join(context.fetch("directory"), "interrupted-fixture")
       File.write("#{prefix}.started", JSON.generate("pid" => Process.pid))
+      File.write("#{prefix}.census", "")
       File.write("#{prefix}.json.pending", "{\"partial\":")
       assert_equal original, FeedbackCoverage.collect(context)
       File.write("#{prefix}.active", "ACT source executed\n")

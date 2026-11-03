@@ -307,6 +307,9 @@ module FeedbackCoverage
       active = File.file?(path.delete_suffix(".started") + ".active")
       unless File.file?(result_path)
         raise "coverage: incomplete ACT-executing child evidence #{path}" if active
+        census_path = path.delete_suffix(".started") + ".census"
+        loaded = File.readlines(census_path).map { |line| JSON.parse(line) }
+        raise "coverage: incomplete production-loaded child evidence #{path}" unless loaded.empty?
         next
       end
 

@@ -10,6 +10,7 @@
     "FeedbackContract#test_outer_timer_includes_startup",
     "FeedbackContract#test_unloaded_denominator_branch_and_coverage_violation",
     "FeedbackContract#test_nested_layout_isolation_and_changed_source_refusal",
+    "FeedbackContract#test_missing_result_and_activity_marker_cannot_hide_censused_load",
     "FeedbackContract#test_missing_stale_and_contradictory_coverage",
     "FeedbackContract#test_coverage_publication_is_atomic_and_exclusive",
     "FeedbackContract#test_cold_child_visibility_and_missing_instrumentation",

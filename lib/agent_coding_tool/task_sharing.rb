@@ -115,7 +115,9 @@ module AgentCodingTool
       transaction(wait: 1) do |state|
         raise Refused, "lifecycle.closed" if %w[stopped expired].include?(reason(state))
         if sharing?(state) && request
-          if %w[discover refresh].include?(request["operation"])
+          if request.key?("source")
+            source_release!(state, request)
+          elsif %w[discover refresh].include?(request["operation"])
             request.fetch("tasks").each { |task, generation| task_scope!(state, task, generation) }
           else
             selection = state.fetch("selections")[request["handle"]]
@@ -133,7 +135,7 @@ module AgentCodingTool
     def activity(request, evidence, released:, result:, wire: 0)
       transaction(wait: 1) do |state|
         next unless sharing?(state)
-        operation = request.is_a?(Hash) && %w[discover refresh select manifest read].include?(request["operation"]) ? request["operation"] : "invalid"
+        operation = request.is_a?(Hash) && %w[discover refresh select manifest read source_discover source_list source_search source_read].include?(request["operation"]) ? request["operation"] : "invalid"
         event = { "at" => Time.now.utc.iso8601(6), "operation" => operation,
           "bytes" => released, "wire_bytes" => wire, "result" => result }
         if evidence.is_a?(Hash) && evidence["binding"]

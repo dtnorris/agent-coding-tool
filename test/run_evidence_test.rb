@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "support/child_processes"
 require_relative "support/memory_git/broker"
+require_relative "support/source_fixture"
 require "stringio"
 require "timeout"
 require "socket"
@@ -1480,6 +1481,124 @@ class RunEvidenceTest < Minitest::Test
         assert_equal "not_attested", result["retrieval"]
         assert_equal "stopped", result["admission_stop"]
         assert_equal 0, cli("status", "--session", path)["decoded_bytes"]
+      end
+    end
+  end
+
+  # Composes local source consent with the actual configured adapter over the
+  # existing tunnel. Only hosted transport and external Git metadata are fakes;
+  # the remote client uses no filesystem shortcut to source or run contents.
+  def test_native_source_and_task_share_continuous_public_journey
+    code = File.join(@temporary, "code")
+    roots = %w[alpha beta].to_h do |name|
+      root = SourceFixture.repository(File.join(code, name),
+        { "main.rb" => "RelatedSymbol #{name}\n" * 2000, ".env.local" => "SOURCE_CANARY_ENV",
+          "credentials.json" => "SOURCE_CANARY_TRACKED", ".config/notify.yml" => "SOURCE_CANARY_NOTIFY" })
+      File.write(File.join(root, "untracked.rb"), "SOURCE_CANARY_UNTRACKED")
+      [name, root]
+    end
+    SourceFixture.repository(File.join(code, "private-sibling"), { "main.rb" => "SOURCE_CANARY_SIBLING" })
+    FileUtils.mkdir_p(File.join(code, ".config"))
+    File.write(File.join(code, ".config", "notify.yml"), "SOURCE_CANARY_CODE_CONFIG")
+    File.symlink(File.join(code, "private-sibling", "main.rb"), File.join(roots.fetch("alpha"), "escape.rb"))
+    File.mkfifo(File.join(roots.fetch("alpha"), "special.rb"))
+    index_path = File.join(roots.fetch("alpha"), ".git", "index")
+    index = JSON.parse(File.read(index_path))
+    %w[escape.rb special.rb].each { |name| index[name] = index.fetch("main.rb") }
+    File.write(index_path, JSON.generate(index))
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE", "title" => "fixture", "goal" => "fixture"))
+    client = tunnel_fixture
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil }
+    run_cli = lambda do |*arguments, success: true|
+      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", "share", *arguments],
+        environment: environment, seconds: 10)
+      assert_equal success, status.success?, error
+      success ? JSON.parse(output) : error
+    end
+    run_cli.call("setup", "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime,
+      "--account", "fixture-account", "--workspace", "fixture-workspace", "--endpoint", "tunnel_fixture/main")
+    2.times do |iteration|
+      evidence_process("share", "tunnel", "--min", "30",
+        environment: environment.merge("ACT_FIXTURE_TUNNEL_CLIENT" => client)) do |input, output, error, waiter|
+        begin
+          assert IO.select([output], [], [], 5), "startup missing"
+          assert_equal [], JSON.parse(output.gets)["tasks"]
+          path = JSON.parse(File.binread("#{@data}-sharing/active.json")).fetch("session")
+          assert IO.select([output], [], [], 5), "readiness missing"
+          assert_equal "ready", JSON.parse(output.gets)["status"]
+          path = JSON.parse(File.binread("#{@data}-sharing/active.json")).fetch("session")
+          wire = Dir.chdir(path) { UNIXSocket.new("wire") }
+          exchange = lambda do |arguments, source: true, success: true|
+            request = rpc("tools/call", arguments)
+            request.fetch("params")["name"] = "read_source" if source
+            wire.write(JSON.generate(request) + "\n")
+            wire.flush
+            assert IO.select([wire], [], [], 5), "response missing"
+            frame = wire.gets
+            assert frame, "adapter closed"
+            refute_includes frame, @temporary if source
+            refute_includes frame, "SOURCE_CANARY"
+            result = JSON.parse(frame).fetch("result")
+            assert_equal !success, result.fetch("isError"), result.inspect
+            success ? JSON.parse(result.dig("content", 0, "text")) : result
+          end
+          assert_empty exchange.call({ "operation" => "discover" }).fetch("repositories")
+          assert_empty exchange.call({ "operation" => "discover" }, source: false).fetch("tasks")
+          exchange.call({ "operation" => "read", "repository" => "alpha", "path" => "main.rb" }, success: false)
+          if iteration.zero?
+            run_cli.call("FIXTURE")
+            assert_empty exchange.call({ "operation" => "discover" }).fetch("repositories")
+            run_cli.call("revoke", "FIXTURE")
+            roots.each do |name, root|
+              grant = run_cli.call("source", "grant", name, "--code-root", code, "--root", root)
+              assert_equal "granted", grant["status"]
+            end
+            assert_empty exchange.call({ "operation" => "discover" }, source: false).fetch("tasks")
+            exchange.call(@first[:identity].merge("operation" => "select"), source: false, success: false)
+            assert_equal %w[alpha beta], exchange.call({ "operation" => "discover" }).fetch("repositories").map { |entry| entry["repository"] }
+            status = run_cli.call("status")
+            assert_equal roots, status.fetch("sources").transform_values { |scope| scope["root"] }
+            first = nil
+            roots.each_key do |name|
+              listed = exchange.call({ "operation" => "list", "repository" => name, "path" => "" })
+              assert_equal ["main.rb"], listed.fetch("entries").map { |entry| entry["path"] }
+              found = exchange.call({ "operation" => "search", "repository" => name, "query" => "RelatedSymbol" })
+              assert_equal ["main.rb"], found.fetch("matches").map { |entry| entry["path"] }
+              read = exchange.call({ "operation" => "read", "repository" => name, "path" => "main.rb", "length" => 64 })
+              assert_equal "live_source", read["kind"]
+              assert_equal Digest::SHA256.hexdigest("RelatedSymbol #{name}\n" * 2000), read["sha256"]
+              assert_equal ("RelatedSymbol #{name}\n" * 2000).byteslice(0, 64), read.fetch("data").unpack1("m0")
+              first = read if name == "alpha"
+            end
+            %w[.env .env.local credentials.json .config/notify.yml untracked.rb .git .git/index escape.rb special.rb ../private-sibling/main.rb /etc/passwd].each do |denied|
+              exchange.call({ "operation" => "read", "repository" => "alpha", "path" => denied }, success: false)
+            end
+            exchange.call({ "operation" => "search", "repository" => "private-sibling", "query" => "SOURCE_CANARY" }, success: false)
+            assert_empty exchange.call({ "operation" => "search", "repository" => "alpha", "query" => "SOURCE_CANARY" }).fetch("matches")
+            run_cli.call("FIXTURE")
+            manifest = exchange.call(@first[:identity].merge("operation" => "select"), source: false)
+            run_read = read_request(manifest, "final").merge("length" => 32)
+            evidence = exchange.call(run_read, source: false)
+            assert_equal @first[:identity], evidence.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
+            assert_equal @first[:contents]["final"].byteslice(0, 32), evidence.fetch("data").unpack1("m0")
+            run_cli.call("source", "revoke", "alpha")
+            exchange.call({ "operation" => "read", "repository" => "alpha", "path" => "main.rb", "offset" => 64, "version" => first["version"] }, success: false)
+            exchange.call(run_read, source: false)
+            run_cli.call("revoke", "FIXTURE")
+            exchange.call(run_read, source: false, success: false)
+            exchange.call({ "operation" => "read", "repository" => "beta", "path" => "main.rb" })
+          end
+        ensure
+          run_cli.call("stop") if path
+          wire&.close
+          input.close
+          assert Timeout.timeout(5) { waiter.value }.success?, error.read
+          activity = output.read
+          refute_includes activity, "SOURCE_CANARY"
+          refute_includes activity, roots.fetch("alpha")
+          refute_includes error.read, "SOURCE_CANARY"
+        end
       end
     end
   end

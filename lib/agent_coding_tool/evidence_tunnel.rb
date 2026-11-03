@@ -306,7 +306,7 @@ module AgentCodingTool
           raise Refused, "share.activity_failed" unless event.is_a?(Hash) && (required - event.keys).empty? &&
             (event.keys - required - RunEvidenceReader::IDENTITIES - ["artifact"]).empty? &&
             event["at"].is_a?(String) && event["at"].match?(/\A[0-9TZ:.+-]{1,32}\z/) &&
-            %w[discover refresh select manifest read invalid].include?(event["operation"]) &&
+            %w[discover refresh select manifest read source_discover source_list source_search source_read invalid].include?(event["operation"]) &&
             %w[delivered refused delivery_failed].include?(event["result"]) &&
             %w[bytes wire_bytes].all? { |key| event[key].is_a?(Integer) && event[key].between?(0, EvidenceAdapter::FRAME) } &&
             event.slice(*RunEvidenceReader::IDENTITIES, "artifact").all? { |_key, value| value.is_a?(Integer) || value.is_a?(String) && value.match?(/\A[A-Za-z0-9_-]{1,128}\z/) }

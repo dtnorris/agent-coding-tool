@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../source_fixture"
+
 # Preserve TERM while recording the exact completion attempt before the owner KILL.
 Signal.trap('TERM') do
   if ENV['ACT_COVERAGE_CONTEXT']

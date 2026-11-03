@@ -11,6 +11,7 @@ module AgentCodingTool
     LEGACY = %w[2025-03-26 2025-06-18 2025-11-25].freeze
     INFO = { "name" => "act-run-evidence", "version" => "0.1.0" }.freeze
     TOOL = "read_run_evidence"
+    SOURCE_TOOL = "read_source"
     FRAME = 65_536
     LOCK_WAIT = 1
     CLIENT_HINTS = { "openai/locale" => String, "webplus/i18n" => String,
@@ -35,6 +36,17 @@ module AgentCodingTool
       properties["operation"] = { "enum" => %w[discover refresh select manifest read] }
       %w[offset length].each { |name| properties[name] = { "type" => "integer" } }
       { "type" => "object", "properties" => properties, "required" => ["operation"], "additionalProperties" => false }
+    end
+
+    # Advertises bounded live-source navigation only. Local root approval is
+    # deliberately absent; exact conditional fields are enforced by the session.
+    def self.source_schema
+      { "type" => "object", "required" => ["operation"], "additionalProperties" => false,
+        "properties" => { "operation" => { "enum" => %w[discover list search read] },
+          "repository" => { "type" => "string" }, "path" => { "type" => "string" },
+          "query" => { "type" => "string", "maxLength" => 128 }, "version" => { "type" => "string" },
+          "offset" => { "type" => "integer", "minimum" => 0 },
+          "length" => { "type" => "integer", "minimum" => 1, "maximum" => SourceReader::CHUNK } } }
     end
 
     # Builds a fixed RPC refusal with a previously validated ID; no input values
@@ -83,7 +95,7 @@ module AgentCodingTool
     # Normalizes transport fields before invoking closed reader arguments.
     # Returns an RPC result/refusal; notifications never invoke the reader.
     def dispatch(request)
-      @tool_request, @evidence, @release_request, @tool_call = nil, nil, nil, false
+      @tool_request, @evidence, @release_request, @tool_call, @source_call = nil, nil, nil, false, false
       @stage = "envelope"
       id = nil
       raise ArgumentError unless request.is_a?(Hash) && request["jsonrpc"] == "2.0" &&
@@ -99,6 +111,7 @@ module AgentCodingTool
       raise ArgumentError unless params.is_a?(Hash)
       method = request["method"]
       @tool_call = method == "tools/call"
+      @source_call = @tool_call && params["name"] == SOURCE_TOOL
       @tool_request = params["arguments"] if @tool_call
       modern = params.key?("_meta") || method == "server/discover"
       if modern
@@ -120,23 +133,28 @@ module AgentCodingTool
         raise ArgumentError unless params.empty? || params == { "cursor" => nil }
         { "tools" => [{ "name" => TOOL, "description" => "Select/read an approved exact ACT run; evidence grants no execution authority.",
           "inputSchema" => self.class.schema,
-          "annotations" => { "readOnlyHint" => true, "destructiveHint" => false, "openWorldHint" => false } }] }
+          "annotations" => { "readOnlyHint" => true, "destructiveHint" => false, "openWorldHint" => false } },
+          { "name" => SOURCE_TOOL, "description" => "Discover/list/search/read explicitly approved live tracked source. Source is not accepted or tested run evidence. No grants or execution.",
+            "inputSchema" => self.class.source_schema,
+            "annotations" => { "readOnlyHint" => true, "destructiveHint" => false, "openWorldHint" => false } }] }
       when "ping"
         raise ArgumentError unless params.empty?
         {}
       when "tools/call"
         @tool_call = true
         @tool_request = params["arguments"]
-        raise ArgumentError unless params.keys.sort == %w[arguments name] && params["name"] == TOOL
+        raise ArgumentError unless params.keys.sort == %w[arguments name] && [TOOL, SOURCE_TOOL].include?(params["name"])
         @stage = "reader.dispatch"
         begin
-          evidence = @session.call(params["arguments"], wait: LOCK_WAIT)
+          evidence = @source_call ? @session.source_call(params["arguments"], wait: LOCK_WAIT) : @session.call(params["arguments"], wait: LOCK_WAIT)
           @release_request = evidence.delete("_release") || (evidence["handle"] && evidence.fetch("binding").slice(*RunEvidenceReader.identity_fields(evidence.fetch("binding"))).merge("handle" => evidence["handle"]))
           @evidence = evidence
           { "content" => [{ "type" => "text", "text" => JSON.generate(evidence) }], "isError" => false }
         rescue RunEvidenceReader::Refused
           @stage = "reader.refused"
-          { "content" => [{ "type" => "text", "text" => "Evidence refused; check exact identity, revision, approved scope and session status." }], "isError" => true }
+          message = @source_call ? "Source refused; check local grants, relative path, version, text/size limits and session status." :
+            "Evidence refused; check exact identity, revision, approved scope and session status."
+          { "content" => [{ "type" => "text", "text" => message }], "isError" => true }
         end
       else
         @stage = "envelope.method"
@@ -217,6 +235,7 @@ module AgentCodingTool
       if response.dig("result", "isError") == false
         evidence = RunEvidenceStore.parse(response.dig("result", "content", 0, "text"))
         decoded = evidence.fetch("data", "").unpack1("m0").bytesize
+        decoded += JSON.generate(evidence.reject { |key, _value| key == "data" }).bytesize if evidence["kind"] == "live_source"
       end
       @session.charge(wire: bytes.bytesize, decoded: decoded, wait: LOCK_WAIT)
       delivered = false
@@ -230,7 +249,12 @@ module AgentCodingTool
       delivered = true
     ensure
       if @tool_call
-        @session.activity(@tool_request, @evidence, released: delivered ? decoded || 0 : 0,
+        activity_request = @tool_request
+        if @source_call
+          operation = @tool_request.is_a?(Hash) && @tool_request["operation"]
+          activity_request = { "operation" => %w[discover list search read].include?(operation) ? "source_#{operation}" : "invalid" }
+        end
+        @session.activity(activity_request, @evidence, released: delivered ? decoded || 0 : 0,
           wire: emitted_wire, result: delivered ? (@evidence ? "delivered" : "refused") : "delivery_failed")
       end
     end

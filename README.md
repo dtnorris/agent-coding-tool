@@ -1897,6 +1897,126 @@ hash/status checks and visible activity. Record exact commands, native/hosted
 cleanup, setup versus per-run interventions and remaining missing facts. Do not
 stop the real tunnel to make the test suite pass or publish solely for retrieval.
 
+### Protected live source browsing
+
+Source browsing uses the same foreground tunnel, whole-workspace audience,
+session authentication, nonrenewable lifetime and cumulative budgets described
+above. It is off by default. Every new tunnel starts with **zero source grants
+and zero task shares**. In a second local terminal, explicitly approve individual
+repositories under one canonical code directory (use your actual paths):
+
+```sh
+act share source grant alpha --code-root /YOUR/code --root /YOUR/code/alpha --min 30
+act share source grant beta --code-root /YOUR/code --root /YOUR/code/beta --min 30
+act share status
+act share source revoke alpha
+```
+
+IDs are operator-chosen ASCII letters/digits/underscores/hyphens, starting with
+a letter/digit, at most 64 characters. There are at most 16 repository grants in
+a tunnel. The first grant binds its code root; other grants in that tunnel must
+use the same root. Roots must be owned canonical Git repositories strictly below
+it, without hidden/sensitive path components. Granting the code directory itself,
+symlink aliases, private sibling discovery and recursive home/code grants are
+unsupported. Each repository needs a readable index and observed HEAD. Ordinary
+repositories and worktrees with canonical absolute `.git` pointers are supported;
+unknown administrative identity, relative pointers or unsupported filesystems
+refuse. No untracked admission extension is provided.
+
+Leases default to 30 minutes; `--min` accepts 1..60 and clips to tunnel expiry.
+Regranting increments the generation, invalidating earlier source versions.
+Status shows the local roots/code root, generation, expiry and revocation facts.
+Source requests cannot grant, renew or expand roots. Source grants share no task,
+run, checkpoint or follow-up evidence. Continue using `act share TASK` for that
+separate signal, and `read_run_evidence` for exact immutable run selections.
+Revoking a task leaves source grants intact; revoking a source leaves task shares
+intact. Stop, expiry and restart end both classes of authorization. Delivered
+bytes cannot be recalled. Grant edits and every nonblocking wire fragment use
+the existing session lock, so revocation/expiry applies to subsequent chunks of
+an already started read. Source output consumes wire and decoded budgets;
+reconnects/regrants never replenish them.
+
+The separate `read_source` adapter tool accepts these JSON arguments:
+
+```json
+{"operation":"discover"}
+{"operation":"list","repository":"alpha","path":"lib"}
+{"operation":"search","repository":"alpha","query":"RelatedSymbol"}
+{"operation":"read","repository":"alpha","path":"lib/example.rb","length":4096}
+```
+
+Discovery returns approved IDs only. List/search accept an optional relative
+`path` (empty means the repository) and `offset`; follow `next_offset` while it
+is non-null. Lists return at most 64 immediate children, examining at most 256
+tracked paths per page. Searches are literal UTF-8, at most 128 query bytes,
+256 examined files, 2 MiB of reserved source reads (including rejected binary or
+changed files), and 32 matches per request. `match_policy: first_per_file` means
+one excerpt per matching file, at most 160 bytes before UTF-8 repair. Truncation
+also reports skipped/unavailable/oversized sources; a null continuation alone
+does not establish an exhaustive search. Each request/release has a two-second
+work deadline; Git pipe output and index reads are capped at 2 MiB and inventory
+at 10,000 entries. Limits refuse rather than inventing complete inventories.
+Kernel filesystem stalls remain subject to host filesystem IO semantics.
+
+Reads support regular UTF-8 text without binary control bytes, at most 1 MiB
+per file and 16 KiB per chunk. Bytes are base64 with whole/chunk SHA-256, size,
+offset, next offset and complete/truncated status. Every response is
+`kind: live_source`: repository ID, relative paths, observed Git HEAD/index
+digest and per-file comparison to the index are **not tested/accepted run
+evidence**, and do not assert repository cleanliness. Pass the returned `version`
+with every noninitial read offset. A file, index, HEAD, lease generation or
+tunnel change refuses old versions. The reader rechecks root/admin identity,
+tracked eligibility and observed file versions before wire release. It never
+silently combines file versions. List/search pages are fresh live observations;
+restart pagination after repository changes.
+
+Sensitive exclusions precede tracked admission everywhere, including names,
+snippets, reads and errors. Untracked, Git-ignored, nonregular, symlink and
+hard-linked files are excluded. Portable relative paths only: absolute paths,
+empty read paths, traversal components, backslashes/control bytes and escapes
+refuse. Directory descriptors are opened without following links, and ancestry
+and file identity are rechecked after reads. A missing or changed authorization,
+identity or containment fact fails closed.
+
+The binding deny policy is `SourceFiles.denied?` in
+`lib/agent_coding_tool/source_files.rb`: case-insensitive path components starting
+with `.env` or `.yarnrc`; Git administration/configuration (`.git`, `.gitconfig`,
+`.git-credentials`, `.gitmodules`, `.lfsconfig`); configuration/credential stores
+(`.config`, `.ssh`, `.aws`, `.azure`, `.kube`, `.gnupg`, `.docker`, `.bundle`,
+`.terraform`, `.netrc`, `.npmrc`, `.pypirc`, `.vault-token`, `.s3cfg`, `.boto`,
+`.authinfo`, `.htpasswd`, `.pgpass`, `.my.cnf`, `.curlrc`, `pip.conf`); SSH private
+key names/authorized keys/known hosts; names containing credential, secret,
+token, password, keystore, keychain, private-key or service-account forms; and
+`.pem`, `.key`, `.p8`, `.ppk`, `.der`, `.p12`, `.pfx`, `.jks`, `.kdbx`, `.tfstate`,
+`.tfvars`, `.mobileprovision` suffixes. This protects code/.config notification
+credentials even if tracked in a repository. The filter is conservative and
+**does not detect every secret embedded in allowed source**; approve roots with
+that limitation in mind. Internal bounded Git metadata queries are read-only,
+disable hooks/fsmonitor/global configuration and never return config, remote URLs
+or administrative bytes. Fixed errors and source activity enums contain no file
+bodies, snippets, query text, denied names or absolute paths. Local grant/status
+output intentionally shows roots to the operator.
+
+Real-Mac/remote acceptance is an operator-owned gate, **NOT RUN** by the offline
+tests. After host checkpoint record/verify and gated `bundle exec rake test:all`,
+use two disposable real Git repositories with a related symbol and synthetic
+canary exclusions, plus an unapproved sibling and code/.config canary. Start the
+existing approved `act share tunnel`, confirm both discovery inventories empty,
+approve the two roots above, and use the actual remote `read_source` tool to
+discover/list/search/read both, checking digests against independent local bytes.
+Try excluded paths, sibling IDs, absolute/traversal paths, symlinks and special
+files through list/search/read and inspect bounded activity for canary leaks.
+Start a multi-chunk read, change its source, revoke its grant and expire a short
+lease; each old continuation must refuse. Regrant for a fresh version. Confirm
+task evidence stays hidden until `act share TASK`, then discover/select/read its
+exact run and ACT-39 follow-ups. Revoke each grant class independently. Stop and
+restart the tunnel; both inventories must be empty again. Record exact identities,
+hashes, audience/budget/expiry observations and native/hosted cleanup separately.
+The offline continuous journey models only external Git metadata and the hosted
+client; all file policy, CLI/session/adapter and tunnel handoffs are production
+code. Its loopback listener requires host socket permission. A readiness failure
+in a restricted worker proves neither a working tunnel nor a product failure.
+
 ## Implementation checkpoints
 
 Confined implementation workers stop at a complete candidate when protected

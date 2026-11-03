@@ -69,7 +69,7 @@ module AgentCodingTool
         File.rename(File.join(@root, "state.json"), pointer)
         File.open(@root, File::RDONLY, &:fsync)
       end
-      @out.puts JSON.generate("audience" => audience(settings), "minutes" => minutes, "tasks" => [],
+      @out.puts JSON.generate("audience" => audience(settings), "minutes" => minutes, "tasks" => [], "sources" => [],
         "expiry" => "nonrenewable; task leases end no later than tunnel expiry")
       @out.flush
       EvidenceTunnel.new(session: path, grant: grant_path, env_file: settings.fetch("env-file"),
@@ -101,6 +101,9 @@ module AgentCodingTool
       result = action == "stop" ? session.stop : session.status(wait: 1)
       session.transaction(wait: 1) do |state|
         result.merge("tasks" => state.fetch("scopes").transform_values { |scope| scope.slice("generation", "expires_at", "revoked") },
+          "sources" => state.fetch("sources", {}).transform_values do |scope|
+            scope.slice("generation", "expires_at", "revoked").merge(scope.fetch("binding").slice("root", "code_root"))
+          end,
           "audience" => state.dig("grant", "transport"))
       end
     end
@@ -110,6 +113,13 @@ module AgentCodingTool
     def task(id, minutes:, revoke: false)
       settings!
       active.share_task(id, seconds: minutes * 60, revoke: revoke)
+    end
+
+    # Grants/revokes a source repository independently of registered tasks.
+    # Returns local review metadata; unsafe roots or inactive tunnels refuse.
+    def source(repository, code_root: nil, root: nil, minutes: 30, revoke: false)
+      settings!
+      active.share_source(repository, code_root: code_root, root: root, seconds: minutes * 60, revoke: revoke)
     end
 
     private

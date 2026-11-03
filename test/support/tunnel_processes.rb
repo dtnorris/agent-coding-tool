@@ -10,7 +10,7 @@ require 'shellwords'
 module TunnelProcesses
   ROOT = File.realpath(File.join(__dir__, '../..')).freeze
   SOURCE = File.join(ROOT, 'lib/agent_coding_tool/evidence_tunnel.rb').freeze
-  SOURCE_HASH = 'b858962d62cba0e62c8b7dc0e60fa01bd62202d8a928bd39d76ba8098430b1c8'
+  SOURCE_HASH = 'd51db1eea7ad331fcf9eb320fd3fd5570edeb8684a5b1df3adad69cbea193d9b'
   CLIENT = File.join(__dir__, 'fixtures/tunnel_client.rb').freeze
   CLIENT_HASH = 'a9c25a6b9394df6677dfb6f1fc803e07ef93f86b5ebd225afde72b81e9ef5d12'
   ENTRY = File.join(ROOT, 'bin/agent-coding-tool').freeze

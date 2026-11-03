@@ -20,10 +20,11 @@ module AgentCodingTool
     class WriteCollision < InvalidState
       attr_reader :collisions
 
-      # Retains all conflicting identities; construction performs no writes.
+      # Retains collision identities and guarded guidance for non-CLI callers;
+      # construction performs no writes. The launch CLI renders its compact form.
       def initialize(id, collisions)
         @collisions = collisions
-        super("#{id}: unresolved in-flight reservation: write collision")
+        super("#{id}: unresolved in-flight reservation: write collision; manual worker isolation and activity are unverified; launch requires --allow-write-collision; managed delivery refuses manual overlap")
       end
     end
 

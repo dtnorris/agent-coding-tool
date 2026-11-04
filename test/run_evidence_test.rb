@@ -298,6 +298,42 @@ class RunEvidenceTest < Minitest::Test
     assert_nil @adapter.dispatch(rpc("tools/call", valid).reject { |key, _value| key == "id" })
   end
 
+  # Fresh registration calls retain binary streams, argv and ambient settings.
+  # Only the stream/exception boundary is doubled; real parsing also refuses.
+  def test_registration_cli_preserves_streams_and_restores_environment
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
+    original_environment = ENV.to_h
+    arguments = %w[evidence register --task FIXTURE]
+    output, error, exit_code = registration_cli(*arguments, environment: environment)
+    assert_equal 2, exit_code
+    assert_empty output
+    assert_equal "ERROR: evidence registration refused; check exact run, recorded fixture, package digest and bounded regular owned files.\n".b, error
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+    binary_call = lambda do |argv, **options|
+      assert_equal arguments, argv
+      assert_equal @data, options.fetch(:data_root)
+      assert environment == environment.keys.to_h { |key| [key, ENV[key]] }, "registration environment overrides missing"
+      options.fetch(:out).write("\x00\xff".b)
+      options.fetch(:err).write("\xfe\x00".b)
+      argv.clear
+      7
+    end
+    AgentCodingTool::CLI.stub(:run, binary_call) do
+      2.times do
+        assert_equal ["\x00\xff".b, "\xfe\x00".b, 7], registration_cli(*arguments, environment: environment)
+        assert_equal %w[evidence register --task FIXTURE], arguments
+        assert ENV.to_h == original_environment, "registration changed ambient environment"
+      end
+    end
+    exception = IOError.new("registration stream failure")
+    AgentCodingTool::CLI.stub(:run, ->(*) { raise exception }) do
+      assert_same exception, assert_raises(IOError) { registration_cli(*arguments, environment: environment) }
+    end
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+    assert_raises(ArgumentError) { registration_cli("share", "tunnel", environment: environment) }
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+  end
+
   # Completion B cannot alter a pinned A; explicit B selection is independently
   # readable. Missing/duplicate authoritative identities fail closed.
   def test_fresh_run_rollover_and_ambiguity
@@ -1056,6 +1092,22 @@ class RunEvidenceTest < Minitest::Test
     assert refused.dig("result", "isError")
   end
 
+  # Runs only registration policy checks through a fresh production CLI with
+  # independent binary output/error streams and the existing broker authority.
+  # Returns [stdout, stderr, integer exit code]; exceptions propagate after ENV
+  # restoration. Other commands raise ArgumentError before changing settings.
+  def registration_cli(*arguments, environment:)
+    raise ArgumentError, "expected evidence register" unless arguments.take(2) == %w[evidence register]
+    previous = environment.keys.to_h { |key| [key, ENV[key]] }
+    environment.each { |key, value| ENV[key] = value }
+    output, error = StringIO.new("".b), StringIO.new("".b)
+    exit_code = AgentCodingTool::CLI.run(arguments.dup, data_root: @data,
+      out: output, err: error, transport: @sharing_broker)
+    [output.string, error.string, exit_code]
+  ensure
+    previous&.each { |key, value| ENV[key] = value }
+  end
+
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
@@ -1610,10 +1662,10 @@ class RunEvidenceTest < Minitest::Test
     end
   end
 
-  # Uses fresh public processes, real checkpoint preservation/capture and
-  # the actual reader/adapter. Only the worker records and hosted client are
-  # external fakes; Git uses the shared memory contract. Independent file hashes
-  # prove failed and passing diagnostics. Host acceptance still uses native Git.
+  # Retains cold export/register/gate and both real tunnel generations; repeated
+  # registration refusals use fresh public CLI instances with cold byte parity.
+  # Only worker records and hosted transport are fakes; Git has one shared broker.
+  # Independent file hashes prove diagnostics; host acceptance uses native Git.
   def test_native_share_continuous_public_journey
     FileUtils.remove_entry(File.join("#{@data}-runs", "checkpoints", "FIXTURE"))
     source = File.join(@temporary, "source")
@@ -1659,6 +1711,12 @@ class RunEvidenceTest < Minitest::Test
       assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
       [output, error]
     end
+    registration_refusals = []
+    refuse_registration = lambda do |*arguments|
+      output, error, exit_code = registration_cli(*arguments, environment: environment)
+      assert_equal 2, exit_code, error
+      registration_refusals << [output, error]
+    end
     artifact = File.join(exports, "FIXTURE.patch")
     focused = File.join(exports, "focused.json")
     write_json(focused, "schema" => "fixture-worker-claims/v1", "task_id" => "FIXTURE", "checks" => [{ "exit_code" => 0 }])
@@ -1670,21 +1728,22 @@ class RunEvidenceTest < Minitest::Test
     original_package = JSON.parse(File.binread(package.fetch("path")))
     { "task_id" => "OTHER", "base_sha" => "b" * 40, "workspace" => "/foreign" }.each do |field, value|
       bad = write_json(File.join(exports, "bad.export.json"), original_package.merge(field => value))
-      run_cli.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest, success: false)
+      refuse_registration.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest)
     end
-    run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
+    cold_refusal = run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
     outside = File.join(@temporary, "outside-task")
     File.write(outside, "outside-task-secret-sentinel")
     %w[symlink fifo].each do |kind|
       File.rename(artifact, "#{artifact}.saved")
       begin
         kind == "symlink" ? File.symlink(outside, artifact) : File.mkfifo(artifact, 0o600)
-        run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"), success: false)
+        refuse_registration.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"))
       ensure
         File.unlink(artifact)
         File.rename("#{artifact}.saved", artifact)
       end
     end
+    assert_equal [cold_refusal] * 5, registration_refusals
     assert_empty Dir.children(@first[:run]).grep(/\Aregistration-/)
     run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"))
     record, = run_cli.call("checkpoint", "record", "FIXTURE", "--workspace", workspace, "--artifact", artifact)

@@ -291,6 +291,7 @@
     "RunEvidenceTest#test_modern_transport_and_lossless_artifacts": [],
     "RunEvidenceTest#test_metadata_refusals_and_duplicate_json": [],
     "RunEvidenceTest#test_business_refusals": [],
+    "RunEvidenceTest#test_registration_cli_preserves_streams_and_restores_environment": [],
     "RunEvidenceTest#test_fresh_run_rollover_and_ambiguity": [],
     "RunEvidenceTest#test_run_binding_negative_control_and_path_safety": [],
     "RunEvidenceTest#test_pending_and_missing_evidence": [],

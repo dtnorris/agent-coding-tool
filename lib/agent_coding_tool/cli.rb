@@ -57,13 +57,17 @@ module AgentCodingTool
       File.expand_path("../#{File.basename(root)}-data", root)
     end
 
-    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil, input: $stdin)
+    # A host may embed a qualified NativePilotExecutor for the bounded session
+    # slice. CLI/model arguments and environment flags cannot install one.
+    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil, input: $stdin, manager_runtime: nil, native_pilot: nil)
       @root = root
       @out = out
       @err = err
       @data_root = data_root || self.class.default_data_root(root)
       @terminal_width = terminal_width
       @input = input
+      @manager_runtime = manager_runtime || native_pilot&.manager_adapter
+      @native_pilot = native_pilot
       @transport = transport || NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     end
 
@@ -74,6 +78,7 @@ module AgentCodingTool
       when "share" then return share_command(argv)
       when "apply" then return apply_command(argv)
       when "manage" then return manage_command(argv)
+      when "manager" then return manager_command(argv)
       when "evidence" then return evidence_command(argv)
       when "status" then status_command(argv)
       when "next" then next_command(argv)
@@ -105,6 +110,39 @@ module AgentCodingTool
     end
 
     private
+
+    # Hosts a two-turn observation-only review through an ACT-installed runtime.
+    # The runtime is a trusted embedding seam, never a CLI/model-issued grant.
+    # Returns JSON or raises Error on malformed identities, evidence or missing
+    # qualification. Existing manage reminder and worker launch stay unchanged.
+    def manager_command(argv)
+      require_relative "manager_session"
+      action = argv.shift
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--id ID") { |value| options[:manager] = value }
+        opts.on("--task TASK") { |value| options[:task_id] = value }
+        opts.on("--attempt N", Integer) { |value| options[:attempt] = value }
+        opts.on("--invocation ID") { |value| options[:invocation_id] = value }
+        opts.on("--session ID") { |value| options[:session_id] = value }
+      end
+      parser.require_exact = true
+      parser.parse!(argv)
+      expected = { "start" => [:manager], "bind" => %i[task_id attempt invocation_id session_id], "review" => [:session_id] }
+      raise Error, "usage: act manager {start TASK --id ID|bind ID --task TASK --attempt N --invocation ID --session ID|review ID --session ID}" unless
+        argv.length == 1 && expected.key?(action) && options.keys.sort == expected.fetch(action).sort
+      raise InvalidState, "manager: live runtime unavailable; host must qualify and install a confined independent lease executor; no inference started" unless @manager_runtime
+      manager = ManagerSession.new(data_root: @data_root, runtime: @manager_runtime)
+      result = case action
+               when "start" then manager.start(argv.first, **options)
+               when "bind" then manager.bind(argv.first, options.transform_keys(&:to_s))
+               when "review" then manager.review(argv.first, session: options.fetch(:session_id))
+               end
+      @out.puts JSON.generate(result)
+      0
+    rescue SystemCallError, RunEvidenceReader::Refused, JSON::ParserError, KeyError, TypeError => error
+      raise InvalidState, "manager: unavailable or malformed input (#{error.class})", cause: nil
+    end
 
     # Public finite sharing opt-in; strict duration parsing precedes setup,
     # grant or tunnel mutation. Returns a fixed safe actionable refusal on error.
@@ -464,7 +502,8 @@ module AgentCodingTool
       if action != "gate" && options.keys.any? { |key| %i[seed selection observations force reason].include?(key) }
         raise Error, "checkpoint: requested settings and observations are gate-only options"
       end
-      checkpoint = Checkpoint.new(data_root: @data_root, err: @err, transport: @transport)
+      checkpoint = Checkpoint.new(data_root: @data_root, err: @err, transport: @transport,
+        gate_executor: @native_pilot && @native_pilot.method(:gate))
       result = case action
                when "export"
                  unless argv.empty? && options[:workspace] && options[:artifact] && options[:base] &&
@@ -612,7 +651,8 @@ module AgentCodingTool
       unless options.delete(:codex) && argv.length == 1
         raise Error, "usage: agent-coding-tool launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]"
       end
-      Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err, transport: @transport)
+      settings = @native_pilot ? { codex: @native_pilot.executable, spawner: @native_pilot.method(:spawn) } : {}
+      Launcher.new(coordinator: coordinator, data_root: @data_root, source_root: @root, out: @out, err: @err, transport: @transport, **settings)
               .launch(argv.first, **options)
     rescue Launcher::WriteCollision => error
       retry_argv = ["act", "launch", argv.first, "--codex"]
@@ -1937,6 +1977,9 @@ module AgentCodingTool
                               zero tasks on startup; whole configured Work workspace audience
                               setup required once; no execution/publication; delivered bytes cannot be recalled
           manage TASK [--stdout]
+          manager start TASK --id ID
+          manager bind ID --task TASK --attempt N --invocation ID --session ID
+          manager review ID --session ID
                               copy a local task-goal reminder with pbcopy; --stdout prints only
                               source path/hash included; no progress claims or task-state writes
           evidence open --grant PRIVATE.json --session NEW_PRIVATE_DIRECTORY --env-file /CANONICAL/ACT/.env

@@ -26,14 +26,17 @@ module AgentCodingTool
     INVOCATION_SETTINGS = %w[TMPDIR TMP TEMP SEED TESTOPTS].freeze
 
     # Binds the operator-owned task/evidence roots and receipt diagnostics stream;
-    # construction performs no I/O. Filesystem failures arise at operation time.
-    def initialize(data_root:, err: $stderr, transport: NativeCommandTransport.new)
+    # construction performs no I/O. An optional trusted gate executor receives
+    # direct argv/cwd/output writers and returns CommandResult; the default native
+    # system path is unchanged. Filesystem failures arise at operation time.
+    def initialize(data_root:, err: $stderr, transport: NativeCommandTransport.new, gate_executor: nil)
       @data_root = File.expand_path(data_root)
       @tasks = TaskStore.new(File.join(@data_root, "tasks"))
       @states = StateStore.new(File.join(@data_root, "state"))
       @root = "#{@data_root}-runs"
       @err = err
       @transport = transport
+      @gate_executor = gate_executor
     end
 
     # Exports canonical bytes without reading/writing host task/run state. Inputs
@@ -268,8 +271,13 @@ module AgentCodingTool
         receipt["command_outcome"] = { "status" => "incomplete_or_unknown" }
         prior_status = $?
         capture = GateCapture.new(directory, token, out: $stdout, err: $stderr)
-        success = capture.run { |redirections| system(*command, chdir: workspace, **redirections) }
-        status = $?
+        if @gate_executor
+          status = capture.run { |redirections| @gate_executor.call(command, cwd: workspace, **redirections) }
+          success = status.success?
+        else
+          success = capture.run { |redirections| system(*command, chdir: workspace, **redirections) }
+          status = $?
+        end
         exit_code = status.exitstatus if status
         receipt["command_outcome"] = {
           "status" => success.nil? ? "failed_to_start" : status&.signaled? ? "signal" : status&.exited? ? "exited" : "incomplete_or_unknown",

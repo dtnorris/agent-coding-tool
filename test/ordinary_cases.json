@@ -380,5 +380,12 @@
     "SourceBrowsingTest#test_audience_binding_and_remote_grant_fields_refuse": [],
     "SourceBrowsingTest#test_adapter_stream_accounts_source_bytes_and_denies_next_chunk": [],
     "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation": []
+  },
+  "test/manager_session_test.rb": {
+    "ManagerAdapterTest#test_explicit_resume_and_unqualified_live_refusal": [],
+    "ManagerAdapterTest#test_output_limit_binary_status_and_malformed_streams": [],
+    "ManagerAdapterTest#test_foreign_manager_namespace_is_not_ignored": [],
+    "ManagerAdapterTest#test_host_recipe_refuses_unsafe_root_and_changed_pin_without_writes": [],
+    "ManagerAdapterTest#test_final_size_closed_fields_and_duplicate_decisions": []
   }
 }

@@ -157,6 +157,9 @@ individual metadata deletion, persistent ignore change or system setting.
 
 ## Remind a task manager of the outcome
 
+The separate experimental native session seam is described under
+[Persistent manager session candidate](#persistent-manager-session-candidate).
+
 ```sh
 act manage ACT-33
 act manage ACT-33 --stdout
@@ -185,6 +188,165 @@ mismatched IDs, malformed YAML, missing goals/acceptance, symlinks, nonregular
 files, invalid UTF-8/control bytes, sources over 64 KiB and reminders over 8 KiB
 refuse before copying; content is never silently truncated. Clipboard replacement
 is the requested side effect, not repository or publication authorization.
+
+## Persistent manager session candidate
+
+This WAC-04 architecture decision is bound to ACT baseline
+`5d9af78cd7925238358089d53b03d8e419d7951b`, ACTD inputs
+`7976eecd5e30f6db90a24dd7446d6d5a09c503d9` and skills input
+`5162361187be082ba897d79571345a65caad33bd`. The continuation applies complete coding/planning guidance at
+`5162361187be082ba897d79571345a65caad33bd`. Generated worker prompts retain
+ACT’s existing immutable skill pin at `8ac096dd81865ea9e30ef84c6a8127db68e159bb`.
+The normative scope and pilot limits remain ACTD's
+`plans/wac/native-loop-contract.md` and `plans/wac/WAC-04/input-contract.md`;
+this section describes implementation and its qualification limits.
+
+The selected adapter is explicit `codex exec` / `codex exec resume SESSION_ID`.
+The [official CLI documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
+documents process-based sessions and JSONL. The
+[official SDK](https://learn.chatgpt.com/docs/codex-sdk) offers local thread
+start/resume, adding a language/runtime dependency to this Ruby seam. The
+[app-server](https://learn.chatgpt.com/docs/app-server) offers thread/turn RPC
+and approval handling, requiring an additional protocol lifecycle here.
+Neither alternative removes ACT's confinement, accounting or evidence duties.
+No SDK, bridge, hosted API or new service is installed.
+
+Installed 0.166.0 help observed during authoring advertises JSONL, explicit
+session resume, config overrides and output-schema on both paths. This is
+flag-discovery evidence only. The adapter deliberately uses strict host parsing
+on both paths without relying on output-schema or model-writable final files.
+Its CLI hypothesis is disconfirmed if the installed executable cannot resume
+the exact returned ID, preserve prior reasoning, enforce the observation-only
+boundary, retain unambiguous final/session events, or operate within the
+independent lease. Stop dependent inference on those conditions. Investigate
+app-server only for a demonstrated CLI gap; do not upgrade or loosen sandbox
+policy to make this candidate run.
+
+| Responsibility | Concrete ACT owner and boundary |
+| --- | --- |
+| Public entry | Additive `CLI#manager_command`: start, bind, review; `manage TASK` remains the clipboard reminder |
+| Session/control truth | `ManagerSession`, private `DATA-runs/.manager-sessions/ID`; not task lifecycle state |
+| Reasoning history | External Codex session, explicitly selected; ACT never searches latest history |
+| Worker admission and worktrees | Existing `Launcher`, `Coordinator`, `WorktreeManager`; operator seeds the single worker |
+| Candidate and verification | Existing checkpoint record/verify/gate; manager bind reads through `RunEvidenceStore` / `RunEvidenceReader` |
+| Serialization | Existing private `ReservationLock`; competing manager turns refuse |
+| Inference adaptation | `CodexManagerAdapter`: direct argv, disabled shell/multi-agent/apps/plugins, read-only config, strict JSONL parsing |
+| Native isolation and limits | `NativePilotExecutor`, a trusted `CLI.new(native_pilot: ...)` embedding used by the host recipe; private ledger in existing checkpoint storage |
+| Acceptance/publication | David; manager ACCEPT is candidate review and cannot close a task, dispatch a correction or authorize publication |
+
+`ManagerSession` binds original task/preparation context, objective and acceptance
+hashes, logical manager ID, exact session/epoch, host-provided runtime/composition
+identity, invocation/prompt hashes, pinned completion and last consumed completion.
+Each turn is reserved durably before inference. Failed/uncertain turns stay held;
+there is no automatic retry, reconstruction or epoch reset. Raw inference bytes,
+status, truncation and parse failures are separate receipts. An occupied or
+foreign manager namespace refuses admission rather than being hidden from
+Launcher. No model receives write authority over these records.
+
+The operator binds one exact task/attempt/invocation/worker-session tuple after
+worker exit and host verification. The existing reader checks lineage and full
+artifact digests. Candidate, transcript, final, one finished gate and both complete
+binary output streams are delivered as inert base64, within a 1 MiB review bound.
+Missing, changed, incomplete or truncated evidence holds review. Failed test
+evidence can yield CONTINUE/BLOCKED/STOP; ACCEPT cannot override a failed worker
+or host gate. A closed versioned decision includes acceptance/completion hashes,
+rationale, prior reasoning and at most one proposed action. Proposed actions are
+data only. Structural checks cannot establish semantic review quality.
+
+The public-entry offline fixture is:
+
+```sh
+bundle exec ruby -Ilib:test test/manager_session_test.rb
+```
+
+It starts and reaps a fake manager, launches a distinct fake worker through ACT,
+records/verifies/gates the actual candidate, then resumes the same fake manager
+in a new process. The fake consults its earlier review criterion without receiving
+that criterion again. Only inference and external Git/sandbox observations are
+modeled. Required admission, evidence, checkpoint and parser handoffs remain
+production code; the independent validator emits known binary bytes. This proves
+offline wiring, not model memory, native sandbox enforcement or host acceptance.
+
+`NativePilotExecutor` supplies the production execution seam for manager inference,
+Launcher’s single seeded worker and checkpoint validation. The ordinary CLI still
+requires a host-installed runtime; an environment flag or a model decision cannot
+grant execution. The host recipe installs the executor through the trusted CLI
+constructor and uses the production public entries for the entire journey.
+
+A synced ledger under `DATA-runs/checkpoints/native-WAC-04` reserves before fork:
+two manager turns, one worker, one gate, one active invocation, 300 seconds per
+inference turn, 120 seconds per gate, a 64 KiB final and 4 MiB cumulative output.
+The original enclosing 900-second wall/monotonic lease and Darwin boot identity
+survive object/process reconstruction. Occupied configuration, failed starts,
+uncertain reservations, expiry and output overflow cannot renew budgets. The
+supervisor reserves cleanup time inside each maximum and records any lease
+overrun as a hold. The
+host recipe also independently supervises its entire controller, including
+Launcher preflight, under that original lease.
+
+Each native invocation has an independent supervisor outside model confinement.
+It detects controller death, enforces deadlines during pipe backpressure, stops
+only its still-owned child group before reaping, and preserves actual byte/status
+receipts. Worker output is also archived independently of Launcher. Worker final
+output is staged in its role home, checked, then copied into private evidence by
+the supervisor. Neither worker nor manager can write ACT control/evidence roots.
+
+An outer macOS deny-default policy confines each role. It denies process forks,
+foreign signals, control access and source writes. Manager runtime history is
+writable only in its separate Codex home; manager tools use Codex’s read-only
+policy, with shell, multi-agent, apps, plugins and web tools disabled. The adapter
+rejects tool events. Worker tools have only fixture candidate writes and must use
+the native patch tool, with shell tools disabled. Gate execution reads the fixed
+candidate bytes through the pinned host validator, without evaluating candidate
+code. Host qualification probes all three profiles, symlink/control denials,
+installed read-only tool confinement, byte/status capture, expiry and controller
+death before any inference. The auth prerequisite is an existing private
+file-based ChatGPT login: fixture homes reference it by symlink, never copy it,
+and receive no write grant to the original credential file. API keys and user
+Ruby/config injection are absent from workload environments.
+
+After host checkpoint registration and separate authorization for synthetic
+fixture Git operations, run with reviewed literal source/executable hashes:
+
+```sh
+bundle exec ruby test/integration/wac04_qualification.rb pin
+bundle exec ruby test/integration/wac04_qualification.rb offline \
+  --root /Users/davidnorriseng/code/agent-coding-tool-data-fixtures/WAC-04-host-OFFLINE-UNIQUE \
+  --source-sha256 REVIEWED_SOURCE_SHA256 \
+  --codex /ABSOLUTE/INSTALLED/codex --codex-sha256 REVIEWED_EXECUTABLE_SHA256
+```
+
+`qualify` runs only harmless qualification. `offline` additionally creates a
+synthetic baseline/local remote and completes the native public-entry journey
+with inference substitutes. Both are host checks. Neither authorizes live usage.
+For a separately authorized live proof, use `run` with `--authorize-live`, the
+same reviewed pins and a fresh `WAC-04-host-LIVE-UNIQUE` root. That mode first
+requalifies, then runs exactly two real manager turns and one real worker with
+no model override, independent evidence and one fixed host validator. It retains
+session/model observations and controller receipts. David must assess meaningful
+use of earlier reasoning and evidence; manager ACCEPT does not close the task or
+authorize integration/publication.
+
+Stop on any pin/version/auth/sandbox/boot/identity/evidence mismatch, failed
+qualification, unknown child, held budget or limit. Preserve the root and inspect
+its `blocked.json`, `journey-blocked.json` or controller/native receipts. Never
+retry unconfined or reuse an occupied root; a new live attempt needs a new
+operator authorization. The separately exported continuation recipe supplies
+literal commands and prerequisites for this candidate.
+
+Focused tests also cover the executor’s production paths with harmless processes:
+
+```sh
+bundle exec ruby -Ilib:test test/native_pilot_executor_test.rb
+bundle exec ruby -Ilib:test test/manager_session_test.rb
+```
+
+Those tests explicitly model boot, sandbox and inference observations; they do
+not qualify native confinement. This authoring sandbox refuses `kern.boottime`
+with EPERM, which is preserved as an environmental refusal. Full host
+qualification, live semantic continuity and required complete-suite gates are
+**NOT RUN** for this candidate. Executor/recipe implementation completion is
+separate from David’s real-host acceptance.
 
 ## Apply a worker handoff
 

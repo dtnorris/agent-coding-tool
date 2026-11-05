@@ -232,7 +232,7 @@ module AgentCodingTool
         manager.inspect!
         current_conflicts = reject_unknown_reservations!(id, bases,
           allow_manual_overlap: allow_write_collision, launch_admission: true)
-        identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees") } }
+        identity = ->(rows) { rows.map { |row| row.values_at("task_id", "attempt", "invocation_id", "all_worktrees", "observed_heads") } }
         unless identity.call(current_conflicts) == identity.call(verified_conflicts) && @manual_conflicts == manual_conflicts
           raise InvalidState, "launch: parallel worker set changed during worktree setup; inspect and retry"
         end
@@ -608,9 +608,14 @@ module AgentCodingTool
       end
       root = Config.load(File.join(@data_root, "config.yml")).worktree_root
       manager = WorktreeManager.new(root: root, record_path: record_path, transport: @transport)
-      # Only host-validated exact candidate commits may replace the prepared HEAD.
+      # Launch observes preserved descendants without granting delivery authority.
+      # Delivery still requires its private contract and exact candidate evidence.
       delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
-      overrides = delivery.verified_delivery_heads(other_id, report, run_dir)
+      overrides = if launch_admission
+        preserved_launch_heads!(other_id, report)
+      else
+        delivery.verified_delivery_heads(other_id, report, run_dir)
+      end
       inventory = manager.inspect!(head_overrides: overrides)
       if launch_admission && inventory["invocation_id"] != report["invocation_id"]
         raise InvalidState, "launch: #{other_id} invocation differs from its owned attempt"
@@ -657,6 +662,7 @@ module AgentCodingTool
         "invocation_id" => report.fetch("invocation_id"), "status" => report.fetch("status"),
         "workspaces" => workspaces,
         "all_worktrees" => inventory.fetch("entries").map { |entry| entry.fetch("path") },
+        "observed_heads" => overrides,
         "authorities" => names.to_h { |name|
           [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] } }
     rescue KeyError, TypeError, NoMethodError, JSON::ParserError => e
@@ -666,6 +672,25 @@ module AgentCodingTool
     def immutable_inventory(inventory)
       inventory.reject { |key, _| key == "entries" }.merge(
         "entries" => inventory.fetch("entries").map { |entry| entry.reject { |key, _| key == "state" } })
+    end
+
+    # Returns exact writer HEADs for launch-only ownership inspection. A moved
+    # HEAD must be an exited worker's descendant of its own preparation; invalid
+    # ancestry or Git observations raise without changing refs or delivery state.
+    def preserved_launch_heads!(id, report)
+      writers = report.fetch("writable_repositories")
+      writers.to_h do |name|
+        workspace = report.fetch("workspaces").fetch(name)
+        base = report.fetch("preparation").fetch(name).fetch("pushed_sha")
+        head = git!("rev-parse", "HEAD", chdir: workspace)
+        unless head == base
+          raise InvalidState, "launch: #{id} changed HEAD while worker is not exited" unless report["status"] == "exited"
+          _stdout, _stderr, status = @transport.call(
+            ["git", "merge-base", "--is-ancestor", base, head], cwd: workspace)
+          raise InvalidState, "launch: #{id} candidate HEAD is not a descendant of its preparation" unless status.success?
+        end
+        [name, head]
+      end
     end
 
     def verify_running_process!(report)

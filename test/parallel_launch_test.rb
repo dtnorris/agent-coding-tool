@@ -245,18 +245,31 @@ class ParallelLaunchTest < Minitest::Test
             File.binwrite(final_path, final_bytes)
           end
 
-          # A different live HEAD needs verified candidate evidence, even when
-          # the older preparation and worktree registration remain authentic.
+          # Unrelated HEAD replacement must fail without delivery contracts.
           sibling_ref = "refs/heads/act/E/attempt-1"
           begin
-            @memory_checkout.repository.refs[sibling_ref] = fresh
+            unrelated = @memory_world.build_commit(@memory_checkout,
+              files: { "foreign.txt" => "foreign" }, parents: [], message: "unrelated")
+            @memory_checkout.repository.refs[sibling_ref] = unrelated.oid
             code, _output, error = public_cli("launch", "B", "--codex", "--allow-write-collision")
             assert_equal 2, code
-            assert_match(/delivery: missing\/private contract directory/, error)
+            assert_match(/candidate HEAD is not a descendant/, error)
             assert_equal before_spawn, Dir.glob(File.join(@root, "worker-process-*")).sort
           ensure
             @memory_checkout.repository.refs[sibling_ref] = @base
           end
+
+          # Exited, committed descendant without managed delivery evidence.
+          candidate = @memory_world.build_commit(@memory_checkout,
+            files: { "candidate.txt" => "preserved" }, parents: [@base], message: "candidate")
+          @memory_checkout.repository.refs[sibling_ref] = candidate.oid
+          refute File.exist?("#{@data}-validation")
+          refute File.exist?(File.join(File.dirname(report_path), "delivery.json"))
+          delivery = AgentCodingTool::DeliveryManager.new(data_root: @data, coordinator: @coordinator)
+          error = assert_raises(AgentCodingTool::InvalidState) {
+            delivery.verified_delivery_heads("E", handoff("E"), File.dirname(report_path))
+          }
+          assert_match(/delivery: missing\/private contract directory/, error.message)
 
           preserved_paths = %w[T E C].flat_map do |id|
             state = @store.load(id)
@@ -285,7 +298,9 @@ class ParallelLaunchTest < Minitest::Test
               row = siblings.find { |entry| entry.fetch("task_id") == sibling }
               assert_equal @base, row.fetch("authorities").values.first.fetch("pushed_sha")
               assert_equal handoff(sibling).fetch("invocation_id"), row.fetch("invocation_id")
-              assert_equal @base, setup_git("rev-parse", "HEAD", chdir: handoff(sibling).fetch("workspace"))
+              expected_head = sibling == "E" ? candidate.oid : @base
+              assert_equal expected_head, setup_git("rev-parse", "HEAD", chdir: handoff(sibling).fetch("workspace"))
+              assert_equal expected_head, row.fetch("observed_heads").values.first
             end
             assert_equal preserved, preserved_paths.to_h { |path| [path, File.binread(path)] }
             error = assert_raises(AgentCodingTool::InvalidState) {
@@ -303,6 +318,7 @@ class ParallelLaunchTest < Minitest::Test
           assert_equal "running", handoff("T").fetch("status")
           # Ordinary checkpoint operations remain eligible for the exited
           # IN_FLIGHT sibling without a forced lifecycle exception.
+          @memory_checkout.repository.refs[sibling_ref] = @base
           workspace = handoff("E").fetch("workspace")
           checkpoint.record("E", workspace: workspace)
           assert_equal "verified", checkpoint.verify("E", workspace: workspace).fetch("status")

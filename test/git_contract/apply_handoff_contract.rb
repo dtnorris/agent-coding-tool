@@ -113,8 +113,9 @@ class ApplyHandoffContract < Minitest::Test
     [code, out.string, err.string]
   end
 
-  # Restores the private model and seed bytes/modes without replacing registered
-  # .git identities. Returns the saved manifest; filesystem/model errors propagate.
+  # Restores private model state and seed bytes/modes without replacing .git
+  # identities. Explicit metadata preservation avoids restrictive CI umasks.
+  # Returns the saved manifest; filesystem/model errors propagate.
   def restore_world
     @apply_checkouts.each do |path, checkout|
       Dir.children(path).reject { |name| name == ".git" }.each do |name|
@@ -208,6 +209,8 @@ class ApplyHandoffContract < Minitest::Test
   # parent/ref effects and deliberate corruptions below establish the contract.
   # Assertions and strict request consumption fail closed on lost transitions.
   def test_complete_run_decision_matrices_with_native_parity
+    # Exercise both copies under the private-file CI mask on every host.
+    previous_umask = File.umask(0o077)
     fixture(nonportable: true) do
       # Model inventories cover tabs and newlines in tracked names.
       # Each combined inventory must reconstruct the original four raw reads.
@@ -476,6 +479,8 @@ class ApplyHandoffContract < Minitest::Test
       assert_equal({ "consent" => 3, "success" => 4, "contract" => 21, "preflight" => 7,
                      "phase" => 15, "local" => 8, "validation" => 6 }, executed)
     end
+  ensure
+    File.umask(previous_umask)
   end
 
   # Qualifies exact matching/consumption including binary stdin, environment,

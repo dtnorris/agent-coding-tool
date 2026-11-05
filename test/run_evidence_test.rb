@@ -4,6 +4,7 @@ require_relative "test_helper"
 require_relative "support/child_processes"
 require_relative "support/memory_git/broker"
 require_relative "support/source_fixture"
+require_relative "support/checkpoint_processes"
 require "stringio"
 require "timeout"
 require "socket"
@@ -296,6 +297,87 @@ class RunEvidenceTest < Minitest::Test
     end
     assert @adapter.dispatch(rpc("events/list"))["error"]
     assert_nil @adapter.dispatch(rpc("tools/call", valid).reject { |key, _value| key == "id" })
+  end
+
+  # Fresh registration calls retain binary streams, argv and ambient settings.
+  # Only the stream/exception boundary is doubled; real parsing also refuses.
+  def test_registration_cli_preserves_streams_and_restores_environment
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
+    original_environment = ENV.to_h
+    arguments = %w[evidence register --task FIXTURE]
+    output, error, exit_code = sharing_cli(*arguments, environment: environment)
+    assert_equal 2, exit_code
+    assert_empty output
+    assert_equal "ERROR: evidence registration refused; check exact run, recorded fixture, package digest and bounded regular owned files.\n".b, error
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+    binary_call = lambda do |argv, **options|
+      assert_equal arguments, argv
+      assert_equal @data, options.fetch(:data_root)
+      assert environment == environment.keys.to_h { |key| [key, ENV[key]] }, "registration environment overrides missing"
+      options.fetch(:out).write("\x00\xff".b)
+      options.fetch(:err).write("\xfe\x00".b)
+      argv.clear
+      7
+    end
+    AgentCodingTool::CLI.stub(:run, binary_call) do
+      2.times do
+        assert_equal ["\x00\xff".b, "\xfe\x00".b, 7], sharing_cli(*arguments, environment: environment)
+        assert_equal %w[evidence register --task FIXTURE], arguments
+        assert ENV.to_h == original_environment, "registration changed ambient environment"
+      end
+    end
+    exception = IOError.new("registration stream failure")
+    AgentCodingTool::CLI.stub(:run, ->(*) { raise exception }) do
+      assert_same exception, assert_raises(IOError) { sharing_cli(*arguments, environment: environment) }
+    end
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+    %w[tunnel stop status setup].each do |action|
+      assert_raises(ArgumentError) { sharing_cli("share", action, environment: environment) }
+    end
+    assert ENV.to_h == original_environment, "registration changed ambient environment"
+  end
+
+  # A ready admission is a declared fixture; all consent parsing, durable ledger
+  # edits and reader refusals are real. No native transport is claimed here.
+  def test_sharing_cli_consent_revokes_and_never_revives_old_handles
+    client = tunnel_fixture
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE", "title" => "fixture"))
+    setup_output, setup_error = StringIO.new, StringIO.new
+    assert_equal 0, AgentCodingTool::CLI.run(["share", "setup", "--env-file", @dotenv, "--client", client,
+      "--runtime-dir", @runtime, "--account", "fixture-account", "--workspace", "fixture-workspace",
+      "--endpoint", "tunnel_fixture/main"], data_root: @data, out: setup_output, err: setup_error), setup_error.string
+    settings = JSON.parse(setup_output.string)
+    path = File.join("#{@data}-sharing", "session-#{'a' * 32}")
+    grant = @grant.merge("schema" => "agent-coding-tool-task-sharing/v2", "session_path" => path,
+      "tasks" => [], "transport" => settings.fetch("audience"))
+    AgentCodingTool::EvidenceSession.start(path, write_json(File.join(@temporary, "consent-grant.json"), grant))
+    session = AgentCodingTool::EvidenceSession.new(path)
+    session.sharing_ready
+    write_json(File.join("#{@data}-sharing", "active.json"), "session" => path)
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
+    original_environment = ENV.to_h
+    before = session.status
+    manifest = nil
+    [[%w[share FIXTURE], "shared", 1], [%w[share revoke FIXTURE], "revoked", 2],
+     [%w[share FIXTURE], "shared", 3]].each do |arguments, status, generation|
+      output, error, exit_code = sharing_cli(*arguments, environment: environment)
+      assert_equal 0, exit_code, error
+      assert_empty error
+      result = JSON.parse(output)
+      assert_equal ["FIXTURE", status, generation], result.values_at("task_id", "status", "generation")
+      assert ENV.to_h == original_environment, "task consent changed ambient environment"
+      if manifest
+        assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { session.call(read_request(manifest)) }
+      else
+        manifest = session.call(@first[:identity].merge("operation" => "select"))
+        assert_equal @first[:contents]["final"].byteslice(0, 16_384), session.call(read_request(manifest))["data"].unpack1("m0")
+      end
+    end
+    refreshed = session.call(@first[:identity].merge("operation" => "select"))
+    assert_equal @first[:contents]["final"].byteslice(0, 16_384), session.call(read_request(refreshed))["data"].unpack1("m0")
+    budgets = %w[admitted_at expires_at requests wire_bytes decoded_bytes grant_sha256 limits]
+    assert_equal before.slice(*budgets), session.status.slice(*budgets)
   end
 
   # Completion B cannot alter a pinned A; explicit B selection is independently
@@ -662,7 +744,7 @@ class RunEvidenceTest < Minitest::Test
     lock_path = File.join(@session_path, "lock")
     competitor = File.open(lock_path, File::RDWR)
     original = @session.method(:transaction)
-    operations, yielded, released = [], 0, 0
+    operations, yielded, released, backoffs = [], 0, 0, 0
     @session.define_singleton_method(:transaction) do |wait: 0, &operation|
       raise "fixture competitor unavailable" unless competitor.flock(File::LOCK_EX | File::LOCK_NB)
       operations << caller_locations(1, 1).first.base_label
@@ -678,22 +760,35 @@ class RunEvidenceTest < Minitest::Test
         event.self.is_a?(File) && event.self.path == lock_path
       released += 1
       competitor.flock(File::LOCK_UN)
+      Thread.current[:tst47_released_ledger] = true
+    end
+    native_select = IO.method(:select)
+    released_wait = lambda do |*arguments|
+      if arguments.length == 4 && arguments.take(3) == [nil, nil, nil] && Thread.current[:tst47_released_ledger]
+        Thread.current[:tst47_released_ledger] = nil
+        backoffs += 1
+        nil
+      else
+        native_select.call(*arguments)
+      end
     end
     @incoming_wire, @outgoing_wire = 0, 0
     # Include the adapter worker; block-form tracing otherwise watches this thread.
-    trace.enable(target_thread: nil) do
-      adapter_pipe do |sender, receiver|
-        assert adapter_exchange(sender, receiver, rpc("server/discover"))["result"]
-        selected = adapter_exchange(sender, receiver,
-          rpc("tools/call", @first[:identity].merge("operation" => "select")))
-        refute selected.dig("result", "isError")
-        manifest = JSON.parse(selected.dig("result", "content", 0, "text"))
-        response = adapter_exchange(sender, receiver, rpc("tools/call", read_request(manifest)))
-        refute response.dig("result", "isError")
-        evidence = JSON.parse(response.dig("result", "content", 0, "text"))
-        bytes = evidence.fetch("data").unpack1("m0")
-        assert_equal @first[:contents]["final"].byteslice(0, 16_384), bytes
-        assert_equal Digest::SHA256.hexdigest(bytes), evidence.fetch("chunk_sha256")
+    IO.stub(:select, released_wait) do
+      trace.enable(target_thread: nil) do
+        adapter_pipe do |sender, receiver|
+          assert adapter_exchange(sender, receiver, rpc("server/discover"))["result"]
+          selected = adapter_exchange(sender, receiver,
+            rpc("tools/call", @first[:identity].merge("operation" => "select")))
+          refute selected.dig("result", "isError")
+          manifest = JSON.parse(selected.dig("result", "content", 0, "text"))
+          response = adapter_exchange(sender, receiver, rpc("tools/call", read_request(manifest)))
+          refute response.dig("result", "isError")
+          evidence = JSON.parse(response.dig("result", "content", 0, "text"))
+          bytes = evidence.fetch("data").unpack1("m0")
+          assert_equal @first[:contents]["final"].byteslice(0, 16_384), bytes
+          assert_equal Digest::SHA256.hexdigest(bytes), evidence.fetch("chunk_sha256")
+        end
       end
     end
     @session.singleton_class.remove_method(:transaction)
@@ -705,10 +800,12 @@ class RunEvidenceTest < Minitest::Test
     assert_equal 16_384, after["decoded_bytes"]
     assert_equal operations.length, yielded
     assert_equal yielded, released
+    assert_equal released, backoffs
     %w[admit status charge call].each { |name| assert_includes operations, name }
     assert_equal after, AgentCodingTool::EvidenceSession.new(@session_path).status
   ensure
     trace&.disable
+    Thread.current[:tst47_released_ledger] = nil
     if @session.singleton_class.instance_methods(false).include?(:transaction)
       @session.singleton_class.remove_method(:transaction)
     end
@@ -1056,6 +1153,40 @@ class RunEvidenceTest < Minitest::Test
     assert refused.dig("result", "isError")
   end
 
+  # Runs registration, checkpoint recording or exact fixture task consent through a fresh
+  # production CLI, independent binary streams and the existing broker authority.
+  # Returns [stdout, stderr, integer exit code]; exceptions propagate after ENV
+  # restoration. Process/lifecycle commands raise ArgumentError before mutation.
+  def sharing_cli(*arguments, environment:)
+    registration = arguments.take(2) == %w[evidence register]
+    checkpoint = arguments.take(3) == %w[checkpoint record FIXTURE] && @sharing_broker
+    consent = [%w[share FIXTURE], %w[share revoke FIXTURE]].include?(arguments)
+    raise ArgumentError, "expected registration, broker-bound checkpoint record or task consent" unless registration || checkpoint || consent
+    local_cli(*arguments, environment: environment)
+  end
+
+  # Runs a fresh production command with private binary streams and restored ENV.
+  # Returns stdout, stderr and the integer CLI result; all exceptions propagate.
+  # Callers retain native children for argv/status, locks, EOF and lifecycle proofs.
+  def local_cli(*arguments, environment: {})
+    previous = environment.keys.to_h { |key| [key, ENV[key]] }
+    environment.each { |key, value| ENV[key] = value }
+    output, error = StringIO.new("".b), StringIO.new("".b)
+    exit_code = AgentCodingTool::CLI.run(arguments.dup, data_root: @data,
+      out: output, err: error, transport: @sharing_broker)
+    [output.string, error.string, exit_code]
+  ensure
+    previous&.each { |key, value| ENV[key] = value }
+  end
+
+  # Checks a repeated evidence command through fresh parsing and the real ledger.
+  # A cold counterpart remains in the public CLI/lock controls; no status is faked.
+  def local_evidence(*arguments)
+    output, error, exit_code = local_cli("evidence", *arguments)
+    assert_equal 0, exit_code, "CLI #{arguments.first} failed: #{error}"
+    JSON.parse(output)
+  end
+
   # Invokes the public CLI with binary-preserving observers and exact exit status.
   # Only declared native cases call this helper; ordinary tests spawn nothing.
   def cli(*arguments)
@@ -1066,17 +1197,16 @@ class RunEvidenceTest < Minitest::Test
 
   # Observes live public status within one deadline. Only the exact nonblocking
   # busy refusal is retried; persistent contention, other failures and bad JSON
-  # still fail. Each fresh CLI keeps the genuine ledger and child-process guard.
+  # still fail. Fresh in-process CLI instances observe the independent owner ledger.
   def cli_status_when_available(path, seconds: 2)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
     busy = "ERROR: evidence session refused (session.busy); check private grant, exact run identity and session status\n"
     loop do
       remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
       flunk "CLI status remained busy after #{seconds}s" unless remaining.positive?
-      output, error, status = ChildProcesses.capture("evidence_cli",
-        arguments: ["plain", "evidence", "status", "--session", path], seconds: remaining)
-      unless status.exitstatus == 2 && output.empty? && error == busy
-        assert status.success?, "CLI status failed: #{error}"
+      output, error, exit_code = local_cli("evidence", "status", "--session", path)
+      unless exit_code == 2 && output.empty? && error == busy
+        assert_equal 0, exit_code, "CLI status failed: #{error}"
         return JSON.parse(output)
       end
       remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -1230,13 +1360,13 @@ class RunEvidenceTest < Minitest::Test
     @grant["session_path"] = expiry_path
     @grant["limits"]["seconds"] = 1
     write_json(@grant_path, @grant)
-    cli("start", "--session", expiry_path, "--grant", @grant_path)
+    local_evidence("start", "--session", expiry_path, "--grant", @grant_path)
     evidence_process("evidence", "serve", "--session", expiry_path) do |_input, output, error, waiter|
       assert Timeout.timeout(5) { waiter.value }.success?
       assert_empty output.read
       assert_operator error.read.bytesize, :<=, 4096
     end
-    assert_equal "expired", cli("status", "--session", expiry_path)["status"]
+    assert_equal "expired", local_evidence("status", "--session", expiry_path)["status"]
   end
 
   # Makes only an external client/service fake. It verifies the actual credential
@@ -1360,7 +1490,7 @@ class RunEvidenceTest < Minitest::Test
       assert IO.select([wire], [], [], 3), "later read response missing"
       evidence = JSON.parse(JSON.parse(wire.gets).dig("result", "content", 0, "text"))
       assert_equal later[:contents]["final"].byteslice(0, 16_384), evidence.fetch("data").unpack1("m0")
-      assert_equal "stopped", cli("stop", "--session", path)["status"]
+      assert_equal "stopped", local_evidence("stop", "--session", path)["status"]
     end
     assert_equal original_dotenv, File.binread(@dotenv)
     assert_equal original_mode, File.stat(@dotenv).mode
@@ -1370,7 +1500,7 @@ class RunEvidenceTest < Minitest::Test
       assert_equal "not_observed", receipt["hosted_shutdown"]
       refute_equal "unknown", receipt["local_cleanup"]
       refute_equal "blocked", receipt["local_cleanup"]
-      assert_equal "stopped", cli("status", "--session", File.join(@temporary, name))["status"]
+      assert_equal "stopped", local_evidence("status", "--session", File.join(@temporary, name))["status"]
     end
   end
 
@@ -1427,7 +1557,7 @@ class RunEvidenceTest < Minitest::Test
       assert_equal "controller_lost", receipt["reason"]
       assert_equal "stopped", receipt["admission_stop"]
       assert_includes %w[owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped], receipt["local_cleanup"]
-      after = cli("status", "--session", path)
+      after = local_evidence("status", "--session", path)
       assert_equal "stopped", after["status"]
       health = URI.parse(File.binread(File.join(path, "health-url")).strip)
       assert_raises(Errno::ECONNREFUSED) { TCPSocket.new(health.host, health.port) }
@@ -1437,13 +1567,13 @@ class RunEvidenceTest < Minitest::Test
         environment: { "OPENAI_TUNNEL_KEY" => nil }, seconds: 5)
       refute status.success?
       assert_includes error, "tunnel.session_reused"
-      assert_equal after, cli("stop", "--session", path)
-      assert_equal after, cli("stop", "--session", path)
+      assert_equal after, local_evidence("stop", "--session", path)
+      assert_equal after, local_evidence("stop", "--session", path)
       assert_equal 1, Process.kill(0, sentinel)
     end
     with_tunnel(client, "finite-expiry", seconds: 1) do |_wire, waiter, path|
       assert Timeout.timeout(4) { waiter.value }.exited?
-      result = cli("status", "--session", path)
+      result = local_evidence("status", "--session", path)
       assert_equal "expired", result.dig("tunnel", "reason")
       assert_equal "stopped", result["status"]
       assert_equal 1, Process.kill(0, sentinel)
@@ -1474,7 +1604,7 @@ class RunEvidenceTest < Minitest::Test
         input.close
         if name == "stopped-startup"
           Timeout.timeout(3) { IO.select(nil, nil, nil, 0.02) until File.exist?(File.join(path, "tunnel.json")) }
-          cli("stop", "--session", path)
+          local_evidence("stop", "--session", path)
         end
         refute Timeout.timeout(4) { waiter.value }.success?
         assert_empty output.read
@@ -1487,7 +1617,7 @@ class RunEvidenceTest < Minitest::Test
         assert_includes %w[expired stopped], result["reason"]
         assert_equal "not_attested", result["retrieval"]
         assert_equal "stopped", result["admission_stop"]
-        assert_equal 0, cli("status", "--session", path)["decoded_bytes"]
+        assert_equal 0, local_evidence("status", "--session", path)["decoded_bytes"]
       end
     end
   end
@@ -1517,10 +1647,15 @@ class RunEvidenceTest < Minitest::Test
     File.write(File.join(@data, "tasks", "FIXTURE.yml"), YAML.dump("id" => "FIXTURE", "title" => "fixture", "goal" => "fixture"))
     client = tunnel_fixture
     environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil }
-    run_cli = lambda do |*arguments, success: true|
-      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", "share", *arguments],
-        environment: environment, seconds: 10)
-      assert_equal success, status.success?, error
+    run_cli = lambda do |*arguments, success: true, cold: false|
+      if cold
+        output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", "share", *arguments],
+          environment: environment, seconds: 10)
+        assert_equal success, status.success?, error
+      else
+        output, error, exit_code = local_cli("share", *arguments, environment: environment)
+        assert_equal(success ? 0 : 2, exit_code, error)
+      end
       success ? JSON.parse(output) : error
     end
     run_cli.call("setup", "--env-file", @dotenv, "--client", client, "--runtime-dir", @runtime,
@@ -1558,7 +1693,7 @@ class RunEvidenceTest < Minitest::Test
             assert_empty exchange.call({ "operation" => "discover" }).fetch("repositories")
             run_cli.call("revoke", "FIXTURE")
             roots.each do |name, root|
-              grant = run_cli.call("source", "grant", name, "--code-root", code, "--root", root)
+              grant = run_cli.call("source", "grant", name, "--code-root", code, "--root", root, cold: name == "alpha")
               assert_equal "granted", grant["status"]
             end
             assert_empty exchange.call({ "operation" => "discover" }, source: false).fetch("tasks")
@@ -1589,7 +1724,7 @@ class RunEvidenceTest < Minitest::Test
             evidence = exchange.call(run_read, source: false)
             assert_equal @first[:identity], evidence.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
             assert_equal @first[:contents]["final"].byteslice(0, 32), evidence.fetch("data").unpack1("m0")
-            run_cli.call("source", "revoke", "alpha")
+            run_cli.call("source", "revoke", "alpha", cold: true)
             exchange.call({ "operation" => "read", "repository" => "alpha", "path" => "main.rb", "offset" => 64, "version" => first["version"] }, success: false)
             exchange.call(run_read, source: false)
             run_cli.call("revoke", "FIXTURE")
@@ -1597,7 +1732,7 @@ class RunEvidenceTest < Minitest::Test
             exchange.call({ "operation" => "read", "repository" => "beta", "path" => "main.rb" })
           end
         ensure
-          run_cli.call("stop") if path
+          run_cli.call("stop", cold: iteration.zero?) if path
           wire&.close
           input.close
           assert Timeout.timeout(5) { waiter.value }.success?, error.read
@@ -1610,11 +1745,10 @@ class RunEvidenceTest < Minitest::Test
     end
   end
 
-  # Uses fresh public processes, real checkpoint preservation/capture and
-  # the actual reader/adapter. Only the worker records and hosted client are
-  # external fakes; Git uses the shared memory contract. Independent file hashes
-  # prove failed and passing diagnostics. Host acceptance still uses native Git.
-  def test_native_share_continuous_public_journey
+  # Creates fresh checkpoint authority and real files for one sharing journey.
+  # Returns workspace, base, export directory and environment; the case owns
+  # the broker until teardown. No mutable fixture is reused between invocations.
+  def prepare_sharing_checkpoint
     FileUtils.remove_entry(File.join("#{@data}-runs", "checkpoints", "FIXTURE"))
     source = File.join(@temporary, "source")
     remote = File.join(@temporary, "remote.git")
@@ -1653,11 +1787,63 @@ class RunEvidenceTest < Minitest::Test
     File.write(File.join(workspace, "file.txt"), "candidate\n")
     # Keep checkpoint scratch indexes and objects inside this case's memory world.
     environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "TMPDIR" => @temporary }
+    [workspace, base, exports, environment]
+  end
+
+  # Repeated records traverse real parsing, launch binding, broker queries and
+  # durable state. Invalid options leave the previous candidate and ENV intact.
+  def test_sharing_cli_checkpoint_records_use_current_broker_authority
+    workspace, _base, _exports, environment = prepare_sharing_checkpoint
+    original_environment = ENV.to_h
+    records = []
+    %w[A B].each do |candidate|
+      File.binwrite(File.join(workspace, "file.txt"), "candidate #{candidate}\n")
+      output, error, exit_code = sharing_cli("checkpoint", "record", "FIXTURE", "--workspace", workspace,
+        environment: environment)
+      assert_equal 0, exit_code, error
+      assert_empty error
+      record = JSON.parse(output)
+      assert_equal @first[:identity]["invocation_id"], record.fetch("launch_invocation")
+      assert_equal Digest::SHA256.file(record.fetch("path")).hexdigest, record.fetch("sha256")
+      assert_includes File.binread(record.fetch("path")), "+candidate #{candidate}\n"
+      assert_equal records.last&.fetch("record_file"), record.fetch("previous_record")
+      records << record
+      assert ENV.to_h == original_environment, "checkpoint changed ambient environment"
+    end
+    refute_equal records.first.fetch("sha256"), records.last.fetch("sha256")
+    preserved = records.to_h { |record| [record.fetch("path"), File.binread(record.fetch("path"))] }
+    state_path = File.join(@data, "state", "FIXTURE.yml")
+    state = File.binread(state_path)
+    directory = File.dirname(records.last.fetch("path"))
+    pointer = File.binread(File.join(directory, "current.json"))
+    output, error, exit_code = sharing_cli("checkpoint", "record", "FIXTURE", "--workspace", workspace,
+      "--base", "0" * 40, environment: environment)
+    assert_equal 2, exit_code
+    assert_empty output
+    assert_includes error, "export-only"
+    assert_equal state, File.binread(state_path)
+    assert_equal pointer, File.binread(File.join(directory, "current.json"))
+    preserved.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    assert ENV.to_h == original_environment, "checkpoint refusal changed ambient environment"
+  end
+
+  # Retains cold export/register/record/gate and both real tunnel generations.
+  # Candidate B and registration refusals use fresh public CLI instances; the
+  # initial record retains cold argv/status. All Git queries use the same broker.
+  # Only worker records and hosted transport are declared external fakes.
+  def test_native_share_continuous_public_journey
+    workspace, base, exports, environment = prepare_sharing_checkpoint
     run_cli = lambda do |*arguments, success: true|
       output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
         environment: environment, endpoint: @sharing_broker.endpoint, seconds: 15)
       assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
       [output, error]
+    end
+    registration_refusals = []
+    refuse_registration = lambda do |*arguments|
+      output, error, exit_code = sharing_cli(*arguments, environment: environment)
+      assert_equal 2, exit_code, error
+      registration_refusals << [output, error]
     end
     artifact = File.join(exports, "FIXTURE.patch")
     focused = File.join(exports, "focused.json")
@@ -1670,21 +1856,22 @@ class RunEvidenceTest < Minitest::Test
     original_package = JSON.parse(File.binread(package.fetch("path")))
     { "task_id" => "OTHER", "base_sha" => "b" * 40, "workspace" => "/foreign" }.each do |field, value|
       bad = write_json(File.join(exports, "bad.export.json"), original_package.merge(field => value))
-      run_cli.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest, success: false)
+      refuse_registration.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest)
     end
-    run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
+    cold_refusal = run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
     outside = File.join(@temporary, "outside-task")
     File.write(outside, "outside-task-secret-sentinel")
     %w[symlink fifo].each do |kind|
       File.rename(artifact, "#{artifact}.saved")
       begin
         kind == "symlink" ? File.symlink(outside, artifact) : File.mkfifo(artifact, 0o600)
-        run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"), success: false)
+        refuse_registration.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"))
       ensure
         File.unlink(artifact)
         File.rename("#{artifact}.saved", artifact)
       end
     end
+    assert_equal [cold_refusal] * 5, registration_refusals
     assert_empty Dir.children(@first[:run]).grep(/\Aregistration-/)
     run_cli.call(*register, "--package", package.fetch("path"), "--sha256", package.fetch("sha256"))
     record, = run_cli.call("checkpoint", "record", "FIXTURE", "--workspace", workspace, "--artifact", artifact)
@@ -1696,6 +1883,17 @@ class RunEvidenceTest < Minitest::Test
     # existing tunnel tests; Git authority is shared with each fresh CLI child.
     original_hashes = nil
     2.times do |iteration|
+      # The first generation retains cold grant/revoke argv and genuine status.
+      # The second repeats policy through fresh CLI instances and the same ledger.
+      task_cli = if iteration.zero?
+                   run_cli
+                 else
+                   lambda do |*arguments|
+                     output, error, exit_code = sharing_cli(*arguments, environment: environment)
+                     assert_equal 0, exit_code, error
+                     [output, error]
+                   end
+                 end
       evidence_process("share", "tunnel", "--min", "30",
         environment: environment.merge("ACT_FIXTURE_TUNNEL_CLIENT" => client)) do |input, output, error, waiter|
         begin
@@ -1720,7 +1918,7 @@ class RunEvidenceTest < Minitest::Test
           end
           assert_empty exchange.call({ "operation" => "discover" }).fetch("tasks")
           exchange.call(@first[:identity].merge("operation" => "select"), success: false)
-          shared, = run_cli.call("share", "FIXTURE")
+          shared, = task_cli.call("share", "FIXTURE")
           assert_equal "shared", JSON.parse(shared)["status"]
           discovered = exchange.call({ "operation" => "discover", "task_id" => "FIXTURE" }).fetch("tasks").first
           refute_includes JSON.generate(discovered), "OUTSIDE_CONFIG_SENTINEL"
@@ -1731,7 +1929,9 @@ class RunEvidenceTest < Minitest::Test
             [7, 0].each do |exit_code|
               if exit_code.zero?
                 File.write(File.join(workspace, "file.txt"), "candidate B\n")
-                replacement, = run_cli.call("checkpoint", "record", "FIXTURE", "--workspace", workspace)
+                replacement, record_error, record_exit = sharing_cli("checkpoint", "record", "FIXTURE", "--workspace", workspace,
+                  environment: environment)
+                assert_equal 0, record_exit, record_error
                 record = JSON.parse(replacement)
               end
               observation = File.join(File.dirname(record.fetch("path")), "passing.observation.json")
@@ -1740,7 +1940,12 @@ class RunEvidenceTest < Minitest::Test
               arguments += ["--", RbConfig.ruby,
                 File.join(ChildProcesses::FIXTURES, "checkpoint_validator.rb"), "share", exit_code.to_s]
               arguments << observation if exit_code.zero?
-              run_cli.call(*arguments, success: exit_code.zero?)
+              if exit_code.zero?
+                _gate_output, gate_error, gate_exit = local_cli(*arguments, environment: environment)
+                assert_equal 0, gate_exit, gate_error
+              else
+                run_cli.call(*arguments, success: false)
+              end
               failed_selection = exchange.call(@first[:identity].merge("operation" => "select")) unless exit_code.zero?
             end
             # Candidate B cannot roll an already selected failed A forward.
@@ -1811,9 +2016,9 @@ class RunEvidenceTest < Minitest::Test
             exchange.call(@first[:identity].merge("operation" => "select"), success: false)
             File.binwrite(prior.fetch("path"), original_patch)
           end
-          run_cli.call("share", "revoke", "FIXTURE")
+          task_cli.call("share", "revoke", "FIXTURE")
           exchange.call(read_request(manifest), success: false)
-          run_cli.call("share", "FIXTURE")
+          task_cli.call("share", "FIXTURE")
           exchange.call(read_request(manifest), success: false) # old generation never revives
           assert IO.select([output], [], [], 3), "foreground activity missing"
           line = output.gets
@@ -1821,8 +2026,14 @@ class RunEvidenceTest < Minitest::Test
           refute_includes line, @temporary
           refute_includes line, "ACT29_SYNTHETIC_CREDENTIAL_7fQ9"
         ensure
-          _stop_output, stop_error, stop_status = ChildProcesses.capture("evidence_cli",
-            arguments: ["plain", "share", "stop"], environment: environment, seconds: 8)
+          if iteration.zero?
+            _stop_output, stop_error, stop_status = ChildProcesses.capture("evidence_cli",
+              arguments: ["plain", "share", "stop"], environment: environment, seconds: 8)
+            stop_succeeded = stop_status.success?
+          else
+            _stop_output, stop_error, stop_exit = local_cli("share", "stop", environment: environment)
+            stop_succeeded = stop_exit.zero?
+          end
           wire&.close
           responses&.close unless responses&.closed?
           input.close
@@ -1832,7 +2043,7 @@ class RunEvidenceTest < Minitest::Test
           remaining_activity = drain.value
         end
         assert tunnel_status.success?, error.read
-        assert stop_status.success?, stop_error
+        assert stop_succeeded, stop_error
         activity = [line, *remaining_activity.lines]
         assert_equal requests_sent, activity.length
         events = activity.map do |event_line|

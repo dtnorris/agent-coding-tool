@@ -523,6 +523,34 @@ class LauncherTest < Minitest::Test
       assert_raises(Errno::ESRCH) { Process.kill(0, report['child_pid']) }
       assert @store.load('T')['started_at']
     end
+    # A fresh, non-cooperating child acknowledges INT but cannot finish itself
+    # before the production three-second shutdown deadline. Timeout is only the
+    # outer failure bound; Launcher owns group termination and genuine reaping.
+    fixture(process: true) do
+      write_fake('ignore-int')
+      interrupted_at = nil
+      sender = Thread.new do
+        Timeout.timeout(5) { sleep 0.01 until File.file?(File.join(@root, 'worker-ready')) }
+        interrupted_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        Process.kill('INT', Process.pid)
+      end
+      begin
+        assert_equal 137, Timeout.timeout(7) { launcher.launch('T') }
+        sender.value
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - interrupted_at
+        assert_operator elapsed, :>=, 3
+        assert_operator elapsed, :<, 6
+        assert_equal 'INT', File.read(File.join(@root, 'interrupted'))
+        assert_equal 9, report.fetch('signal')
+        assert_equal 137, report.fetch('exit_status')
+        assert_equal 'interrupted', report.fetch('status')
+        assert_raises(Errno::ESRCH) { Process.kill(0, report.fetch('child_pid')) }
+        assert @store.load('T')['started_at']
+      ensure
+        sender.kill if sender.alive?
+        sender.join
+      end
+    end
   end
 
   def test_simulated_host_crash_blocks_relaunch_even_after_manual_prepare_erases_marker

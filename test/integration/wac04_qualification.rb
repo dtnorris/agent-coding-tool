@@ -14,15 +14,19 @@ module Wac04Qualification
   PROBE = File.join(SOURCE, "test/integration/wac04_executor_probe.rb")
   DRIVER = File.join(SOURCE, "test/integration/wac04_executor_driver.rb")
   WORKER = File.join(SOURCE, "test/integration/wac04_worker.rb")
-  SKILLS = File.realpath(File.join(SOURCE, "../agent-skills"))
+  SKILLS = File.expand_path("../agent-skills", SOURCE)
+  MANAGER_SKILL = File.join(SKILLS, "skills/agent-manager/SKILL.md")
+  # Complete guidance from bound agent-skills revision 5162361187be082ba897d79571345a65caad33bd.
+  MANAGER_SKILL_SHA256 = "7921fec8415631767f4c7935ca6f2761e8f66c5e993d1e6ae3fe53fd7a25b7d6"
 
   # Pins every implementation/recipe byte, composition and complete bound manager
-  # guidance. Source changes invalidate qualification; no network lookup occurs.
+  # guidance identity. Declaring its required digest needs no operator checkout;
+  # qualification validates the actual guidance before writes or subprocesses.
   def self.pin
     paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: SOURCE) +
       %w[bin/agent-coding-tool Gemfile Gemfile.lock Rakefile README.md AGENTS.md split-composition.json]).sort
     files = paths.to_h { |path| [path, Digest::SHA256.file(File.join(SOURCE, path)).hexdigest] }
-    files[File.join(SKILLS, "skills/agent-manager/SKILL.md")] = Digest::SHA256.file(File.join(SKILLS, "skills/agent-manager/SKILL.md")).hexdigest
+    files[MANAGER_SKILL] = MANAGER_SKILL_SHA256
     { "files" => files, "sha256" => Digest::SHA256.hexdigest(JSON.generate(files)) }
   end
 
@@ -61,7 +65,7 @@ module Wac04Qualification
     config = { "executable" => codex, "pins" => pins, "profiles" => profiles, "environments" => environments,
       "manager_cwd" => File.join(root, "scratch"), "worker_home" => homes.fetch("worker"),
       "worktree_root" => worktree_root, "run_root" => File.join(root, "case", "data-runs"),
-      "gate_argv" => [ruby, WORKER, "validate", root], "manager_skill" => File.join(SKILLS, "skills/agent-manager/SKILL.md") }
+      "gate_argv" => [ruby, WORKER, "validate", root], "manager_skill" => MANAGER_SKILL }
     if mode == "offline"
       config["inference_prefixes"] = {
         "manager" => [ruby, File.join(SOURCE, "test/support/fixtures/manager_inference.rb"), homes.fetch("manager"), "success"],
@@ -167,6 +171,8 @@ module Wac04Qualification
       !File.exist?(root) && !File.symlink?(root)
     source = pin
     raise "source pin changed" unless source.fetch("sha256") == options.fetch("source-sha256")
+    raise "manager guidance path changed" unless File.realpath(SKILLS) == SKILLS && File.realpath(MANAGER_SKILL) == MANAGER_SKILL
+    raise "manager guidance pin changed" unless Digest::SHA256.file(MANAGER_SKILL).hexdigest == MANAGER_SKILL_SHA256
     raise "this candidate requires the inspected legacy ACT composition" unless AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "legacy"
     codex = File.realpath(options.fetch("codex"))
     raise "executable pin changed" unless Digest::SHA256.file(codex).hexdigest == options.fetch("codex-sha256")

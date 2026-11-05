@@ -56,6 +56,9 @@ module NativePilotProcesses
     end
   end
 end
-Process.singleton_class.prepend(NativePilotProcesses::Execution)
+# Ordinary interpreters need no native substitutions. A prepended Ruby wrapper
+# would let a captured spawn delegate through a later observation stub instead
+# of reaching the prohibited C entry, invalidating the fallback negative control.
+Process.singleton_class.prepend(NativePilotProcesses::Execution) unless defined?(OrdinaryExecution)
 
 AgentCodingTool::NativePilotExecutor.singleton_class.prepend(NativePilotProcesses::BootObservation)

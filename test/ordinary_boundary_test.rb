@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "skill_observations"
 require_relative "support/child_processes"
+require_relative "support/native_pilot_processes"
 require "minitest/mock"
 require "rbconfig"
 require "shellwords"

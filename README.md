@@ -319,6 +319,10 @@ bundle exec ruby test/integration/wac04_qualification.rb offline \
 `qualify` runs only harmless qualification. `offline` additionally creates a
 synthetic baseline/local remote and completes the native public-entry journey
 with inference substitutes. Both are host checks. Neither authorizes live usage.
+The source pin includes the required full manager-guidance digest from the bound
+skills revision. Loading the recipe and computing that pin need no sibling skills
+checkout; qualification requires the canonical sibling path and exact guidance
+bytes before creating the fixture or starting any subprocess.
 For a separately authorized live proof, use `run` with `--authorize-live`, the
 same reviewed pins and a fresh `WAC-04-host-LIVE-UNIQUE` root. That mode first
 requalifies, then runs exactly two real manager turns and one real worker with

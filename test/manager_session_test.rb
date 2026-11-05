@@ -383,10 +383,12 @@ class ManagerAdapterTest < Minitest::Test
       parent = File.join(data, "agent-coding-tool-data-fixtures")
       Dir.mkdir(parent, 0o700)
       fresh = File.join(parent, "WAC-04-host-test")
-      error = assert_raises(RuntimeError) { Wac04Qualification.qualify("root" => fresh, "source-sha256" => "wrong") }
+      error = assert_raises(RuntimeError) { Wac04Qualification.qualify("root" => fresh, "source-sha256" => "0" * 64) }
       assert_includes error.message, "source pin changed"
       refute File.exist?(fresh)
       assert Wac04Qualification.pin.fetch("files").key?("test/integration/wac04_worker.rb")
+      assert_equal Wac04Qualification::MANAGER_SKILL_SHA256,
+        Wac04Qualification.pin.fetch("files").fetch(Wac04Qualification::MANAGER_SKILL)
       assert_raises(RuntimeError) { Wac04Qualification.bounded_journey({ "root" => fresh }, live: true) }
       refute File.exist?(fresh), "missing live authorization must refuse before fixture creation"
       assert_equal 0o700, File.stat(parent).mode & 0o777

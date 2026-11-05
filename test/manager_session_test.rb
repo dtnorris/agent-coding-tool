@@ -382,6 +382,7 @@ class ManagerAdapterTest < Minitest::Test
       assert_equal original, Dir.children(data)
       parent = File.join(data, "agent-coding-tool-data-fixtures")
       Dir.mkdir(parent, 0o700)
+      parent = File.realpath(parent)
       fresh = File.join(parent, "WAC-04-host-test")
       error = assert_raises(RuntimeError) { Wac04Qualification.qualify("root" => fresh, "source-sha256" => "0" * 64) }
       assert_includes error.message, "source pin changed"

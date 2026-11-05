@@ -113,8 +113,9 @@ class ApplyHandoffContract < Minitest::Test
     [code, out.string, err.string]
   end
 
-  # Restores the private model and seed bytes without replacing registered .git
-  # identities. Returns the saved manifest; filesystem/model errors propagate.
+  # Restores private model state and seed bytes/modes without replacing .git
+  # identities. Explicit metadata preservation avoids restrictive CI umasks.
+  # Returns the saved manifest; filesystem/model errors propagate.
   def restore_world
     @apply_checkouts.each do |path, checkout|
       Dir.children(path).reject { |name| name == ".git" }.each do |name|
@@ -122,7 +123,7 @@ class ApplyHandoffContract < Minitest::Test
       end
       source = File.join(@saved_repos, File.basename(path))
       Dir.children(source).reject { |name| name == ".git" }.each do |name|
-        FileUtils.cp_r(File.join(source, name), path)
+        FileUtils.cp_r(File.join(source, name), path, preserve: true)
       end
       saved = @saved_git.fetch(path)
       %i[objects refs config remotes].each do |field|
@@ -208,6 +209,8 @@ class ApplyHandoffContract < Minitest::Test
   # parent/ref effects and deliberate corruptions below establish the contract.
   # Assertions and strict request consumption fail closed on lost transitions.
   def test_complete_run_decision_matrices_with_native_parity
+    # Exercise both copies under the private-file CI mask on every host.
+    previous_umask = File.umask(0o077)
     fixture(nonportable: true) do
       # Model inventories cover tabs and newlines in tracked names.
       # Each combined inventory must reconstruct the original four raw reads.
@@ -223,7 +226,7 @@ class ApplyHandoffContract < Minitest::Test
       [@a, @b].each { |repo| File.binwrite(File.join(repo, "local.bin"), "keep\x00\xff".b) }
       @saved_manifest = Marshal.dump(@manifest)
       @saved_repos = File.join(@root, "saved-repositories")
-      FileUtils.cp_r(@repos, @saved_repos)
+      FileUtils.cp_r(@repos, @saved_repos, preserve: true)
       @saved_git = git_state
       initial_files = [file_state(@a), file_state(@b)]
       initial_indexes = index_states
@@ -475,6 +478,8 @@ class ApplyHandoffContract < Minitest::Test
       assert_equal({ "consent" => 3, "success" => 4, "contract" => 21, "preflight" => 7,
                      "phase" => 15, "local" => 8, "validation" => 6 }, executed)
     end
+  ensure
+    File.umask(previous_umask)
   end
 
   # Qualifies exact matching/consumption including binary stdin, environment,

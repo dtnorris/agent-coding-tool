@@ -53,7 +53,10 @@ abort 'unexpected invocation' unless ARGV.first == 'exec'
 path = ARGV[ARGV.index('--output-last-message') + 1]
 root = File.expand_path('../../../..', path)
 mode = JSON.parse(File.read(File.join(root, 'fake-settings.json'))).fetch('mode')
-trap('INT') { File.write(File.join(root, 'interrupted'), 'INT'); exit 130 }
+trap('INT') do
+  File.write(File.join(root, 'interrupted'), 'INT')
+  exit 130 unless mode == 'ignore-int'
+end
 # Keep independent child observations when concurrent workers finish out of order.
 observed_process = JSON.generate(pid: Process.pid, parent: Process.ppid, group: Process.getpgrp, cwd: Dir.pwd)
 File.write(File.join(root, "worker-process-#{Process.pid}"), observed_process)
@@ -105,7 +108,7 @@ end
 puts JSON.generate(type: 'item.completed', text: 'progress')
 STDOUT.flush
 warn 'stderr progress'
-if mode == 'sleep'
+if ['sleep', 'ignore-int'].include?(mode)
   # Explicit release ends normal work. The safety lease covers the parent's
   # readiness (8s), sibling delivery (20s), and reaping (10s) bounds plus margin.
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 40

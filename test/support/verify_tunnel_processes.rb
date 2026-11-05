@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
-ORIGINAL_TUNNEL_SPAWN = Process.method(:spawn)
+# Resolve the actual native method even when the suite preloaded Ruby guards.
+# Cached-bypass controls must not call another permission-issuing wrapper.
+tunnel_spawn = Process.method(:spawn)
+tunnel_spawn = tunnel_spawn.super_method while tunnel_spawn.source_location
+ORIGINAL_TUNNEL_SPAWN = tunnel_spawn
 require_relative '../../lib/agent_coding_tool'
 require_relative 'tunnel_processes'
 require 'minitest/autorun'

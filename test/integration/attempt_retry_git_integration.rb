@@ -198,6 +198,123 @@ class AttemptRecoveryTest < Minitest::Test
     output
   end
 
+  # Runs non-worker commands on a fresh real CLI, sharing the cold children's
+  # sole Git authority. Only host identity/lsof and reset fault injection are
+  # supplied by with_reset_handler; parser, consent, archive and writes are real.
+  # Input is caller-owned (including a real PTY). Exceptions propagate unchanged.
+  def layered_cli(*arguments, input: StringIO.new, fault: nil)
+    raise ArgumentError, "worker commands require cli or admission_cli" if arguments.first == "launch"
+
+    out, err = StringIO.new("".b), StringIO.new("".b)
+    transport = MemoryGit::Session::Transport.new(@retry_broker || @retry_world)
+    interruption = ->(phase, _receipt) { raise IOError, "injected #{phase}" if phase == fault }
+    with_reset_handler(transport: transport, fault: interruption) do |handler, liveness|
+      AgentCodingTool::RetryLiveness.stub(:new, liveness) do
+        AgentCodingTool::TaskReset.stub(:new, handler) do
+          result = AgentCodingTool::CLI.new(root: Dir.pwd, data_root: @data,
+            out: out, err: err, input: input, transport: transport).run(arguments)
+          [result, out.string.b, err.string.b]
+        end
+      end
+    end
+  end
+
+  # Requires success from a fresh CLI object; returns its binary stdout.
+  # Parser/refusal failures report the production stderr as an assertion failure.
+  def layered_succeeds(*arguments, **options)
+    code, output, error = layered_cli(*arguments, **options)
+    assert_equal 0, code, error
+    output
+  end
+
+  # Exercises launch admission only. A real CLI must refuse before any child
+  # boundary; the unchanged process audit prevents this seam hiding a launch.
+  # Real launches, exits and child-start failures remain in cold public journeys.
+  def admission_cli(*arguments)
+    raise ArgumentError, "expected launch" unless arguments.first == "launch"
+
+    before = NoGitExecution.audit
+    out, err = StringIO.new("".b), StringIO.new("".b)
+    transport = MemoryGit::Session::Transport.new(@retry_broker || @retry_world)
+    result = with_reset_handler(transport: transport) do |_handler, liveness|
+      AgentCodingTool::RetryLiveness.stub(:new, liveness) do
+        AgentCodingTool::CLI.run(arguments, root: Dir.pwd, data_root: @data,
+          out: out, err: err, transport: transport)
+      end
+    end
+    assert_equal 2, result, "admission fixture unexpectedly allowed a launch"
+    assert_equal before, NoGitExecution.audit, "admission must refuse before process creation"
+    [result, out.string.b, err.string.b]
+  end
+
+  # Confirms reset through a real terminal attached to a fresh CLI object.
+  # The dedicated public consent test retains redirected stdin, EOF and declines.
+  # No process/status is synthesized; physical reset and durability run normally.
+  def layered_reset_cli(*arguments, fault: nil)
+    PTY.open do |master, slave|
+      master.write("yes\n")
+      layered_cli(*arguments, input: slave, fault: fault)
+    end
+  end
+
+  # Requires a successful object-level reset and returns its public summary.
+  # Production refusals retain their exact code and stderr in the failure.
+  def layered_reset_succeeds(*arguments, **options)
+    code, output, error = layered_reset_cli(*arguments, **options)
+    assert_equal 0, code, error
+    output
+  end
+
+  # Qualifies the object adapter with real parsing/persistence, then independently
+  # probes binary streams and exceptional cleanup at the CLI construction seam.
+  # Runs in the existing mandatory adapter case; failures are never swallowed.
+  def assert_layered_cli_contract
+    environment = ENV.to_h
+    constructors = [AgentCodingTool::TaskReset.method(:new), AgentCodingTool::RetryLiveness.method(:new)]
+    before = bytes
+    assert_equal [2, "".b, "ERROR: unknown command: invalid-retry-command\n".b], layered_cli("invalid-retry-command")
+    assert_equal before, bytes
+    assert_equal 0, layered_cli("prepare", "T").first
+    prepared = @states.load("T")
+    prompt = File.binread(prepared.fetch("prompt_path"))
+    assert_equal 2, layered_reset_cli("reset", "T", "--hard", "--yes").first
+    assert_equal prepared, @states.load("T")
+    assert_empty reset_receipts
+    assert_includes layered_reset_succeeds("reset", "T", "--hard"), "T: READY"
+    receipt = reset_receipts.fetch(0)
+    assert_equal prompt, File.binread(File.join(receipt.fetch("archive"), "original", "prompts", "0"))
+    assert_equal({ "id" => "T" }, @states.load("T"))
+    before = bytes
+    assert_includes layered_reset_succeeds("reset", "T", "--hard"), "already reset"
+    assert_equal before, bytes
+
+    failure = IOError.new("adapter exception")
+    [nil, failure].each do |exception|
+      factory = lambda do |**options|
+        runner = Object.new
+        runner.define_singleton_method(:run) do |_arguments|
+          options.fetch(:out).write("\x00\xff\r\n".b)
+          options.fetch(:err).write("\xfe\x00".b)
+          raise exception if exception
+          7
+        end
+        runner
+      end
+      AgentCodingTool::CLI.stub(:new, factory) do
+        if exception
+          assert_same failure, assert_raises(IOError) { layered_cli("status", "T") }
+        else
+          result = layered_cli("status", "T")
+          assert_equal [7, "\x00\xff\r\n".b, "\xfe\x00".b], result
+          result.drop(1).each { |stream| assert_equal Encoding::BINARY, stream.encoding }
+        end
+      end
+      assert_equal environment, ENV.to_h
+      assert_equal constructors, [AgentCodingTool::TaskReset.method(:new), AgentCodingTool::RetryLiveness.method(:new)]
+    end
+    assert_raises(ArgumentError) { layered_cli("launch", "T", "--codex") }
+  end
+
   # Returns reports sorted by independently recorded attempt number.
   def reports
     Dir.glob("#{@data}-runs/T/*/handoff.json").map { |path| JSON.parse(File.binread(path)) }.sort_by { |report| report.fetch("attempt") }
@@ -272,16 +389,16 @@ class AttemptRecoveryTest < Minitest::Test
         # Existing result authority is exercised only on an independently
         # eligible control, never by laundering the stale incident preparation.
         write_task(@data, id: "REVIEW", repositories: { "writer" => { "access" => "write", "path" => File.join(@fixture, "writer") } })
-        succeeds("prepare", "REVIEW")
-        control = JSON.parse(succeeds("external", "report", "REVIEW", "--reporter", "reviewer", "--kind", "fake", "--scope-complete"))
+        layered_succeeds("prepare", "REVIEW")
+        control = JSON.parse(layered_succeeds("external", "report", "REVIEW", "--reporter", "reviewer", "--kind", "fake", "--scope-complete"))
         control_id = control.fetch("active").fetch("observation_id")
-        succeeds("external", "end", "REVIEW", control_id, "--disposition", "ended")
-        assert_includes succeeds("status", "REVIEW"), "REVIEW: PREPARED"
-        succeeds("start", "REVIEW")
-        succeeds("received", "REVIEW", "--artifact", "separately-reviewed-control.patch", "--test", "fixture-review=pass")
-        assert_includes succeeds("status", "REVIEW"), "REVIEW: CANDIDATE"
-        succeeds("finish", "REVIEW", "--summary", "Separately authorized fixture acceptance")
-        assert_includes succeeds("status", "REVIEW"), "REVIEW: COMPLETE"
+        layered_succeeds("external", "end", "REVIEW", control_id, "--disposition", "ended")
+        assert_includes layered_succeeds("status", "REVIEW"), "REVIEW: PREPARED"
+        layered_succeeds("start", "REVIEW")
+        layered_succeeds("received", "REVIEW", "--artifact", "separately-reviewed-control.patch", "--test", "fixture-review=pass")
+        assert_includes layered_succeeds("status", "REVIEW"), "REVIEW: CANDIDATE"
+        layered_succeeds("finish", "REVIEW", "--summary", "Separately authorized fixture acceptance")
+        assert_includes layered_succeeds("status", "REVIEW"), "REVIEW: COMPLETE"
       ensure
         release_worker.close unless release_worker.closed?
         Process.wait(worker) if worker
@@ -325,7 +442,7 @@ class AttemptRecoveryTest < Minitest::Test
       metadata.each { |path| File.binwrite(path, "changed after closeout") }
       File.unlink(metadata.first)
       closed = bytes
-      succeeds("close-attempt", "T")
+      layered_succeeds("close-attempt", "T")
       assert_equal closed, bytes
       succeeds("prepare", "T", "--retry")
       refute_equal first.fetch("prepared_at"), @states.load("T").fetch("prepared_at")
@@ -348,11 +465,12 @@ class AttemptRecoveryTest < Minitest::Test
         assert_equal expected_branch, git("branch", "--show-current", directory: later.fetch("path"))
       end
       assert_operator second.fetch("sandbox_probe").fetch("protected_paths"), :>=, first.fetch("worktrees").fetch("entries").length
-      assert_equal 2, JSON.parse(succeeds("worktrees", "T")).fetch("attempts").length
+      assert_equal 2, JSON.parse(layered_succeeds("worktrees", "T")).fetch("attempts").length
       assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
       assert_nil @states.load("T")["result"]
       refute @states.load("T")["checkpoint"]
       assert_empty Dir.glob("#{@data}-runs/T/*/delivery.json")
+      # The cold fixture owns the declared cleanup lsof observations.
       assert_equal 2, cli("cleanup", "T").first
       assert_equal [1, 2], reports.map { |report| report.fetch("attempt") }
     end
@@ -371,11 +489,11 @@ class AttemptRecoveryTest < Minitest::Test
         inventory = JSON.parse(inventory_bytes)
         assert_equal "creating", inventory.fetch("entries").first.fetch("state")
         assert_equal(fault == "after", File.directory?(inventory.fetch("entries").first.fetch("path")))
-        row = JSON.parse(succeeds("worktrees", "T")).fetch("attempts").first
+        row = JSON.parse(layered_succeeds("worktrees", "T")).fetch("attempts").first
         assert_equal "partial_creation", row.fetch("classification")
-        succeeds("record", "T", "failed", "--summary", "Injected fixture creation interruption.")
-        succeeds("close-attempt", "T")
-        succeeds("prepare", "T", "--retry")
+        layered_succeeds("record", "T", "failed", "--summary", "Injected fixture creation interruption.")
+        layered_succeeds("close-attempt", "T")
+        layered_succeeds("prepare", "T", "--retry")
         succeeds("launch", "T", "--codex")
         assert_equal inventory_bytes, File.binread(first.fetch("worktrees_path"))
         assert_equal 2, reports.length
@@ -431,13 +549,13 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal 2, cli("launch", "T", "--codex", fault: "after").first
       first = reports.first
       File.unlink(first.fetch("worktrees_path"))
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       before = bytes
-      status, output, = cli("worktrees", "T")
+      status, output, = layered_cli("worktrees", "T")
       assert_equal 2, status
       assert_includes output, "unaccounted"
-      assert_equal 2, cli("close-attempt", "T").first
-      assert_equal 2, cli("prepare", "T", "--retry").first
+      assert_equal 2, layered_cli("close-attempt", "T").first
+      assert_equal 2, layered_cli("prepare", "T", "--retry").first
       assert_equal before, bytes
     end
   end
@@ -463,43 +581,43 @@ class AttemptRecoveryTest < Minitest::Test
       git("push", "origin", "main", directory: File.join(@fixture, "writer"))
       # Original recovery errors must remain before, during and after observing
       # an independently started worker; absent legacy boot evidence stays absent.
-      before_retry = cli("prepare", "T", "--retry")
-      before_launch = cli("launch", "T", "--codex")
+      before_retry = layered_cli("prepare", "T", "--retry")
+      before_launch = admission_cli("launch", "T", "--codex")
       assert_equal 2, before_retry.first
       assert_equal 2, before_launch.first
       original = bytes
       worker, release_worker = independent_worker
       begin
-        observation = JSON.parse(succeeds("external", "report", "T", "--reporter", "operator", "--kind", "fake-codex", "--scope-complete"))
+        observation = JSON.parse(layered_succeeds("external", "report", "T", "--reporter", "operator", "--kind", "fake-codex", "--scope-complete"))
         id = observation.fetch("active").fetch("observation_id")
-        assert_external_stale_projection(succeeds("status", "T", "--full"))
-        assert_external_stale_projection(succeeds("status", "--full"))
-        fact = JSON.parse(succeeds("next", "--json")).fetch("facts").fetch("tasks").first
+        assert_external_stale_projection(layered_succeeds("status", "T", "--full"))
+        assert_external_stale_projection(layered_succeeds("status", "--full"))
+        fact = JSON.parse(layered_succeeds("next", "--json")).fetch("facts").fetch("tasks").first
         assert_equal ["STALE", id], [fact.fetch("status"), fact.fetch("external_activity").fetch("observation_id")]
-        assert_equal before_retry, cli("prepare", "T", "--retry")
-        assert_equal before_launch, cli("launch", "T", "--codex")
+        assert_equal before_retry, layered_cli("prepare", "T", "--retry")
+        assert_equal before_launch, admission_cli("launch", "T", "--codex")
         release_worker.close
         Process.wait(worker)
         worker = nil
-        assert_equal id, JSON.parse(succeeds("external", "show", "T")).fetch("active").fetch("observation_id")
-        succeeds("external", "end", "T", id, "--disposition", "lost-contact")
-        assert_equal before_retry, cli("prepare", "T", "--retry")
-        assert_equal before_launch, cli("launch", "T", "--codex")
+        assert_equal id, JSON.parse(layered_succeeds("external", "show", "T")).fetch("active").fetch("observation_id")
+        layered_succeeds("external", "end", "T", id, "--disposition", "lost-contact")
+        assert_equal before_retry, layered_cli("prepare", "T", "--retry")
+        assert_equal before_launch, admission_cli("launch", "T", "--codex")
         assert_equal original, original.keys.to_h { |path| [path, File.binread(path)] }
       ensure
         release_worker.close unless release_worker.closed?
         Process.wait(worker) if worker
       end
       before = bytes
-      rows = JSON.parse(succeeds("worktrees", "T")).fetch("attempts").sort_by { |row| row.fetch("attempt") }
+      rows = JSON.parse(layered_succeeds("worktrees", "T")).fetch("attempts").sort_by { |row| row.fetch("attempt") }
       assert_equal "owned", rows.fetch(0).fetch("classification")
       assert_equal 8, rows.fetch(0).fetch("entries").length
       assert_equal "verified_precreation_failure", rows.fetch(1).fetch("classification")
       refute rows.fetch(1).key?("entries")
       assert_equal before, bytes
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       before = bytes
-      status, _output, error = cli("close-attempt", "T")
+      status, _output, error = layered_cli("close-attempt", "T")
       assert_equal 2, status
       assert_includes error, "unknown host"
       assert_equal before, bytes
@@ -568,7 +686,7 @@ class AttemptRecoveryTest < Minitest::Test
   def test_dirty_resources_refuse_before_any_closeout_or_retry_mutation
     fixture do
       succeeds("launch", "T", "--codex")
-      succeeds("record", "T", "blocked")
+      layered_succeeds("record", "T", "blocked")
       workspace = reports.first.fetch("workspace")
       ["tracked", "staged", "untracked", "ignored"].each do |kind|
         exclude = File.join(@fixture, "writer", ".git", "info", "exclude")
@@ -578,17 +696,17 @@ class AttemptRecoveryTest < Minitest::Test
         File.write(path, "operator data\n")
         git("add", "file.txt", directory: workspace) if kind == "staged"
         before = bytes
-        assert_equal 2, cli("close-attempt", "T").first
+        assert_equal 2, layered_cli("close-attempt", "T").first
         assert_equal before, bytes
         # Restore only fixture-authored bytes, never through product recovery.
         git("restore", "--staged", "file.txt", directory: workspace) if kind == "staged"
         %w[untracked ignored].include?(kind) ? File.unlink(path) : File.write(path, "base\n")
         File.binwrite(exclude, original_exclude) if kind == "ignored"
       end
-      succeeds("close-attempt", "T")
+      layered_succeeds("close-attempt", "T")
       File.write(File.join(workspace, "late"), "late operator change")
       before = bytes
-      assert_equal 2, cli("prepare", "T", "--retry").first
+      assert_equal 2, layered_cli("prepare", "T", "--retry").first
       assert_equal before, bytes
     end
   end
@@ -658,9 +776,9 @@ class AttemptRecoveryTest < Minitest::Test
       refute first["child_pid"]
       assert @states.load("T")["started_at"]
       old = bytes(File.dirname(first.fetch("worktrees_path")))
-      succeeds("record", "T", "failed")
-      succeeds("close-attempt", "T")
-      succeeds("prepare", "T", "--retry")
+      layered_succeeds("record", "T", "failed")
+      layered_succeeds("close-attempt", "T")
+      layered_succeeds("prepare", "T", "--retry")
       succeeds("launch", "T", "--codex")
       assert_equal old, old.keys.to_h { |path| [path, File.binread(path)] }
     end
@@ -672,11 +790,11 @@ class AttemptRecoveryTest < Minitest::Test
     fixture do
       succeeds("launch", "T", "--codex")
       first = reports.first
-      succeeds("record", "T", "blocked")
-      succeeds("close-attempt", "T")
+      layered_succeeds("record", "T", "blocked")
+      layered_succeeds("close-attempt", "T")
       @states.write("T", first.fetch("preparation_state"))
       before = bytes
-      status, _output, error = cli("launch", "T", "--codex")
+      status, _output, error = admission_cli("launch", "T", "--codex")
       assert_equal 2, status
       assert_includes error, "preparation already attempted"
       assert_equal before, bytes
@@ -689,7 +807,7 @@ class AttemptRecoveryTest < Minitest::Test
   def test_closeout_lock_race_and_cold_repeat_after_publication_interruption
     fixture do
       succeeds("launch", "T", "--codex")
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       recovery = AgentCodingTool::AttemptRecovery.new(data_root: @data, liveness: Class.new { def check(*) = :clear }.new)
       lock_path = "#{@data}-runs/launch.lock"
       File.open(lock_path, "r+") do |lock|
@@ -718,7 +836,7 @@ class AttemptRecoveryTest < Minitest::Test
   def test_interrupted_evidence_publication_remains_precisely_blocked
     fixture do
       succeeds("launch", "T", "--codex")
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       recovery = AgentCodingTool::AttemptRecovery.new(data_root: @data, liveness: Class.new { def check(*) = :clear }.new)
       File.stub(:rename, ->(*) { raise IOError, "injected rename failure" }) do
         assert_raises(IOError) { recovery.close("T") }
@@ -789,13 +907,13 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal checkpoint.reject { |key, _| key == "path" }, verified.fetch("record")
       run_bytes = bytes(File.dirname(first.fetch("worktrees_path")))
       File.write(file, "base\n")
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       checkpoint_state = @states.load("T")
       stale_state = Marshal.load(Marshal.dump(checkpoint_state))
       stale_state.fetch("checkpoint")["status"] = "stale"
       @states.write("T", stale_state)
       before = bytes
-      assert_equal 2, cli("close-attempt", "T").first
+      assert_equal 2, layered_cli("close-attempt", "T").first
       assert_equal before, bytes
       @states.write("T", checkpoint_state)
       succeeds("close-attempt", "T")
@@ -835,8 +953,8 @@ class AttemptRecoveryTest < Minitest::Test
       File.write(task_path, YAML.dump(task))
       File.write(checkpoint.fetch("path"), "tampered checkpoint")
       before = bytes
-      assert_equal 2, cli("checkpoint", "verify", "T", "--attempt", "1").first
-      assert_equal 2, cli("launch", "T", "--codex").first
+      assert_equal 2, layered_cli("checkpoint", "verify", "T", "--attempt", "1").first
+      assert_equal 2, admission_cli("launch", "T", "--codex").first
       assert_equal before, bytes
     end
   end
@@ -960,6 +1078,7 @@ class AttemptRecoveryTest < Minitest::Test
         assert_equal :unknown, liveness.check(stale_child, inventory)
         assert_equal before, NoGitExecution.audit
       end
+      assert_layered_cli_contract
     end
   end
 
@@ -974,13 +1093,19 @@ class AttemptRecoveryTest < Minitest::Test
     task.fetch("repositories").fetch("writer")["access"] = "read_only"
     task.fetch("repositories")["af-evidence"] = task.fetch("repositories").delete("reader1").merge("access" => "write")
     File.write(task_path, YAML.dump(task))
-    succeeds("reset", "T")
-    code, _output, error = cli("prepare", "T", "--retry")
+    layered_succeeds("reset", "T")
+    code, _output, error = layered_cli("prepare", "T", "--retry")
     assert_equal 2, code
     assert_includes error, "explicit close-attempt required"
     before = bytes
     preview = hard_reset_succeeds("reset", "--hard", "T", "--dry-run")
     assert_includes preview, first.fetch("workspace")
+    object_preview = layered_cli("reset", "--hard", "T", "--dry-run")
+    assert_equal 0, object_preview.first, object_preview.last
+    # A fresh preview allocates a destination UUID without writing it. Every
+    # other public field must agree, including scope, blockers and original runs.
+    assert_equal JSON.parse(preview).reject { |key, _| key == "archive" },
+      JSON.parse(object_preview[1]).reject { |key, _| key == "archive" }
     assert_equal before, bytes
     output = hard_reset_succeeds("reset", "T", "--hard", break_retirement: break_retirement)
     assert_includes output, "T: READY"
@@ -993,15 +1118,15 @@ class AttemptRecoveryTest < Minitest::Test
       refute File.exist?(entry.fetch("path"))
       refute_includes git("worktree", "list", "--porcelain", directory: entry.fetch("parent")), entry.fetch("path")
     end
-    assert_empty JSON.parse(succeeds("worktrees", "T")).fetch("attempts")
-    next_view = JSON.parse(succeeds("next", "--json"))
+    assert_empty JSON.parse(layered_succeeds("worktrees", "T")).fetch("attempts")
+    next_view = JSON.parse(layered_succeeds("next", "--json"))
     task_fact = next_view.fetch("facts").fetch("tasks").find { |row| row["id"] == "T" }
     assert_equal "READY", task_fact.fetch("status")
     assert_equal archive, task_fact.fetch("reset_history").first.fetch("archive")
     foreign = File.join("#{@data}-runs", "foreign-active-evidence")
     File.write(foreign, "unknown active namespace entry")
     before = bytes
-    assert_equal 2, cli("launch", "T", "--codex").first
+    assert_equal 2, admission_cli("launch", "T", "--codex").first
     assert_equal before, bytes
     File.unlink(foreign)
     succeeds("prepare", "T")
@@ -1012,10 +1137,10 @@ class AttemptRecoveryTest < Minitest::Test
     assert_equal ["af-evidence"], second.fetch("writable_repositories")
     refute_equal first.fetch("workspace"), second.fetch("workspace")
     refute_equal first.fetch("invocation_id"), second.fetch("invocation_id")
-    history = JSON.parse(succeeds("worktrees", "T"))
+    history = JSON.parse(layered_succeeds("worktrees", "T"))
     assert_equal 1, history.fetch("attempts").length
     assert_equal archive, history.fetch("resets").fetch(0).fetch("archive")
-    assert_includes succeeds("status", "T", "--full"), archive
+    assert_includes layered_succeeds("status", "T", "--full"), archive
     assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-1", directory: File.join(@fixture, "writer"))
   end
 
@@ -1040,7 +1165,7 @@ class AttemptRecoveryTest < Minitest::Test
       archive = AgentCodingTool::ResetArchive.new
       before = archive.inventory(@fixture)
       [%w[reset T --hard --dry-run], %w[reset --hard T --dry-run]].each do |arguments|
-        hard_reset_succeeds(*arguments)
+        layered_reset_succeeds(*arguments)
         assert_equal before, archive.inventory(@fixture)
       end
       [{answer: "\n"}, {answer: "no\n"}, {answer: :eof}, {interactive: false}].each do |options|
@@ -1049,7 +1174,9 @@ class AttemptRecoveryTest < Minitest::Test
       end
       [%w[reset T --hard --force], %w[reset T --dry-run], %w[reset T --hard --hard],
        %w[reset --hard ../T], %w[reset MISSING --hard], %w[reset T --hard --yes]].each do |arguments|
-        assert_equal 2, hard_reset_cli(*arguments).first
+        result = layered_reset_cli(*arguments)
+        assert_equal 2, result.first
+        assert_equal hard_reset_cli(*arguments), result if arguments.include?("--force")
         assert_equal before, archive.inventory(@fixture)
       end
     end
@@ -1103,7 +1230,7 @@ class AttemptRecoveryTest < Minitest::Test
       original = AgentCodingTool::ResetArchive.new.inventory(workspace).reject { |path, _row| path == ".git" }
       refs = git("show-ref", directory: ordinary)
       ordinary_files = bytes(ordinary).reject { |path, _value| path.include?("/.git/worktrees/") }
-      hard_reset_succeeds("reset", "T", "--hard")
+      layered_reset_succeeds("reset", "T", "--hard")
       receipt = reset_receipts.fetch(0)
       snapshot = File.join(receipt.fetch("archive"), "candidates", "0")
       rebuilt = File.join(@fixture, "independent")
@@ -1125,8 +1252,9 @@ class AttemptRecoveryTest < Minitest::Test
     end
   end
 
-  # Cold repeats at archive/native/evidence/lifecycle boundaries either resume
-  # the exact operation or refuse new material. No old evidence is rewritten.
+  # Every durable interruption resumes in a fresh interpreter. Fault/refusal and
+  # no-op matrices use fresh CLI objects; the first phase also keeps a continuous
+  # cold public interruption/refusal/resume/repeat/fresh-launch journey.
   def test_hard_reset_interruptions_fence_admission_and_resume_same_archive
     parity_checked = false
     ["before_archive", "before_archive_verified", "after_archive", "before_remove:0", "after_remove:0",
@@ -1134,7 +1262,8 @@ class AttemptRecoveryTest < Minitest::Test
       hard_reset_fixture do
         succeeds("launch", "T", "--codex")
         original = bytes(File.dirname(reports.first.fetch("worktrees_path")))
-        code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: phase)
+        reset = phase == "before_archive" ? method(:hard_reset_cli) : method(:layered_reset_cli)
+        code, _output, error = reset.call("reset", "T", "--hard", fault: phase)
         assert_equal 2, code, phase
         assert_includes error, "injected #{phase}"
         receipt = reset_receipts.fetch(0)
@@ -1146,11 +1275,17 @@ class AttemptRecoveryTest < Minitest::Test
           cold_prepare = cli("prepare", "T")
           warm_prepare = decision_cli("prepare", "T", transport: retry_decision_transport)
           assert_equal 2, cold_prepare.first, cold_prepare.last
+          assert_includes cold_prepare.last, "unfinished hard reset"
           assert_equal cold_prepare, warm_prepare
           assert_equal before_refusal, bytes
           parity_checked = true
         end
-        assert_equal 2, cli("launch", "T", "--codex").first
+        if phase == "before_archive"
+          cold_launch = cli("launch", "T", "--codex")
+          assert_equal cold_launch, admission_cli("launch", "T", "--codex")
+        else
+          assert_equal 2, admission_cli("launch", "T", "--codex").first
+        end
         if phase == "before_archive"
           cold_status = cli("status", "T", "--full")
           warm_status = decision_cli("status", "T", "--full", transport: retry_decision_transport)
@@ -1170,8 +1305,15 @@ class AttemptRecoveryTest < Minitest::Test
           assert_equal content, File.binread(archived)
         end
         before = bytes
-        assert_includes hard_reset_succeeds("reset", "T", "--hard"), "already reset"
+        repeat = phase == "before_archive" ? method(:hard_reset_succeeds) : method(:layered_reset_succeeds)
+        assert_includes repeat.call("reset", "T", "--hard"), "already reset"
         assert_equal before, bytes
+        if phase == "before_archive"
+          succeeds("prepare", "T")
+          succeeds("launch", "T", "--codex")
+          assert_equal 2, reports.fetch(0).fetch("attempt")
+          refute_equal receipt.fetch("archive"), File.dirname(reports.fetch(0).fetch("worktrees_path"))
+        end
       end
     end
   end
@@ -1237,7 +1379,7 @@ class AttemptRecoveryTest < Minitest::Test
         [{ "host_pid" => sentinel }, { "host_identity" => nil }].each do |changes|
           File.write(report_path, JSON.pretty_generate(report.merge(changes)))
           before = bytes
-          code, _output, error = hard_reset_cli("reset", "T", "--hard")
+          code, _output, error = layered_reset_cli("reset", "T", "--hard")
           assert_equal 2, code
           assert_match(/use (active|unknown)/, error)
           assert_equal before, bytes
@@ -1256,22 +1398,22 @@ class AttemptRecoveryTest < Minitest::Test
       tampered.fetch("entries").first["branch"] = nil
       File.write(inventory_path, JSON.generate(tampered))
       before = bytes
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard").first
       assert_equal before, bytes
       File.binwrite(inventory_path, original_inventory)
       foreign = File.join(@visible, "T", "foreign")
       File.write(foreign, "unowned bytes")
       before = bytes
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard").first
       assert_equal before, bytes
       File.unlink(foreign)
-      activity = JSON.parse(succeeds("external", "report", "T", "--reporter", "fixture", "--kind", "external"))
+      activity = JSON.parse(layered_succeeds("external", "report", "T", "--reporter", "fixture", "--kind", "external"))
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, activity.fetch("active").fetch("observation_id")
       assert_equal before, bytes
-      succeeds("external", "end", "T", activity.fetch("active").fetch("observation_id"), "--disposition", "ended")
+      layered_succeeds("external", "end", "T", activity.fetch("active").fetch("observation_id"), "--disposition", "ended")
       File.open("#{@data}-runs/launch.lock", "r+") do |lock|
         lock.flock(File::LOCK_EX)
         before = bytes
@@ -1332,10 +1474,10 @@ class AttemptRecoveryTest < Minitest::Test
       extra = File.join(@data, "state", "prompts", "T-new.txt")
       File.write(extra, "new unowned preparation")
       before = bytes
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard").first
       assert_equal before, bytes
       assert File.directory?(report.fetch("workspace"))
-      assert_equal 2, cli("prepare", "T").first
+      assert_equal 2, layered_cli("prepare", "T").first
     end
   end
 
@@ -1351,12 +1493,12 @@ class AttemptRecoveryTest < Minitest::Test
         File.binwrite(@states.state_path("T"), raw)
         directory = File.dirname(original_report.fetch("worktrees_path"))
         File.binwrite(File.join(directory, "progress.tmp"), "malformed\0\xff".b)
-        hard_reset_succeeds("reset", "T", "--hard")
+        layered_reset_succeeds("reset", "T", "--hard")
         receipt = reset_receipts.first
         assert_equal raw, File.binread(File.join(receipt.fetch("archive"), "original", "state"))
         assert_equal "malformed\0\xff".b, File.binread(Dir.glob(File.join(receipt.fetch("archive"), "original", "runs", "*", "progress.tmp")).fetch(0))
         assert_equal({ "id" => "T" }, @states.load("T"))
-        succeeds("prepare", "T")
+        layered_succeeds("prepare", "T")
       end
     end
     hard_reset_fixture do
@@ -1364,7 +1506,7 @@ class AttemptRecoveryTest < Minitest::Test
       report = reports.first
       File.unlink(report.fetch("worktrees_path"))
       before = bytes
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard").first
       assert_equal before, bytes
       assert File.directory?(report.fetch("workspace"))
     end
@@ -1377,11 +1519,11 @@ class AttemptRecoveryTest < Minitest::Test
     hard_reset_fixture do
       write_task(@data, id: "DEPENDENT", depends_on: ["T"])
       write_task(@data, id: "PREREQUISITE")
-      succeeds("icebox", "T")
+      layered_succeeds("icebox", "T")
       deferred = @states.load("T")
-      succeeds("reset", "T")
+      layered_succeeds("reset", "T")
       assert_equal deferred, @states.load("T")
-      hard_reset_succeeds("reset", "T", "--hard")
+      layered_reset_succeeds("reset", "T", "--hard")
       refute @states.load("T").key?("icebox")
       %w[prepared blocked failed needs_judgment candidate_complete complete].each do |state|
         prepared = decision_cli("prepare", "T", transport: retry_decision_transport)
@@ -1393,7 +1535,7 @@ class AttemptRecoveryTest < Minitest::Test
           assert_equal state, @states.load("T").dig("result", "outcome")
         end
         previous = File.binread(@states.state_path("T"))
-        output = hard_reset_succeeds("reset", "T", "--hard")
+        output = layered_reset_succeeds("reset", "T", "--hard")
         assert_includes output, "DEPENDENT"
         receipt = reset_receipts.max_by { |record| record.fetch("created_at") }
         assert_equal previous, File.binread(File.join(receipt.fetch("archive"), "original", "state"))
@@ -1404,7 +1546,7 @@ class AttemptRecoveryTest < Minitest::Test
       task["depends_on"] = ["PREREQUISITE"]
       File.write(task_path, YAML.dump(task))
       @states.write("T", { "id" => "T", "icebox" => { "at" => "2026-10-31T12:00:00Z" }, "operator_note" => "retain" })
-      output = hard_reset_succeeds("reset", "T", "--hard")
+      output = layered_reset_succeeds("reset", "T", "--hard")
       assert_includes output, "T: BLOCKED; dependencies incomplete: PREREQUISITE"
       assert_equal task, YAML.safe_load_file(task_path)
       assert_empty @states.load("PREREQUISITE")
@@ -1412,7 +1554,7 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal({ "id" => "T", "operator_note" => "retain" }, @states.load("T"))
       before = bytes
       count = reset_receipts.length
-      assert_includes hard_reset_succeeds("reset", "T", "--hard"), "already reset"
+      assert_includes layered_reset_succeeds("reset", "T", "--hard"), "already reset"
       assert_equal count, reset_receipts.length
       assert_equal before, bytes
       task["depends_on"] = []
@@ -1431,9 +1573,9 @@ class AttemptRecoveryTest < Minitest::Test
   def test_hard_reset_multiple_attempts_native_retirement_and_fresh_binding
     hard_reset_fixture(readers: 1) do
       succeeds("launch", "T", "--codex")
-      succeeds("record", "T", "failed")
-      succeeds("close-attempt", "T")
-      succeeds("prepare", "T", "--retry")
+      layered_succeeds("record", "T", "failed")
+      layered_succeeds("close-attempt", "T")
+      layered_succeeds("prepare", "T", "--retry")
       succeeds("launch", "T", "--codex")
       old = reports
       code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: "after_remove:1")
@@ -1444,11 +1586,11 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal 2, receipt.fetch("last_attempt")
       assert_equal 4, receipt.fetch("retired").length
       assert receipt.fetch("retired").values.all? { |status| status == "removed" }
-      succeeds("prepare", "T")
+      layered_succeeds("prepare", "T")
       succeeds("launch", "T", "--codex")
       current = reports.fetch(0)
       assert_equal 3, current.fetch("attempt")
-      assert_equal 2, cli("checkpoint", "verify", "T", "--attempt", "1").first
+      assert_equal 2, layered_cli("checkpoint", "verify", "T", "--attempt", "1").first
       old.each do |report|
         record = Dir.glob(File.join(receipt.fetch("archive"), "original", "runs", "*", "handoff.json"))
           .find { |path| JSON.parse(File.binread(path))["invocation_id"] == report.fetch("invocation_id") }
@@ -1457,9 +1599,9 @@ class AttemptRecoveryTest < Minitest::Test
         assert_includes assert_raises(AgentCodingTool::InvalidState) { handler.deliver("T", run_dir: File.dirname(record)) }.message, "foreign run"
         assert_equal @base, git("rev-parse", "refs/heads/act/T/attempt-#{report.fetch('attempt')}", directory: File.join(@fixture, "writer"))
       end
-      succeeds("record", "T", "failed")
-      succeeds("close-attempt", "T")
-      succeeds("prepare", "T", "--retry")
+      layered_succeeds("record", "T", "failed")
+      layered_succeeds("close-attempt", "T")
+      layered_succeeds("prepare", "T", "--retry")
       assert_equal [3], reports.map { |report| report.fetch("attempt") }
     end
   end
@@ -1479,12 +1621,12 @@ class AttemptRecoveryTest < Minitest::Test
       assert_equal File.join(@visible, "T", "writer"), old.fetch("workspace")
       assert_nil old.fetch("worktrees")["layout"]
       original = bytes(File.dirname(old.fetch("worktrees_path")))
-      hard_reset_succeeds("reset", "T", "--hard")
+      layered_reset_succeeds("reset", "T", "--hard")
       receipt = reset_receipts.first
       original.each do |path, value|
         assert_equal value, File.binread(File.join(receipt.fetch("archive"), "original", "runs", File.basename(File.dirname(path)), File.basename(path)))
       end
-      succeeds("prepare", "T")
+      layered_succeeds("prepare", "T")
       succeeds("launch", "T", "--codex")
       assert_equal 2, reports.first.fetch("attempt")
       assert_equal File.join(@visible, "T", "attempt-2", "writer"), reports.first.fetch("workspace")
@@ -1502,7 +1644,7 @@ class AttemptRecoveryTest < Minitest::Test
       File.rename(workspace, parked)
       File.symlink(parked, workspace)
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "symlinked"
       assert_equal before, bytes
@@ -1511,7 +1653,7 @@ class AttemptRecoveryTest < Minitest::Test
       socket_path = File.join(workspace, "fifo")
       File.mkfifo(socket_path)
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "nonpreservable entry"
       assert_equal before, bytes
@@ -1521,7 +1663,7 @@ class AttemptRecoveryTest < Minitest::Test
       started = File.join(gates, "gate-#{SecureRandom.uuid}.started.json")
       File.write(started, "{}")
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "unresolved active gate"
       assert_equal before, bytes
@@ -1529,12 +1671,12 @@ class AttemptRecoveryTest < Minitest::Test
       delivery = File.join(File.dirname(report.fetch("worktrees_path")), "delivery.json")
       File.write(delivery, JSON.generate("schema" => AgentCodingTool::DeliveryManager::SCHEMA, "task_id" => "T", "stage" => "pushed"))
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "unresolved publication"
       assert_equal before, bytes
       File.unlink(delivery)
-      code, _output, error = hard_reset_cli("reset", "T", "--hard", fault: "after_archive")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard", fault: "after_archive")
       assert_equal 2, code
       assert_includes error, "injected after_archive"
       receipt = reset_receipts.first
@@ -1550,7 +1692,7 @@ class AttemptRecoveryTest < Minitest::Test
     hard_reset_fixture do
       succeeds("launch", "T", "--codex")
       workspace = reports.first.fetch("workspace")
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard", fault: "after_remove:0").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard", fault: "after_remove:0").first
       Dir.mkdir(workspace)
       File.write(File.join(workspace, "foreign"), "keep new resource")
       before = bytes
@@ -1564,22 +1706,22 @@ class AttemptRecoveryTest < Minitest::Test
   # No receipt, archive or source removal may result from these declarations.
   def test_hard_reset_manual_reservations_do_not_become_inactive_by_declaration
     hard_reset_fixture do
-      succeeds("prepare", "T")
-      succeeds("start", "T")
+      layered_succeeds("prepare", "T")
+      layered_succeeds("start", "T")
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "manual/unknown worker"
       assert_equal before, bytes
-      succeeds("record", "T", "failed")
+      layered_succeeds("record", "T", "failed")
       before = bytes
-      code, _output, error = hard_reset_cli("reset", "T", "--hard")
+      code, _output, error = layered_reset_cli("reset", "T", "--hard")
       assert_equal 2, code
       assert_includes error, "manual/unknown outcome"
       assert_equal before, bytes
-      succeeds("reset", "T", "--force")
+      layered_succeeds("reset", "T", "--force")
       before = bytes
-      assert_equal 2, hard_reset_cli("reset", "T", "--hard").first
+      assert_equal 2, layered_reset_cli("reset", "T", "--hard").first
       assert_equal before, bytes
       assert_empty reset_receipts
     end

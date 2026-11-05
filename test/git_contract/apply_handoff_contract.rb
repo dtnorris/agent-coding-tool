@@ -113,8 +113,8 @@ class ApplyHandoffContract < Minitest::Test
     [code, out.string, err.string]
   end
 
-  # Restores the private model and seed bytes without replacing registered .git
-  # identities. Returns the saved manifest; filesystem/model errors propagate.
+  # Restores the private model and seed bytes/modes without replacing registered
+  # .git identities. Returns the saved manifest; filesystem/model errors propagate.
   def restore_world
     @apply_checkouts.each do |path, checkout|
       Dir.children(path).reject { |name| name == ".git" }.each do |name|
@@ -122,7 +122,7 @@ class ApplyHandoffContract < Minitest::Test
       end
       source = File.join(@saved_repos, File.basename(path))
       Dir.children(source).reject { |name| name == ".git" }.each do |name|
-        FileUtils.cp_r(File.join(source, name), path)
+        FileUtils.cp_r(File.join(source, name), path, preserve: true)
       end
       saved = @saved_git.fetch(path)
       %i[objects refs config remotes].each do |field|
@@ -223,7 +223,8 @@ class ApplyHandoffContract < Minitest::Test
       [@a, @b].each { |repo| File.binwrite(File.join(repo, "local.bin"), "keep\x00\xff".b) }
       @saved_manifest = Marshal.dump(@manifest)
       @saved_repos = File.join(@root, "saved-repositories")
-      FileUtils.cp_r(@repos, @saved_repos)
+      # Snapshot exact modes as well as bytes, independent of inherited umask.
+      FileUtils.cp_r(@repos, @saved_repos, preserve: true)
       @saved_git = git_state
       initial_files = [file_state(@a), file_state(@b)]
       initial_indexes = index_states

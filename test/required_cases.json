@@ -497,6 +497,7 @@
       "ManagerAdapterTest#test_final_size_closed_fields_and_duplicate_decisions"
     ],
     "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
       "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
       "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",
       "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",
@@ -784,6 +785,7 @@
       "ManagerSessionTest#test_native_executor_continuous_public_entry_and_removed_completion"
     ],
     "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
       "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
       "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",
       "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",

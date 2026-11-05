@@ -51,6 +51,10 @@ module NativePilotProcesses
       named = %w[manager_inference native_pilot_worker checkpoint_validator].find { |name| script == File.join(ChildProcesses::FIXTURES, "#{name}.rb") }
       mode = named || "native_pilot_process"
       arguments = named ? argv.drop(5) : [script]
+      # Only reviewed fixture descendants receive instrumentation. Keep explicit
+      # deletion/replacement visible to the permit's unchanged coverage checks.
+      context = ENV["ACT_COVERAGE_CONTEXT"]
+      environment = { "ACT_COVERAGE_CONTEXT" => context }.merge(environment) if context
       approval = ChildProcesses.permit(mode, arguments: arguments, environment: environment, options: settings)
       NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options, **pipes) }
     end

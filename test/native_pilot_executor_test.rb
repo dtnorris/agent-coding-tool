@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "support/native_pilot_processes"
 require_relative "feedback_runtime"
+require_relative "feedback_coverage"
 require_relative "../lib/agent_coding_tool/native_pilot_executor"
 
 # Production budget/supervisor tests with an explicit deterministic sandbox and
@@ -67,6 +68,63 @@ class NativePilotExecutorTest < Minitest::Test
   # Reads inert durable native control facts without interpreting model output.
   def read(directory, name = "ledger.json")
     JSON.parse(File.binread(File.join(directory, name)))
+  end
+
+  # The deterministic spawn keeps only its declared environment plus the exact
+  # coverage bootstrap/context. A real fixture writes fresh child evidence;
+  # explicit context deletion/replacement must refuse before native entry.
+  def test_fixture_boundary_preserves_coverage_context_without_host_environment
+    inherited = ENV["ACT_COVERAGE_CONTEXT"]
+    Dir.mktmpdir("native-boundary-coverage-") do |directory|
+      context_path = inherited || File.join(directory, "context.json")
+      unless inherited
+        root = File.realpath(File.join(__dir__, ".."))
+        context = { "root" => root, "directory" => directory, "invocation" => SecureRandom.uuid,
+          "selection" => name, "stage" => "native-boundary",
+          "sources" => FeedbackCoverage.sources(root), "layout" => FeedbackCoverage.layout(root) }
+        File.write(context_path, JSON.generate(context))
+      end
+      ENV["ACT_COVERAGE_CONTEXT"] = context_path
+      context = JSON.parse(File.binread(context_path))
+      profile = File.join(directory, "modeled.sb")
+      File.write(profile, "deterministic boundary; never sent to sandbox-exec")
+      environment = { "PATH" => "/usr/bin:/bin" }.freeze
+      options = { chdir: directory, unsetenv_others: true, close_others: true, pgroup: true }
+      argv = ["/usr/bin/sandbox-exec", "-f", profile, RbConfig.ruby, "empty"]
+      original = ChildProcesses.method(:permit)
+      approval = nil
+      observe = lambda do |*arguments, **fields|
+        approval = original.call(*arguments, **fields)
+      end
+      NativePilotProcesses.with_boundary do
+        ChildProcesses.stub(:permit, observe) do
+          pid = Process.spawn(environment, *argv, **options)
+          _child, status = Process.wait2(pid)
+          assert status.success?
+          assert_equal %w[ACT_COVERAGE_CONTEXT PATH RUBYOPT], approval.environment.keys.sort
+          assert_equal context_path, approval.environment.fetch("ACT_COVERAGE_CONTEXT")
+          assert_equal options, approval.options
+          assert_equal({ "PATH" => "/usr/bin:/bin" }, environment)
+          starts = Dir.glob(File.join(context.fetch("directory"), "#{pid}-*.started"))
+          assert_equal 1, starts.length
+          result = JSON.parse(File.binread(starts.fetch(0).sub(/\.started\z/, ".json")))
+          assert_equal pid, result.fetch("pid")
+          assert_equal context.fetch("invocation"), result.fetch("invocation")
+          assert_equal FeedbackCoverage.denominator_identity(context), result.fetch("denominator_sha256")
+          assert_equal true, result.fetch("complete")
+          [nil, "#{context_path}.replacement"].each do |replacement|
+            before = NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+            error = assert_raises(NoGitExecution::ProhibitedExecution) do
+              Process.spawn(environment.merge("ACT_COVERAGE_CONTEXT" => replacement), *argv, **options)
+            end
+            assert_includes error.message, "coverage context override/removal"
+            assert_equal before, NoGitExecution.audit.count { |row| row["decision"] == "ALLOW" }
+          end
+        end
+      end
+    end
+  ensure
+    ENV["ACT_COVERAGE_CONTEXT"] = inherited
   end
 
   # Binary stdout/stderr and nonzero target status survive the production fork,

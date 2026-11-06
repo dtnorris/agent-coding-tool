@@ -1214,6 +1214,16 @@ work. Manual candidate reservations do not gain this exception. New worktrees
 nested inside any existing Git checkout refuse. This does not change the
 manual `start` collision contract or authorize automatic integration/publication.
 
+An exited managed sibling may preserve committed candidate work on its original
+attempt branch without a delivery contract. Launch verifies that each advanced
+writer HEAD descends from that sibling's own prepared baseline, records the exact
+observed HEADs, and rechecks them before spawning. Native ownership, branch,
+remote, artifact, sandbox and terminal liveness checks still apply; read-only
+repositories remain pinned. This admits isolated development alongside the
+candidate without accepting it. Integration and managed delivery retain their
+existing baseline reconciliation, private validation contract, exact candidate
+evidence, checkpoint and publication requirements.
+
 Install Codex and authenticate locally with `codex login` using a ChatGPT
 account. Launch accepts the verified Codex CLI 0.162.1 sandbox interface, checks
 installed `exec`/`login` help and requires the recognized

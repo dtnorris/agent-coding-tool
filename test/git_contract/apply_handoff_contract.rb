@@ -226,6 +226,7 @@ class ApplyHandoffContract < Minitest::Test
       [@a, @b].each { |repo| File.binwrite(File.join(repo, "local.bin"), "keep\x00\xff".b) }
       @saved_manifest = Marshal.dump(@manifest)
       @saved_repos = File.join(@root, "saved-repositories")
+      # Snapshot exact modes as well as bytes, independent of inherited umask.
       FileUtils.cp_r(@repos, @saved_repos, preserve: true)
       @saved_git = git_state
       initial_files = [file_state(@a), file_state(@b)]

@@ -44,6 +44,7 @@ split startup. Legacy remains the default until explicitly selected otherwise.
 
 The repository-owned [Buildkite pipeline](.buildkite/pipeline.yml) runs separate
 complete legacy and published-split acceptance jobs against the same ACT commit.
+Evidence remains on the executing agent; no Buildkite artifacts are uploaded.
 Each job runs the unchanged `bundle exec rake test:all` with fresh evidence;
 split provisions and verifies every published composition pin before guarded
 testing. See [operator setup and acceptance evidence](.buildkite/OPERATOR.txt)

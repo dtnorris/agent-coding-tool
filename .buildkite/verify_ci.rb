@@ -119,7 +119,8 @@ class CIQualificationTest < Minitest::Test
         capture_io { load File.join(__dir__, "collect_evidence.rb") }
       ensure
         ARGV.replace(original_argv)
-        assert_equal "\x00\xff\x80".b, File.binread(File.join(evidence, "feedback/raw"))
+        assert_equal "\x00\xff\x80".b, File.binread(File.join(feedback, "raw"))
+        refute File.exist?(File.join(evidence, "feedback")), "must not duplicate local evidence"
       end
     end
   end

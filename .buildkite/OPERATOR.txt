@@ -48,12 +48,11 @@ composition at completion. Existing all-production coverage scope and policy
 gates remain intact. The legacy runtime comparator retains its existing shape;
 split additionally requires a composition-bound reference. Split runtime is
 noncomparable with a legacy reference; no budget or accepted policy is rewritten.
-collect_evidence.rb retains the entire fresh harness directory, including failed
-raw logs, case evidence and coverage censuses. It requires a complete accepted
-report with the probe's exact composition and unchanged published manifest.
-The EXIT trap uploads only this invocation's artifacts, excluding dependency
-repositories. Test failures retain their status; artifact failures also fail CI.
-Abrupt agent loss/forced cancellation can prevent uploads; that is never a pass.
+collect_evidence.rb verifies the original local harness evidence in place.
+It requires a complete accepted report with the probe's exact composition
+and unchanged published manifest. Evidence is neither copied nor uploaded.
+Test and verification failures still fail CI. Buildkite receives normal job
+logs and exit status; detailed evidence remains on the executing agent.
 
 Operator commit and push (only after review)
 
@@ -116,10 +115,11 @@ or, respectively:
   ACT complete offline acceptance: PASS
   ACT CI split complete acceptance evidence: PASS; invocation=...
 
-Each job's artifacts are tmp/ci-<mode>.<unique>/artifacts/:
-  implementation.json, split-composition.json, acceptance.log, feedback/**
-  (split also includes provision.log).
-Check feedback/report.json: distinct invocation IDs, head equal to the built ACT
+Each job keeps implementation.json, split-composition.json and acceptance.log
+under its local tmp/ci-<mode>.<unique>/artifacts/ directory; split also keeps
+provision.log. This directory name does not imply any artifact upload.
+The harness prints its separate original local feedback evidence directory.
+Check report.json in that printed feedback directory: distinct invocation IDs, head equal to the built ACT
 commit, accepted=true, qualification=false, complete_offline_gate=true, all four
 complete stages in order, every required process complete and no failures/skips.
 The existing runner verifies all inventories and accepted coverage/deadline gates.

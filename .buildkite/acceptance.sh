@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One independent complete acceptance invocation. Provisioning precedes the
-# guarded Bundler/Rake command; artifacts survive failures and are never reused.
+# guarded Bundler/Rake command; evidence stays local and is never reused.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$(pwd -P)"
@@ -24,15 +24,7 @@ evidence="$(mktemp -d "tmp/ci-${mode}.XXXXXXXX")"
 artifacts="$evidence/artifacts"
 mkdir "$artifacts"
 
-# Upload exactly this invocation, including partial logs on failure. An upload
-# failure cannot turn a failed test green, and also prevents a successful job.
-function upload_evidence() {
-  status=$?
-  trap - EXIT
-  buildkite-agent artifact upload "$artifacts/**/*" || { test "$status" -ne 0 || status=1; }
-  exit "$status"
-}
-trap upload_evidence EXIT
+# Evidence stays on this agent; Buildkite receives normal job logs only.
 cp split-composition.json "$artifacts/split-composition.json"
 ruby --version
 bundle --version
@@ -57,7 +49,7 @@ statuses=("${PIPESTATUS[@]}")
 set -e
 status="${statuses[0]}"
 if test "${statuses[1]}" -ne 0 && test "$status" -eq 0; then status=1; fi
-# Finalization preserves the harness evidence before checking its result.
+# Finalization verifies the original local harness evidence in place.
 collection_status=0
 ruby .buildkite/collect_evidence.rb "$artifacts" "$mode" "$status" || collection_status=$?
 test "$status" -eq 0 || exit "$status"

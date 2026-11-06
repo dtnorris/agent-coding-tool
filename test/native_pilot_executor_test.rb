@@ -205,8 +205,8 @@ class NativePilotExecutorTest < Minitest::Test
     end
   end
 
-  # A reviewed controller dies immediately after spawn. The supervisor still
-  # stops/reaps its child, writes a hold and never signals the test/host group.
+  # A reviewed controller stops permanently at its post-launch wait, then dies
+  # abruptly. The supervisor still stops/reaps its child and writes a hold.
   def test_controller_death_owned_teardown_and_concurrent_resume
     fixture(mode: "sleep") do |_executor, directory, workspace, _profile|
       stdout = File.open(File.join(directory, "controller.stdout"), "wx", 0o600)
@@ -226,9 +226,19 @@ class NativePilotExecutorTest < Minitest::Test
         ownership = read(directory, File.basename(started))
         assert_equal controller, ownership.fetch("controller")
         assert_raises(AgentCodingTool::InvalidState) { EXECUTOR.new(directory).capture("gate", @config.fetch("gate_argv"), input: "", cwd: workspace) }
+        stopped = nil
+        until stopped
+          stopped = Process.waitpid2(controller, Process::WUNTRACED | Process::WNOHANG)
+          raise "controller terminal barrier did not finish" if EXECUTOR.clock >= deadline
+          sleep 0.005 unless stopped
+        end
+        assert stopped.last.stopped?
+        assert_equal Signal.list.fetch("STOP"), stopped.last.stopsig
         Process.kill("KILL", controller)
-        Process.waitpid(controller)
+        _pid, death = Process.waitpid2(controller)
         controller = nil
+        assert death.signaled?
+        assert_equal Signal.list.fetch("KILL"), death.termsig
         result = started.sub(".started.json", ".json")
         until File.exist?(result)
           raise "death teardown did not finish" if EXECUTOR.clock >= deadline

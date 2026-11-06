@@ -1,5 +1,17 @@
 # frozen_string_literal: true
 
+require_relative "bootstrap"
+
+if AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "split"
+  require File.join(AgentCodingTool::Bootstrap::COMPOSITION.fetch("packages").fetch("act-observability").fetch("root"), "lib/act_observability")
+  unless defined?(ActObservability::GateCapture)
+    raise AgentCodingTool::Bootstrap::Refused, "bootstrap: pinned act-observability has no GateCapture; check the published composition"
+  end
+  module AgentCodingTool
+    # Preserves the capture API and original package exceptions at the gate seam.
+    GateCapture = ActObservability::GateCapture
+  end
+else
 require "digest"
 
 module AgentCodingTool
@@ -109,4 +121,5 @@ module AgentCodingTool
       reader.close unless reader.closed?
     end
   end
+end
 end

@@ -1835,16 +1835,33 @@ class RunEvidenceTest < Minitest::Test
     assert ENV.to_h == original_environment, "checkpoint refusal changed ambient environment"
   end
 
-  # Retains cold export/register/record/gate and both real tunnel generations.
-  # Candidate B and registration refusals use fresh public CLI instances; the
-  # initial record retains cold argv/status. All Git queries use the same broker.
+  # Reuses fresh production CLI instances for short decisions on the same broker.
+  # Cold registration refusal, gate capture and both real tunnel generations
+  # retain argv/status, binary streams and independent-process witnesses.
   # Only worker records and hosted transport are declared external fakes.
   def test_native_share_continuous_public_journey
     workspace, base, exports, environment = prepare_sharing_checkpoint
-    run_cli = lambda do |*arguments, success: true|
-      output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
-        environment: environment, endpoint: @sharing_broker.endpoint, seconds: 15)
-      assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
+    run_cli = lambda do |*arguments, success: true, cold: false|
+      if cold || arguments.take(2) == %w[checkpoint gate]
+        output, error, status = ChildProcesses.capture("evidence_cli", arguments: ["plain", *arguments],
+          environment: environment, endpoint: @sharing_broker.endpoint, seconds: 15)
+        assert_equal success, status.success?, "#{arguments.take(2).inspect}: #{error}"
+      else
+        ambient = [ENV.to_h, Dir.pwd, [$stdin, $stdout, $stderr], defined?(Coverage) && Coverage.running?]
+        threads = Thread.list
+        begin
+          output, error, exit_code = local_cli(*arguments, environment: environment)
+          assert_equal(success ? 0 : 2, exit_code, "#{arguments.take(2).inspect}: #{error}")
+        ensure
+          assert_equal ambient, [ENV.to_h, Dir.pwd, [$stdin, $stdout, $stderr], defined?(Coverage) && Coverage.running?],
+            "sharing command leaked process state"
+          # The first broker request lazily starts Ruby's shared Timeout worker.
+          # Charge that startup here; no command may leave any other new thread.
+          added_threads = Thread.list - threads
+          assert added_threads.empty? || (arguments.take(2) == %w[checkpoint export] &&
+            added_threads.one? && added_threads.first.name == "Timeout stdlib thread"), "sharing command leaked a thread"
+        end
+      end
       [output, error]
     end
     registration_refusals = []
@@ -1866,7 +1883,7 @@ class RunEvidenceTest < Minitest::Test
       bad = write_json(File.join(exports, "bad.export.json"), original_package.merge(field => value))
       refuse_registration.call(*register, "--package", bad, "--sha256", Digest::SHA256.file(bad).hexdigest)
     end
-    cold_refusal = run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false)
+    cold_refusal = run_cli.call(*register, "--package", package.fetch("path"), "--sha256", "0" * 64, success: false, cold: true)
     outside = File.join(@temporary, "outside-task")
     File.write(outside, "outside-task-secret-sentinel")
     %w[symlink fifo].each do |kind|
@@ -1891,8 +1908,8 @@ class RunEvidenceTest < Minitest::Test
     # existing tunnel tests; Git authority is shared with each fresh CLI child.
     original_hashes = nil
     2.times do |iteration|
-      # The first generation retains cold grant/revoke argv and genuine status.
-      # The second repeats policy through fresh CLI instances and the same ledger.
+      # Both generations use fresh parsing against the independent owner's ledger.
+      # Cold evidence/source commands retain public argv and genuine exit status.
       task_cli = if iteration.zero?
                    run_cli
                  else

@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require_relative "support/child_processes"
+require "pathname"
 
 # Qualifies the real bootstrap and public CLI on real task/package files. Native
 # Git is prohibited; detached fixture refs are declared source observations.
@@ -180,6 +181,72 @@ class BootstrapTest < Minitest::Test
   def cli(main, components, *arguments, env: {})
     ChildProcesses.capture("bootstrap_cli", arguments: [main, *arguments],
       environment: environment(components).merge(env))
+  end
+
+  # Same-source children retain published/default, development and legacy
+  # selection across a clean launch. Replaced roots/refs/bytes still refuse.
+  def test_frozen_child_environment_revalidates_its_source
+    with_composition do |main, components, lock|
+      resolver = AgentCodingTool::Bootstrap
+      [nil, "split", "legacy", "development"].each do |mode|
+        inputs = { "ACT_COMPONENT_ROOT" => components, "UNRELATED_SECRET" => "never-forward" }
+        inputs["ACT_IMPLEMENTATION"] = mode if %w[split legacy].include?(mode)
+        inputs["ACT_SPLIT_DEVELOPMENT_ROOT"] = components if mode == "development"
+        selected = resolver.resolve(root: main, env: inputs)
+        child = resolver.child_environment(root: main, env: inputs, composition: selected)
+        assert child.frozen?
+        assert child.values.compact.all?(&:frozen?)
+        assert_equal %w[ACT_COMPONENT_ROOT ACT_IMPLEMENTATION ACT_RESOLVED_COMPOSITION ACT_SPLIT_DEVELOPMENT_ROOT], child.keys.sort
+        inputs.replace("ACT_IMPLEMENTATION" => "invalid", "ACT_COMPONENT_ROOT" => "/absent")
+        File.write(File.join(main, ".env"), "ACT_IMPLEMENTATION=invalid\n")
+        out, err, status = cli(main, components, "implementation", env: child)
+        assert status.success?, err
+        assert_equal selected, JSON.parse(out)
+        File.unlink(File.join(main, ".env"))
+        next if mode == "legacy"
+
+        drift = child.merge("ACT_IMPLEMENTATION" => "legacy")
+        _out, err, status = cli(main, components, "implementation", env: drift)
+        assert_equal 2, status.exitstatus
+        assert_includes err, "inherited composition changed"
+        source = File.join(components, "act-tasks", lock.fetch("packages").fetch("act-tasks").fetch("files").keys.first)
+        bytes = File.binread(source)
+        File.binwrite(source, bytes + "\n# drift\n")
+        _out, err, status = cli(main, components, "implementation", env: child)
+        assert_equal 2, status.exitstatus
+        assert_includes err, "source differs from pinned digest"
+        File.binwrite(source, bytes)
+        head = File.join(components, "act-tasks/.git/HEAD")
+        revision = File.binread(head)
+        File.write(head, "0" * 40)
+        _out, err, status = cli(main, components, "implementation", env: child)
+        assert_equal 2, status.exitstatus
+        assert_includes err, "revision differs from pinned"
+        File.binwrite(head, revision)
+      end
+      # A relative selected parent is resolved before a child's unrelated cwd.
+      relative = { "ACT_COMPONENT_ROOT" => Pathname.new(components).relative_path_from(Pathname.new(Dir.pwd)).to_s }
+      selected = resolver.resolve(root: main, env: relative)
+      child = resolver.child_environment(root: main, env: relative, composition: selected)
+      assert_equal components, child.fetch("ACT_COMPONENT_ROOT")
+      alternate = File.join(main, "other-components")
+      FileUtils.cp_r(components, alternate)
+      _out, err, status = cli(main, components, "implementation", env: child.merge("ACT_COMPONENT_ROOT" => alternate))
+      assert_equal 2, status.exitstatus
+      assert_includes err, "inherited composition changed"
+      FileUtils.mv(components, components + ".absent")
+      _out, err, status = cli(main, components, "implementation", env: child)
+      assert_equal 2, status.exitstatus
+      assert_includes err, "required split composition unavailable"
+      # Explicit rollback does not require any package or component selector.
+      selected = resolver.resolve(root: main, env: { "ACT_IMPLEMENTATION" => "legacy" })
+      child = resolver.child_environment(root: main, env: {}, composition: selected)
+      out, err, status = cli(main, components, "implementation", env: child)
+      assert status.success?, err
+      assert_equal selected, JSON.parse(out)
+      assert_nil child.fetch("ACT_COMPONENT_ROOT")
+      assert_nil child.fetch("ACT_SPLIT_DEVELOPMENT_ROOT")
+    end
   end
 
   # Exercises a real symlinked temporary parent and real covered CLI startup.

@@ -4,6 +4,7 @@ require_relative "test_helper"
 require "agent_coding_tool/evidence_tunnel"
 require "minitest/mock"
 require "stringio"
+require_relative "support/tunnel_processes"
 
 # Exercises the real owner and ledger with deterministic process/HTTP boundaries.
 # Native public CLI/client/adapter composition remains in RunEvidenceTest.
@@ -55,6 +56,54 @@ class EvidenceTunnelTest < Minitest::Test
   def teardown
     @lock&.close
     FileUtils.remove_entry(@temporary)
+  end
+
+  # Only the same-checkout ACT adapter inherits the frozen bootstrap. Ambient
+  # selection edits and credentials cannot enter its env -i command or ps/client.
+  def test_adapter_command_preserves_frozen_bootstrap_without_credentials
+    original = ENV.to_h
+    begin
+      ENV["ACT_IMPLEMENTATION"] = "invalid"
+      ENV["ACT_COMPONENT_ROOT"] = "/changed-after-startup"
+      ENV["ACT_RESOLVED_COMPOSITION"] = "invalid"
+      ENV["OPENAI_TUNNEL_KEY"] = "credential-sentinel"
+      ENV["CONTROL_PLANE_API_KEY"] = "client-credential-sentinel"
+      ENV["OTHER_SECRET"] = "unrelated-sentinel"
+      runtime = AgentCodingTool::EvidenceTunnel::ENVIRONMENT.to_h { |name| [name, ENV[name]] }.compact
+      assert_equal runtime, @tunnel.send(:clean_environment)
+      @tunnel.send(:write_config, "tunnel_fixture")
+      config = JSON.parse(File.binread(File.join(@path, "tunnel.json")))
+      command = Shellwords.split(config.fetch("mcp").fetch("commands").first.fetch("command"))
+      expected = runtime.merge(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT).compact
+      assert_equal ["/usr/bin/env", "-i", *expected.map { |name, value| "#{name}=#{value}" },
+        RbConfig.ruby, File.expand_path("../bin/agent-coding-tool", __dir__),
+        "evidence", "serve", "--session", @path], command
+      refute_match(/credential-sentinel|unrelated-sentinel|changed-after-startup/, command.join(" "))
+      # Exercise the reviewed private client's validation and preload handoff up
+      # to permit construction; no socket, fork or adapter process is required.
+      ENV["ACT_TEST_TUNNEL_ADAPTER_ENVIRONMENT"] = JSON.generate(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT.compact)
+      ENV["ACT_TEST_TUNNEL_CONFIG_SHA256"] = Digest::SHA256.file(File.join(@path, "tunnel.json")).hexdigest
+      captured = catch(:adapter_permit) do
+        NoGitExecution::Permit.stub(:new, ->(**envelope) { throw :adapter_permit, envelope }) do
+          TunnelProcesses.adapter(config_path: File.join(@path, "tunnel.json"), command: command)
+        end
+      end
+      instrumented = expected.dup
+      %w[ACT_COVERAGE_CONTEXT ACT_EXECUTION_AUDIT].each { |name| instrumented[name] = ENV[name] if ENV[name] }
+      assert_equal instrumented, captured.fetch(:environment)
+      assert_equal({ unsetenv_others: true }, captured.fetch(:options))
+      assert_includes captured.fetch(:preloads).keys, File.expand_path("support/fixtures/tunnel_adapter_bootstrap.rb", __dir__)
+      ENV["ACT_TEST_TUNNEL_ADAPTER_ENVIRONMENT"] = "{}"
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        TunnelProcesses.adapter(config_path: File.join(@path, "tunnel.json"), command: command)
+      end
+      ENV["ACT_TEST_TUNNEL_ADAPTER_ENVIRONMENT"] = JSON.generate("OTHER_SECRET" => "never-forward")
+      assert_raises(NoGitExecution::ProhibitedExecution) do
+        TunnelProcesses.adapter(config_path: File.join(@path, "tunnel.json"), command: command)
+      end
+    ensure
+      ENV.replace(original)
+    end
   end
 
   # Runs the actual owner with fake spawn/cleanup and a deterministic wait clock.

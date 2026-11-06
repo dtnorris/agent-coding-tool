@@ -111,7 +111,9 @@ module AgentCodingTool
     # Ruby/ACT starts the adapter. No saved connection/profile is changed.
     def write_config(tunnel_id)
       File.open(File.join(@path, "adapter-diagnostics.jsonl"), File::WRONLY | File::CREAT | File::EXCL, 0o600, &:fsync)
-      environment = clean_environment
+      # The adapter loads this checkout, so retain its frozen bootstrap inputs
+      # across env -i. The external client and ps keep the runtime-only allowlist.
+      environment = clean_environment.merge(Bootstrap::CHILD_ENVIRONMENT).compact
       command = ["/usr/bin/env", "-i", *environment.map { |name, value| "#{name}=#{value}" },
         RbConfig.ruby, File.expand_path("../../bin/agent-coding-tool", __dir__), "evidence", "serve", "--session", @path]
       configuration = { "config_version" => 1,

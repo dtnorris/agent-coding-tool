@@ -30,6 +30,69 @@ class LauncherTest < Minitest::Test
     old_pid ? assert_equal(old_pid, current_pid) : assert_nil(current_pid)
   end
 
+  # A reviewed fake worker loads this checkout through child_bootstrap. Inspect
+  # its permit handoff and real preload startup without a broker/socket. Codex
+  # continues to receive only its runtime allowlist, including after ENV drift.
+  def test_fake_worker_preload_receives_frozen_same_source_bootstrap
+    original = ENV.to_h
+    begin
+      ENV["ACT_IMPLEMENTATION"] = "invalid"
+      ENV["ACT_COMPONENT_ROOT"] = "/changed-after-startup"
+      ENV["ACT_RESOLVED_COMPOSITION"] = "invalid"
+      ENV["UNRELATED_SECRET"] = "never-forward"
+      worker = AgentCodingTool::Launcher.allocate.send(:worker_env)
+      assert_equal %w[HOME PATH TMPDIR CODEX_HOME LANG LC_ALL].to_h { |key| [key, ENV[key]] }.compact, worker
+      @fake = fake_executable
+      @memory_broker = Struct.new(:endpoint).new({})
+      captured = nil
+      inspect = lambda do |name, **envelope|
+        assert_equal "launcher_worker", name
+        captured = envelope
+        throw :inspected
+      end
+      catch(:inspected) do
+        ChildProcesses.stub(:permit, inspect) do
+          spawn_fake_worker(worker, File.realpath(@fake), "exec", unsetenv_others: true, pgroup: true)
+        end
+      end
+      expected = worker.merge(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT)
+      expected["ACT_COVERAGE_CONTEXT"] = ENV["ACT_COVERAGE_CONTEXT"] if ENV["ACT_COVERAGE_CONTEXT"]
+      expected["ACT_TEST_CODING_SKILL"] = ENV["ACT_TEST_CODING_SKILL"]
+      assert_equal expected, captured.fetch(:environment)
+      assert_equal @memory_broker.endpoint, captured.fetch(:endpoint)
+      assert_equal({ unsetenv_others: true, pgroup: true }, captured.fetch(:options))
+      assert_equal ["exec"], captured.fetch(:arguments)
+      # --version needs no Git request, so the real cold preload can initialize
+      # its client capability without connecting to a broker. Keep real pipes,
+      # unsetenv_others, child status and a finite owned cleanup deadline.
+      Dir.mktmpdir("act-worker-bootstrap-") do |directory|
+        File.open(File.join(directory, "stdout"), "w+") do |output|
+          File.open(File.join(directory, "stderr"), "w+") do |error|
+            pid = nil
+            begin
+              pid = spawn_fake_worker(worker, File.realpath(@fake), "--version",
+                unsetenv_others: true, pgroup: true, out: output, err: error)
+              _pid, status = Timeout.timeout(5) { Process.wait2(pid) }
+              pid = nil
+              output.rewind
+              error.rewind
+              assert status.success?, error.read
+              assert_equal "codex-cli 0.162.1\n", output.read
+            ensure
+              if pid
+                Process.kill("KILL", -pid) rescue Errno::ESRCH
+                Process.waitpid(pid) rescue Errno::ECHILD
+              end
+            end
+          end
+        end
+      end
+    ensure
+      ENV.replace(original)
+      @memory_broker = nil
+    end
+  end
+
   # Verifies launch binds pushed base independent of dirty divergent ordinary checkout; assertion failures raise.
   def test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout
     fixture(git: true, process: true) do

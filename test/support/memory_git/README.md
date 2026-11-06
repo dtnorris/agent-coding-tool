@@ -265,6 +265,23 @@ for worker journeys that call ACT; independent non-Git children need only their
 declared process bootstrap. Clearing/replacing guard or coverage settings cannot
 borrow the permit. No arbitrary inline Ruby, shell launcher or Git shim is allowed.
 
+Fixture adapters that clear the environment and preload this same ACT checkout
+must merge `AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT` into their explicit
+handoff before obtaining the permit. Retry workers always receive that frozen
+snapshot; delivery validators and pilot substitutes receive it when the shared
+world preload is active. Keep this decision at the owning fixture adapter:
+`bootstrap_cli` deliberately loads a different source checkout with its own
+composition, while apply validators load their workspace without the shared
+preload. A generic permit must not copy the parent's composition into either.
+
+`bundle exec ruby -Ilib:test test/support/verify_retry_processes.rb --seed 2300`
+checks the retry cost inventory and these cleared fixture handoffs. Its bootstrap
+regressions use a nonconnecting client capability and real permitted children;
+they cover parent environment drift, exact handoffs, binary/nonzero results and
+fixture probe writes without opening a broker socket. Run in fresh legacy and
+split interpreters. This focused evidence does not replace the full CI jobs,
+socket journeys, coverage floors or accepted runtime gates.
+
 `verify_adapters.rb --seed 3701` is an independent fixed shared-adapter component
 gate. `verify_shared.rb --seed 3701` is the complete fixed TST-37 component gate,
 including continuous cold public CLI/remote/candidate, omitted/stale handoffs,

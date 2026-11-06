@@ -4,6 +4,11 @@
     "RetryProcessCostVerifier#test_lsof_changed_envelopes_refuse",
     "RetryProcessCostVerifier#test_preflight_raw_observations_and_fresh_streams",
     "RetryProcessCostVerifier#test_preflight_changed_envelope_and_source_refuse",
-    "RetryProcessCostVerifier#test_real_preflight_process_parity"
+    "RetryProcessCostVerifier#test_real_preflight_process_parity",
+    "RetryProcessCostVerifier#test_spawn_worker_preserves_cold_bootstrap",
+    "RetryProcessCostVerifier#test_transport_preserves_cold_bootstrap",
+    "RetryProcessCostVerifier#test_capture_preserves_cold_bootstrap",
+    "RetryProcessCostVerifier#test_validation_preserves_cold_bootstrap",
+    "RetryProcessCostVerifier#test_native_pilot_preserves_cold_bootstrap"
   ]
 }

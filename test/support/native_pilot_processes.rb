@@ -55,6 +55,8 @@ module NativePilotProcesses
       # deletion/replacement visible to the permit's unchanged coverage checks.
       context = ENV["ACT_COVERAGE_CONTEXT"]
       environment = { "ACT_COVERAGE_CONTEXT" => context }.merge(environment) if context
+      # Harmless fixtures load ACT only when the shared-world preload is active.
+      environment = environment.merge(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT) if ENV["ACT_TEST_MEMORY_ENDPOINT"]
       approval = ChildProcesses.permit(mode, arguments: arguments, environment: environment, options: settings)
       NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options, **pipes) }
     end

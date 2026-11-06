@@ -29,6 +29,8 @@ module ValidationProcesses
         raise GitContract::UnexpectedObservation, 'changed validation fixture' unless
           [4, 5].include?(command.length) && Digest::SHA256.file(source).hexdigest == ChildProcesses::HASHES.fetch('validation_worker')
         environment = environment.merge('ACT_COVERAGE_CONTEXT' => ENV['ACT_COVERAGE_CONTEXT']) if ENV['ACT_COVERAGE_CONTEXT']
+        # Only the shared-world preload loads this ACT source in the validator.
+        environment = environment.merge(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT) if ENV['ACT_TEST_MEMORY_ENDPOINT']
         approval = ChildProcesses.permit('validation_worker', arguments: command.drop(2), environment: environment, options: options)
         NoGitExecution.with_permit(approval) do
           original.call(approval.environment, *approval.argv, **approval.options, &block)

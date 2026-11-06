@@ -18,7 +18,7 @@ Human review and integration remain required. The explicit `publish`
 command commits and pushes selected changes in the configured private data
 checkout only.
 
-## Optional task package composition
+## Optional package composition
 
 Legacy remains the default. Before production requires, the library and public
 entrypoint share one `ACT_IMPLEMENTATION=legacy|split` resolver: an explicit
@@ -27,7 +27,7 @@ The file is data: no interpolation, shell evaluation, unrelated environment
 loading or dependency `.env` discovery occurs. Invalid modes refuse startup.
 
 `split-composition.json` binds all three published component revisions and exact
-Ruby source hashes. Only task loading/validation delegates initially; checkpoint
+Ruby source hashes. Task loading/validation and bounded gate capture delegate; checkpoint
 policy, ranking, scheduling, status and command authority stay in main. Split
 verifies every required package before loading production and never falls back.
 The default component parent is `../agent-coding-tool-components` relative to
@@ -41,6 +41,18 @@ or the default component parent. `ACT_SPLIT_DEVELOPMENT_ROOT` remains an explici
 development qualifier and cannot establish installed published acceptance.
 Removing a package, changing its revision or modifying pinned source refuses
 split startup. Legacy remains the default until explicitly selected otherwise.
+
+Gate capture binds the accepted AB-OB-01B package at published revision
+`dd2258b7202a44dca1b2fe19a6c0a0d5408f5504`, with exact source digests in the
+single composition. Adoption order is package acceptance/publication, then main
+adapter/composition review and host checkpoint gates, then installed legacy/split
+qualification and separately authorized integration. Development overrides do
+not establish installed acceptance. Rollback selects `ACT_IMPLEMENTATION=legacy`
+before startup and requires no component checkout or evidence migration.
+The compatibility alias preserves the 4 MiB per-stream cap, binary output and exception identity;
+command execution, checkpoint policy, receipt schemas and physical evidence
+paths remain main-owned. Capture persistence and console delivery retain separate
+outcomes from command status. Sharing, tunnels and recovery are not extracted.
 
 `act implementation` prints the resolved mode, actual roots, checkout revisions
 and source digests, with development qualification marked explicitly. The frozen

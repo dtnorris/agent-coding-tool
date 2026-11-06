@@ -8,6 +8,120 @@ require_relative "support/child_processes"
 class BootstrapTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
 
+  # A correctly hashed scaffold still lacks the capture API. Refuse explicitly
+  # before a public command rather than silently using legacy in split mode.
+  def test_observability_scaffold_refuses_adoption
+    with_composition do |main, components, lock|
+      package = File.join(components, "act-observability")
+      File.unlink(File.join(package, "lib/act_observability/gate_capture.rb"))
+      entry = File.join(package, "lib/act_observability.rb")
+      File.write(entry, File.read(entry).sub("require_relative \"act_observability/gate_capture\"\n", ""))
+      pin = lock.fetch("packages").fetch("act-observability")
+      pin["files"] = Dir.glob("lib/**/*.rb", base: package).to_h do |path|
+        [path, Digest::SHA256.file(File.join(package, path)).hexdigest]
+      end
+      File.write(File.join(main, "split-composition.json"), JSON.generate(lock))
+      _out, err, status = cli(main, components, "implementation")
+      assert_equal 2, status.exitstatus
+      assert_includes err, "pinned act-observability has no GateCapture"
+      out, err, status = cli(main, components, "implementation", env: { "ACT_IMPLEMENTATION" => "legacy" })
+      assert status.success?, err
+      assert_equal "legacy", JSON.parse(out).fetch("mode")
+    end
+  end
+
+  # The public gate must invoke the package with real binary pipes and retain a
+  # failing child's status. This exempt fixture proves capture, not provenance.
+  def test_public_gate_capture_delegation_and_broken_handoffs
+    with_composition do |main, components, _lock|
+      data = File.join(main, "data")
+      workspace = File.join(main, "workspace")
+      FileUtils.mkdir_p([File.join(data, "tasks"), File.join(data, "state"), workspace])
+      File.write(File.join(data, "config.yml"), YAML.dump("repo_root" => main))
+      task = { "id" => "T1", "title" => "Capture qualification",
+        "repositories" => { "repo" => { "access" => "write" } },
+        "checkpoint" => { "mode" => "exempt", "category" => "inspection", "reason" => "Disposable capture proof." } }
+      File.write(File.join(data, "tasks/T1.yml"), YAML.dump(task))
+      state = { "id" => "T1", "prepared_at" => "2026-11-03T00:00:00Z", "started_at" => "2026-11-03T00:01:00Z",
+        "snapshot" => { "repo" => { "path" => workspace, "remote" => "origin",
+          "remote_url" => "git@github.com:fixture/repo.git", "branch" => "main", "pushed_sha" => "a" * 40 } } }
+      state_path = File.join(data, "state/T1.yml")
+      File.write(state_path, YAML.dump(state))
+      original_state = File.binread(state_path)
+      env = { "AGENT_CODING_TOOL_DATA_DIR" => data,
+        "ACT_SPLIT_DEVELOPMENT_ROOT" => nil, "ACT_COMPONENT_ROOT" => components }
+      arguments = ["checkpoint", "gate", "T1", "--workspace", workspace, "--",
+        RbConfig.ruby, File.join(ChildProcesses::FIXTURES, "checkpoint_validator.rb"), "share"]
+      evidence = File.join("#{data}-runs", "checkpoints/T1/*/gate-*.finished.json")
+      source = File.join(components, "act-observability/lib/act_observability/gate_capture.rb")
+      [0, 7].each do |exit_code|
+        out, err, status = cli(main, components, *arguments, exit_code.to_s, env: env)
+        assert_equal exit_code.zero? ? 0 : 2, status.exitstatus, err
+        assert_includes out.b, "out\x00\xff".b
+        assert_includes err.b, "err\x80".b
+        assert_includes err, "validation command failed (7)" unless exit_code.zero?
+        calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
+        assert_equal [source], calls
+      end
+      receipts = Dir.glob(evidence).map { |path| JSON.parse(File.binread(path)) }
+      assert_equal [0, 7], receipts.map { |receipt| receipt.dig("command_outcome", "exit_code") }.sort
+      receipts.each do |receipt|
+        assert_equal "complete", receipt.dig("output", "status")
+        assert_equal 4 * 1024 * 1024, receipt.dig("output", "limit_per_stream")
+        assert_nil receipt["candidate"]
+        { "stdout" => "out\x00\xff".b, "stderr" => "err\x80".b }.each do |name, bytes|
+          stream = receipt.fetch("output").fetch("streams").fetch(name)
+          assert_equal bytes.bytesize, stream["bytes"]
+          assert_equal bytes.bytesize, stream["observed_bytes"]
+          assert_equal Digest::SHA256.hexdigest(bytes), stream["sha256"]
+          directory = File.dirname(Dir.glob(evidence).fetch(0))
+          captured = File.join(directory, stream.fetch("file"))
+          assert_equal bytes, File.binread(captured)
+          assert_equal 0o600, File.stat(captured).mode & 0o777
+          assert_equal "complete", stream["console"]
+        end
+      end
+      assert_equal original_state, File.binread(state_path)
+
+      # Deliberately bypass the package with the retained legacy implementation.
+      # Identical output must still fail the package-source journey assertion.
+      _out, err, status = cli(main, components, *arguments, "0", env: env.merge("ACT_IMPLEMENTATION" => "legacy"))
+      assert status.success?, err
+      assert_includes _out.b, "out\x00\xff".b
+      calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
+      assert_raises(Minitest::Assertion) { assert_equal [source], calls, "capture delegation missing" }
+      _out, err, status = cli(main, components, *arguments, "0", env: env)
+      assert status.success?, err
+      calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
+      assert_equal [source], calls
+      count = Dir.glob(evidence).size
+      package_bytes = File.binread(source)
+      File.open(source, "a") { |file| file.puts "# misbound source" }
+      _out, err, status = cli(main, components, *arguments, "0", env: env)
+      assert_equal 2, status.exitstatus
+      assert_includes err, "act-observability source differs from pinned digest"
+      assert_equal count, Dir.glob(evidence).size
+      File.binwrite(source, package_bytes)
+      package = File.join(components, "act-observability")
+      FileUtils.mv(package, "#{package}.unavailable")
+      _out, err, status = cli(main, components, *arguments, "0", env: env)
+      assert_equal 2, status.exitstatus
+      assert_includes err, "required split composition unavailable"
+      assert_equal count, Dir.glob(evidence).size
+      _out, err, status = cli(main, components, *arguments, "7", env: env.merge("ACT_IMPLEMENTATION" => "legacy"))
+      assert_equal 2, status.exitstatus
+      assert_includes err, "validation command failed (7)"
+      calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
+      assert_empty calls
+      FileUtils.mv("#{package}.unavailable", package)
+      _out, err, status = cli(main, components, *arguments, "0", env: env)
+      assert status.success?, err
+      calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
+      assert_equal [source], calls
+      assert_equal original_state, File.binread(state_path)
+    end
+  end
+
   # Copies production and byte-identical pinned component sources into a fresh
   # invocation root. Explicit component roots qualify real checkouts; the default
   # offline fixture needs no sibling repositories. No fake replaces TaskStore.

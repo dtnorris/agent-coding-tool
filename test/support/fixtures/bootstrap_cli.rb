@@ -1,21 +1,27 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "../checkpoint_processes"
 
-# Observes calls to the real loader while executing the actual bin entrypoint.
-# No TaskStore, CLI parser or filesystem operation is substituted. Unprepared
-# status needs no remote observation; the inherited guard rejects any execution.
+# Observes the real package loader/capture through the actual bin entrypoint.
+# Only the declared non-Git checkpoint validator may execute; the inherited
+# guard rejects other processes. Product policy, pipes and files remain real.
 root = ARGV.shift
 calls = []
+captures = []
 observer = TracePoint.new(:call) do |event|
   if event.defined_class.name == "ActTasks::TaskStore" && %i[load all].include?(event.method_id)
     calls << { "method" => event.method_id, "path" => event.path }
+  end
+  if event.defined_class.name == "ActObservability::GateCapture" && event.method_id == :run
+    captures << event.path
   end
 end
 observer.enable
 at_exit do
   observer.disable
   warn "TASK_SOURCE=#{JSON.generate(calls)}"
+  warn "\nCAPTURE_SOURCE=#{JSON.generate(captures)}"
 end
 if ARGV.first == "store"
   ARGV.shift

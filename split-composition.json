@@ -18,10 +18,11 @@
     },
     "act-observability": {
       "remote_url": "git@github.com:dtnorris/act-observability.git",
-      "revision": "f2bca8f49d281903c1c687dc5a050716f7191ce4",
+      "revision": "dd2258b7202a44dca1b2fe19a6c0a0d5408f5504",
       "files": {
-        "lib/act_observability.rb": "35b3a139e5ca8067d794bd0a79d2d54df1f64eeff83176caddcfaca8c046c3f3",
-        "lib/act_observability/version.rb": "f6faf04c70d09ad9a4d3d82599c08fcedcf0f8dd4baa16149dc5f4de1f505074"
+        "lib/act_observability/gate_capture.rb": "e6a3a391b6d8fe9762717a162a189c7208ddf3ba2c2173069dad72db0a12bc0a",
+        "lib/act_observability/version.rb": "f6faf04c70d09ad9a4d3d82599c08fcedcf0f8dd4baa16149dc5f4de1f505074",
+        "lib/act_observability.rb": "a56875967e6de52b2f772cc179693f5617f0f47cc56943b5b2ba8a9662189867"
       }
     },
     "act-lifecycle": {

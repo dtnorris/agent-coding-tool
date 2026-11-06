@@ -48,7 +48,7 @@ module TestFeedback
   # Returns exact bytes' hashes for production, harness, selections and locked
   # dependencies. Discovery is repeated at completion to reject added files.
   def self.source_files(root)
-    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + %w[bin/agent-coding-tool test/support/bin/rake Rakefile Gemfile Gemfile.lock split-composition.json]).sort
+    paths = (Dir.glob("{lib,test}/**/*.{rb,json}", base: root) + Dir.glob(".buildkite/*.{rb,sh,yml}", base: root) + %w[bin/agent-coding-tool test/support/bin/rake Rakefile Gemfile Gemfile.lock split-composition.json]).sort
     paths.to_h { |path| [path, Digest::SHA256.file(File.join(root, path)).hexdigest] }
   end
 
@@ -82,6 +82,7 @@ module TestFeedback
       "policy" => policy, "qualification" => qualification, "hard_deadline_seconds" => seconds,
       "rake_argv" => ARGV.dup, "cwd" => Dir.pwd, "runtime" => RUBY_DESCRIPTION,
       "platform" => RbConfig::CONFIG.values_at("host_os", "host_cpu"),
+      "implementation" => AgentCodingTool::Bootstrap::COMPOSITION,
       "environment" => RELEVANT_ENV.to_h { |key| [key, ENV[key]] },
       "coverage_mode" => "ruby-lines-branches-all-production-files/v1",
       "fixture_policy" => "fresh disposable files and per-case in-memory Git authority; zero native Git",
@@ -152,13 +153,17 @@ module TestFeedback
 
   # Returns comparability conditions, excluding candidate bytes so changes can
   # be compared with one fixed, separately identified accepted source reference.
-  # Observed seed/selection come from completed independent suite evidence.
+  # Observed seed/selection come from completed independent suite evidence. Keep
+  # the historical legacy comparator; split additionally requires a bound
+  # composition reference rather than claiming comparability with legacy.
   def self.conditions(current)
-    current.slice("runtime", "platform", "git_version", "root", "cwd", "environment", "coverage_mode", "fixture_policy", "workers", "rake_argv").merge(
+    conditions = current.slice("runtime", "platform", "git_version", "root", "cwd", "environment", "coverage_mode", "fixture_policy", "workers", "rake_argv").merge(
       "lockfile" => current.fetch("source_files").fetch("Gemfile.lock"),
       "selections" => current.fetch("stages").map { |stage|
         [stage.fetch("layer"), stage.fetch("processes").map { |process| process.fetch("selection") }] },
       "observed_seeds" => current.fetch("stages").flat_map { |stage| stage.fetch("processes").map { |process| process["seed"] } })
+    conditions["implementation"] = current.fetch("implementation") if current.dig("implementation", "mode") == "split"
+    conditions
   end
 
   # Enforces line and branch floors against a measured summary. Missing floors
@@ -214,6 +219,8 @@ module TestFeedback
     original_exception = $!
     failures = []
     begin
+      raise "feedback: implementation changed during invocation" unless
+        AgentCodingTool::Bootstrap.resolve(root: current.fetch("root"), env: ENV) == current.fetch("implementation")
       raise "feedback: source changed during invocation" unless source_files(current.fetch("root")) == current.fetch("source_files") &&
         FeedbackCoverage.sources(current.fetch("root")) == current.fetch("sources")
       raise "feedback: policy changed during invocation" if current["policy_sha256"] &&

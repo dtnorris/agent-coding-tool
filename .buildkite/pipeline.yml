@@ -1,0 +1,18 @@
+env:
+  BUNDLE_FROZEN: "true"
+  ACT_TEST_POLICY: /opt/homebrew/etc/buildkite-agent/act-feedback-policy.json
+  SEED: "2300"
+
+steps:
+  - label: "Full legacy acceptance"
+    key: acceptance-legacy
+    agents:
+      queue: act-macos
+    command: bash .buildkite/acceptance.sh legacy
+    timeout_in_minutes: 20
+  - label: "Full published-split acceptance"
+    key: acceptance-split
+    agents:
+      queue: act-macos
+    command: bash .buildkite/acceptance.sh split
+    timeout_in_minutes: 20

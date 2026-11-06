@@ -1,0 +1,12 @@
+# Operator-owned hosted configuration; this file is not uploaded recursively.
+env:
+  BUNDLE_FROZEN: "true"
+  ACT_TEST_POLICY: /opt/homebrew/etc/buildkite-agent/act-feedback-policy.json
+  SEED: "2300"
+
+steps:
+  - label: ":pipeline: Upload ACT acceptance pipeline"
+    agents:
+      queue: act-macos
+    command: buildkite-agent pipeline upload .buildkite/pipeline.yml
+    timeout_in_minutes: 5

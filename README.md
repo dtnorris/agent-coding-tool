@@ -42,6 +42,15 @@ development qualifier and cannot establish installed published acceptance.
 Removing a package, changing its revision or modifying pinned source refuses
 split startup. Legacy remains the default until explicitly selected otherwise.
 
+The repository-owned [Buildkite pipeline](.buildkite/pipeline.yml) runs separate
+complete legacy and published-split acceptance jobs against the same ACT commit.
+Each job runs the unchanged `bundle exec rake test:all` with fresh evidence;
+split provisions and verifies every published composition pin before guarded
+testing. See [operator setup and acceptance evidence](.buildkite/OPERATOR.txt)
+for the exact hosted bootstrap, rollout constraint and review/commit commands.
+Both complete CI passes are prerequisites for a separate reviewed default change;
+they do not establish installed adoption. Legacy remains the default here.
+
 Gate capture binds the accepted AB-OB-01B package at published revision
 `dd2258b7202a44dca1b2fe19a6c0a0d5408f5504`, with exact source digests in the
 single composition. Adoption order is package acceptance/publication, then main

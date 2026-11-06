@@ -1,0 +1,142 @@
+ACT full legacy / published-split CI qualification
+
+Scope and authority
+
+Legacy remains the implementation default. Both jobs run the complete unchanged
+bundle exec rake test:all. Passing them permits a separate reviewed default-change
+decision; it does not accept installed adoption or authorize live ACT mutations.
+No installed .env, task/checkpoint state, inventory, coverage floor, accepted
+policy, fixture deadline or production Git behavior changes here.
+
+The source baseline is dd0429cab40a5cbf6e3e232e0b315af8a22101b3 in the isolated
+ACT-Split-CI linked worktree, branch ci/full-split-qualification. The canonical
+coding and planning skills were read from the clean local agent-skills checkout
+at 5162361187be082ba897d79571345a65caad33bd; remote retrieval was unavailable.
+
+Repository files
+
+pipeline.yml defines two independent acceptance jobs on act-macos, each bounded
+by a 20-minute Buildkite timeout in addition to the unchanged policy watchdog.
+bootstrap.yml is the exact hosted YAML for the operator to paste into Buildkite.
+acceptance.sh installs frozen bundle dependencies in each job, clears inherited
+resolved/development/component/coverage context and qualification settings, and
+sets an explicit mode. It creates a new exclusive directory for every invocation.
+It binds BUNDLE_GEMFILE to this checkout and canonicalizes TMPDIR so macOS path
+aliases cannot split compiler coverage paths from the source census. The probe
+also loads Bundler's frozen dependency selection inside the zero-Git guard.
+
+prepare_components.rb provisions ALL packages from split-composition.json alone:
+init a private repository, add its exact remote, fetch its full revision, detach
+at FETCH_HEAD. The existing Bootstrap resolver verifies actual HEAD and every
+Ruby source digest against published files (never development_files) before any
+test. Provisioning runs outside the protected test boundary. Nothing is fetched
+from mutable main, a sibling checkout, a shared dependency cache or a dev override.
+The agent must have noninteractive read access and trusted SSH host configuration
+for all three pinned GitHub remotes. Missing credentials/objects/digests fail the
+split job; the job never substitutes legacy or offline fixture sources.
+
+verify_implementation.rb is a separate guarded smoke probe: actual YAML loading
+and binary capture must execute the pinned act-tasks and act-observability method
+sources in split mode. Lifecycle remains verified even though it supplies no
+adopted behavior. The probe supplies no coverage hits to acceptance. The complete
+command then starts afresh with the existing Ruby rake entry first on PATH and
+the zero-Git guard preloaded before Bundler; all existing descendant guards stay.
+
+test/feedback.rb records the actual frozen composition in
+report.json, binds the CI scripts/YAML in source provenance, and revalidates the
+composition at completion. Existing all-production coverage scope and policy
+gates remain intact. The legacy runtime comparator retains its existing shape;
+split additionally requires a composition-bound reference. Split runtime is
+noncomparable with a legacy reference; no budget or accepted policy is rewritten.
+collect_evidence.rb retains the entire fresh harness directory, including failed
+raw logs, case evidence and coverage censuses. It requires a complete accepted
+report with the probe's exact composition and unchanged published manifest.
+The EXIT trap uploads only this invocation's artifacts, excluding dependency
+repositories. Test failures retain their status; artifact failures also fail CI.
+Abrupt agent loss/forced cancellation can prevent uploads; that is never a pass.
+
+Operator commit and push (only after review)
+
+Run in the exact isolated checkout. Reconcile unexpected changes before acting;
+do not reset/rebase or incorporate another worker's changes automatically.
+
+  cd /Users/davidnorriseng/code/ACT-Split-CI
+  test "$(pwd -P)" = /Users/davidnorriseng/code/ACT-Split-CI
+  test "$(git branch --show-current)" = ci/full-split-qualification
+  test "$(git rev-parse HEAD)" = dd0429cab40a5cbf6e3e232e0b315af8a22101b3
+  test "$(git remote get-url origin)" = git@github.com:dtnorris/agent-coding-tool.git
+  git diff --cached --exit-code
+  git status --short
+  git diff --check
+  git diff -- test/feedback.rb README.md
+  git add -- .buildkite/OPERATOR.txt .buildkite/acceptance.sh .buildkite/bootstrap.yml .buildkite/collect_evidence.rb .buildkite/pipeline.yml .buildkite/prepare_components.rb .buildkite/verify_ci.rb .buildkite/verify_implementation.rb test/feedback.rb README.md
+  git diff --cached --check
+  git diff --cached
+  git commit -m "ci: qualify complete legacy and published split acceptance"
+  git push --set-upstream origin ci/full-split-qualification
+
+Buildkite UI configuration (operator only)
+
+1. Open https://buildkite.com/david-norris/agent-coding-tool-data . Verify its
+   repository remains dtnorris/agent-coding-tool despite the pipeline's slug.
+   Leave pushed-branch triggering enabled. Save the existing hosted configuration
+   for rollback; preserve historical builds/artifacts.
+2. Choose Pipeline settings > Edit steps. Replace the hosted steps YAML with the
+   EXACT contents of .buildkite/bootstrap.yml and save. In an existing visual
+   command editor the only command change is:
+
+     buildkite-agent pipeline upload .buildkite/pipeline.yml
+
+   Retain queue act-macos and the environment BUNDLE_FROZEN=true,
+   ACT_TEST_POLICY=/opt/homebrew/etc/buildkite-agent/act-feedback-policy.json,
+   SEED=2300. Do not set ACT_TEST_QUALIFY or alter the operator-owned policy.
+3. Choose New Build, branch ci/full-split-qualification, and the exact commit
+   just pushed. The initial push under the old hosted command can only establish
+   the old single job; use a new build after saving the uploader. Confirm the
+   upload expands to Full legacy acceptance and Full published-split acceptance.
+   The pipeline slug, repository, webhook/branch settings and agent queue stay.
+
+Rollout constraint: the minimal uploader requires the selected commit to contain
+.buildkite/pipeline.yml. Other branches/older commits without it will fail upload.
+Coordinate this temporary hosted change with other workers while reviewing this
+branch. Restore the saved hosted configuration if those refs must build before
+the pipeline files are reviewed and merged. There is deliberately no hidden
+legacy fallback for a requested split build. No Buildkite changes were made by
+the coding worker.
+
+Recognizing acceptance
+
+Require BOTH named acceptance jobs to be green for the SAME ACT commit. The
+upload job alone, probe alone, focused checks, qualification output or a filtered
+suite is insufficient. Each acceptance job must print both:
+
+  ACT complete offline acceptance: PASS
+  ACT CI legacy complete acceptance evidence: PASS; invocation=...
+or, respectively:
+  ACT complete offline acceptance: PASS
+  ACT CI split complete acceptance evidence: PASS; invocation=...
+
+Each job's artifacts are tmp/ci-<mode>.<unique>/artifacts/:
+  implementation.json, split-composition.json, acceptance.log, feedback/**
+  (split also includes provision.log).
+Check feedback/report.json: distinct invocation IDs, head equal to the built ACT
+commit, accepted=true, qualification=false, complete_offline_gate=true, all four
+complete stages in order, every required process complete and no failures/skips.
+The existing runner verifies all inventories and accepted coverage/deadline gates.
+Both manifests must match that ACT commit's split-composition.json. Legacy's
+implementation.mode is legacy with no packages; split's is split with
+qualification=published and all three exact revisions/digests under this job's
+private component root. implementation.json must show both executed package
+source paths in split and an empty list in legacy. Probe and report compositions
+must match. Coverage/case evidence is independently fresh per job/build.
+
+Local verification is focused only; neither full acceptance suite is run locally.
+verify_ci.rb uses byte-checked offline package fixtures and synthetic Git refs
+for positive/refusal controls; those controls do not prove remote publication.
+Real remote provisioning, full compatibility, coverage and accepted policy
+enforcement remain CI gates. If either job fails, inspect its retained evidence
+and fix the narrow cause or seek an explicit operator policy decision. Do not
+lower floors, skip inventories, borrow hits or treat qualification as acceptance.
+
+Buildkite reference for the hosted uploader and UI navigation:
+https://buildkite.com/docs/pipelines/configure/defining-steps#adding-steps

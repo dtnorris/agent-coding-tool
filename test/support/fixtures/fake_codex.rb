@@ -24,6 +24,9 @@ $stderr.flush
 
 pidfile = arguments.find { |argument| argument.start_with?("--fixture-pidfile=") }
 if pidfile
+  # No further stderr is produced. Keep stdout inherited while the writer stays
+  # live, preserving one real stalled-pipe cleanup and writer-active refusal.
+  $stderr.reopen(File::NULL, "w")
   File.write(pidfile.delete_prefix("--fixture-pidfile="), Process.pid.to_s)
   loop { sleep 0.1 }
 end

@@ -593,6 +593,14 @@ class RunEvidenceTest < Minitest::Test
       discovered.slice("task_id", "invocation_id").merge("operation" => "manifest", "revision" => nil), caller: "fixture")
     assert_equal "pending", manifest.dig("artifacts", "transcript", "status")
     assert_equal Digest::SHA256.hexdigest("fake codex stdout\x80".b), manifest.dig("artifacts", "transcript", "sha256")
+    # Stream EOF is independent of writer termination: recovered stderr stays
+    # pending/unknown and retains the actual binary bytes after the real reap.
+    assert_equal "pending", manifest.dig("artifacts", "stderr", "status")
+    stderr_response = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(
+      discovered.slice("task_id", "invocation_id").merge("operation" => "read", "revision" => manifest.fetch("revision"),
+        "artifact" => "stderr", "offset" => 0, "length" => 1024), caller: "fixture")
+    assert_equal "fake codex stderr\x00".b, stderr_response.fetch("data").unpack1("m0")
+    assert_equal Digest::SHA256.hexdigest("fake codex stderr\x00".b), stderr_response.fetch("sha256")
     response = AgentCodingTool::RunEvidenceReader.new(**config.transform_keys(&:to_sym)).call(
       discovered.slice("task_id", "invocation_id").merge("operation" => "read", "revision" => manifest.fetch("revision"),
         "artifact" => "transcript", "offset" => 0, "length" => 1024), caller: "fixture")

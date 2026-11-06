@@ -40,7 +40,7 @@ module ChildProcesses
     "cold_cli" => "c0fcdc00673b283c718fd8c93aa3b27b92590afa76eecf26009d98af0b516a69",
     "process_probe" => "7cb7536f1c8e40e19a7e0ba49310df26098826a47860b1bf94de7ef74109bb15",
     "launcher_worker" => "33c775f42c4b5f3074f98b213ed366e30c78845738dcd3330c415f367b1379ce",
-    "fake_codex" => "78ee157375d8164caa43b491e57e91c344a701dcbac06cc7cef6642e86b05781"
+    "fake_codex" => "9277cbea19b674ea6057eb1b667ea973a8b74c4c87def0ed273aa4c159a1d039"
   }.freeze
 
   # Builds a permit for a named repository-owned script and exact invocation.

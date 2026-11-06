@@ -1967,6 +1967,11 @@ module AgentCodingTool
           Defaults to a sibling <tool-directory>-data directory.
           Override with AGENT_CODING_TOOL_DATA_DIR=/path/to/data.
 
+        Implementation:
+          Published split by default; provision the pinned packages before startup.
+          ACT_IMPLEMENTATION=legacy selects rollback without split packages.
+          ACT_IMPLEMENTATION=split selects split explicitly; invalid values refuse.
+
         Commands:
           implementation             resolved mode and verified package source identities
           share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)

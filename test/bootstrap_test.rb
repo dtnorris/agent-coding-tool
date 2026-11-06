@@ -208,9 +208,14 @@ class BootstrapTest < Minitest::Test
   def test_mode_resolution_and_inherited_composition
     with_composition do |main, components, _lock|
       resolver = AgentCodingTool::Bootstrap
-      assert_equal "legacy", resolver.resolve(root: main, env: {}).fetch("mode")
+      default = File.expand_path("../agent-coding-tool-components", main)
+      FileUtils.mv(components, default)
+      components = default
+      selected_default = resolver.resolve(root: main, env: {})
+      assert_equal "split", selected_default.fetch("mode")
+      assert_equal "published", selected_default.fetch("qualification")
       File.write(File.join(main, ".env"), "UNRELATED=$(touch #{File.join(main, 'forbidden')})\n")
-      assert_equal "legacy", resolver.resolve(root: main, env: {}).fetch("mode")
+      assert_equal selected_default, resolver.resolve(root: main, env: {})
       File.open(File.join(main, ".env"), "a") { |file| file.puts "ACT_IMPLEMENTATION='split' # opt in" }
       env = { "ACT_SPLIT_DEVELOPMENT_ROOT" => components }
       selected = resolver.resolve(root: main, env: env)
@@ -221,10 +226,16 @@ class BootstrapTest < Minitest::Test
       assert_equal selected, resolver.resolve(root: main, env: env)
       assert_equal "legacy", resolver.resolve(root: main, env: env.merge("ACT_IMPLEMENTATION" => "legacy")).fetch("mode")
       File.write(File.join(main, ".env"), "ACT_IMPLEMENTATION=legacy\n")
+      assert_equal "legacy", resolver.resolve(root: main, env: {}).fetch("mode")
       out, err, status = cli(main, components, "implementation", env: {
         "ACT_IMPLEMENTATION" => "split", "ACT_RESOLVED_COMPOSITION" => JSON.generate(selected) })
       assert status.success?, err
       assert_equal selected, JSON.parse(out)
+      inherited = { "ACT_RESOLVED_COMPOSITION" => JSON.generate(selected_default) }
+      File.unlink(File.join(main, ".env"))
+      assert_equal selected_default, resolver.resolve(root: main, env: inherited)
+      assert_raises(resolver::Refused) { resolver.resolve(root: main, env: inherited.merge(
+        "ACT_SPLIT_DEVELOPMENT_ROOT" => components)) }
       assert_raises(resolver::Refused) { resolver.resolve(root: main, env: env.merge(
         "ACT_IMPLEMENTATION" => "legacy", "ACT_RESOLVED_COMPOSITION" => JSON.generate(selected))) }
       refute File.exist?(File.join(main, "forbidden"))
@@ -247,12 +258,32 @@ class BootstrapTest < Minitest::Test
         assert_equal 2, status.exitstatus
         assert_includes err, "ACT_IMPLEMENTATION in .env"
       end
-      File.write(File.join(components, "act-tasks/.git/HEAD"), "0" * 40 + "\n")
-      _out, err, status = cli(main, components, "implementation")
+      File.unlink(File.join(main, ".env"))
+      published = { "ACT_IMPLEMENTATION" => nil, "ACT_SPLIT_DEVELOPMENT_ROOT" => nil,
+        "ACT_COMPONENT_ROOT" => components }
+      lock_path = File.join(main, "split-composition.json")
+      lock_bytes = File.binread(lock_path)
+      File.write(lock_path, "invalid JSON")
+      _out, err, status = cli(main, components, "implementation", env: published)
       assert_equal 2, status.exitstatus
-      assert_includes err, "revision differs from pinned"
+      assert_includes err, "required split composition unavailable"
+      File.binwrite(lock_path, lock_bytes)
+      head_path = File.join(components, "act-tasks/.git/HEAD")
+      head_bytes = File.binread(head_path)
+      { "0" * 40 => "revision differs from pinned", "invalid" => "unsupported package HEAD" }.each do |head, message|
+        File.write(head_path, head)
+        _out, err, status = cli(main, components, "implementation", env: published)
+        assert_equal 2, status.exitstatus
+        assert_includes err, message
+      end
+      File.binwrite(head_path, head_bytes)
+      source = File.join(components, "act-tasks/lib/act_tasks.rb")
+      File.open(source, "a") { |file| file.puts "# changed default dependency" }
+      _out, err, status = cli(main, components, "implementation", env: published)
+      assert_equal 2, status.exitstatus
+      assert_includes err, "source differs from pinned digest"
       FileUtils.rm_rf(components)
-      _out, err, status = cli(main, components, "implementation")
+      _out, err, status = cli(main, components, "implementation", env: published)
       assert_equal 2, status.exitstatus
       assert_includes err, "required split composition unavailable"
       out, err, status = cli(main, components, "implementation", env: { "ACT_IMPLEMENTATION" => "legacy" })
@@ -271,14 +302,20 @@ class BootstrapTest < Minitest::Test
       task = { "id" => "T1", "title" => "Bootstrap status", "repositories" => { "alpha" => { "access" => "write" } } }
       path = File.join(data, "tasks/T1.yml")
       File.write(path, YAML.dump(task))
-      %w[legacy split].each do |mode|
-        env = { "ACT_IMPLEMENTATION" => mode, "AGENT_CODING_TOOL_DATA_DIR" => data }
+      [nil, "legacy", "split"].each do |mode|
+        env = { "ACT_IMPLEMENTATION" => mode, "AGENT_CODING_TOOL_DATA_DIR" => data,
+          "ACT_SPLIT_DEVELOPMENT_ROOT" => nil, "ACT_COMPONENT_ROOT" => components }
+        implementation, err, status = cli(main, components, "implementation", env: env)
+        assert status.success?, err
+        composition = JSON.parse(implementation)
+        assert_equal mode || "split", composition.fetch("mode")
+        assert_equal "published", composition.fetch("qualification") unless mode == "legacy"
         out, err, status = cli(main, components, "status", "T1", env: env)
         assert status.success?, err
         assert_includes out, "T1"
         assert_includes out, "READY"
         calls = JSON.parse(err.lines.grep(/^TASK_SOURCE=/).fetch(0).delete_prefix("TASK_SOURCE="))
-        if mode == "split"
+        if mode != "legacy"
           assert_includes calls, { "method" => "load", "path" => File.join(components, "act-tasks/lib/act_tasks/task_store.rb") }
         else
           assert_empty calls

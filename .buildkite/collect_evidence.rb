@@ -20,6 +20,13 @@ raise "incomplete acceptance" unless report["accepted"] == true && report["compl
     %w[ordinary git_contract native_default native_integration] && report.fetch("stages").all? { |stage| stage["complete"] == true }
 raise "composition changed between probe and acceptance" unless report.fetch("implementation") == probe.fetch("composition") &&
   report.fetch("implementation").fetch("mode") == mode
+if mode == "split"
+  default_probe = JSON.parse(File.binread(File.join(directory, "default-implementation.json")))
+  raise "default selection differs from explicit split acceptance" unless default_probe.fetch("selection") == "default" &&
+    default_probe.fetch("composition") == probe.fetch("composition") &&
+    default_probe.fetch("executed_package_sources") == probe.fetch("executed_package_sources") &&
+    default_probe.fetch("composition").fetch("qualification") == "published"
+end
 lock_hash = Digest::SHA256.file(File.join(directory, "split-composition.json")).hexdigest
 raise "published lock changed" unless report.fetch("source_files").fetch("split-composition.json") == lock_hash
 puts "ACT CI #{mode} complete acceptance evidence: PASS; invocation=#{report.fetch('invocation')}; composition_sha256=#{lock_hash}"

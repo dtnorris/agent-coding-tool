@@ -65,11 +65,11 @@ module AgentCodingTool
     end
 
     # Returns a source-bound composition from explicit env, this checkout's .env
-    # or legacy default. Development roots are explicit and never publication
-    # evidence. Missing/mismatched packages and inherited composition drift raise
+    # or published split default. Development roots are explicit and never prove
+    # publication. Missing/mismatched packages and inherited composition drift raise
     # Refused before production loads; the caller publishes the resolved env.
     def self.resolve(root:, env:)
-      mode = env.key?("ACT_IMPLEMENTATION") ? env["ACT_IMPLEMENTATION"] : file_mode(root) || "legacy"
+      mode = env.key?("ACT_IMPLEMENTATION") ? env["ACT_IMPLEMENTATION"] : file_mode(root) || "split"
       raise Refused, "bootstrap: ACT_IMPLEMENTATION must be legacy or split" unless %w[legacy split].include?(mode)
 
       result = { "mode" => mode, "packages" => {} }

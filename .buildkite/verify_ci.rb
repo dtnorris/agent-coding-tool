@@ -68,44 +68,60 @@ class CIQualificationTest < Minitest::Test
   # as proof of publication or using any sibling developer checkout.
   def test_every_package_revision_and_digest_is_required
     components do |parent, lock|
-      env = { "ACT_IMPLEMENTATION" => "split", "ACT_COMPONENT_ROOT" => parent }
-      result = AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env)
-      assert_equal "published", result.fetch("qualification")
-      assert_equal lock.fetch("packages").keys.sort, result.fetch("packages").keys.sort
-      lock.fetch("packages").each do |name, pin|
-        package = File.join(parent, name)
-        head = File.join(package, ".git/HEAD")
-        File.write(head, "0" * 40)
-        assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
-        File.write(head, pin.fetch("revision"))
-        source = File.join(package, pin.fetch("files").keys.first)
-        bytes = File.binread(source)
-        File.binwrite(source, bytes + "\n# changed\n")
-        assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
-        File.binwrite(source, bytes)
-        extra = File.join(package, "lib/extra.rb")
-        File.write(extra, "# extra\n")
-        assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
-        File.unlink(extra)
-        FileUtils.mv(package, package + ".absent")
-        assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
-        FileUtils.mv(package + ".absent", package)
+      [nil, "split"].each do |mode|
+        env = { "ACT_COMPONENT_ROOT" => parent }
+        env["ACT_IMPLEMENTATION"] = mode if mode
+        result = AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env)
+        assert_equal "split", result.fetch("mode")
+        assert_equal "published", result.fetch("qualification")
+        assert_equal lock.fetch("packages").keys.sort, result.fetch("packages").keys.sort
+        lock.fetch("packages").each do |name, pin|
+          package = File.join(parent, name)
+          head = File.join(package, ".git/HEAD")
+          File.write(head, "0" * 40)
+          assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
+          File.write(head, "invalid revision")
+          assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
+          File.write(head, pin.fetch("revision"))
+          source = File.join(package, pin.fetch("files").keys.first)
+          bytes = File.binread(source)
+          File.binwrite(source, bytes + "\n# changed\n")
+          assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
+          File.binwrite(source, bytes)
+          extra = File.join(package, "lib/extra.rb")
+          File.write(extra, "# extra\n")
+          assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
+          File.unlink(extra)
+          FileUtils.mv(package, package + ".absent")
+          assert_raises(AgentCodingTool::Bootstrap::Refused) { AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env) }
+          FileUtils.mv(package + ".absent", package)
+        end
+        assert_equal result, AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env)
       end
-      assert_equal result, AgentCodingTool::Bootstrap.resolve(root: ROOT, env: env)
     end
   end
 
   # Runs the collector in-process against fresh declared reports, preserving
   # binary raw evidence even when status, completeness or identity refuses.
-  def collect_fixture(status: "0", accepted: true, complete: true, drift: false, qualification: false)
+  def collect_fixture(status: "0", accepted: true, complete: true, drift: false, qualification: false,
+                      mode: "legacy", default_probe: :valid)
     Dir.mktmpdir do |directory|
       evidence = File.join(directory, "artifacts")
       feedback = File.join(directory, "feedback")
       FileUtils.mkdir_p([evidence, feedback])
-      composition = { "mode" => "legacy", "packages" => {} }
+      composition = { "mode" => mode, "packages" => {} }
+      composition["qualification"] = "published" if mode == "split"
       lock = File.binread(File.join(ROOT, "split-composition.json"))
       File.binwrite(File.join(evidence, "split-composition.json"), lock)
-      File.binwrite(File.join(evidence, "implementation.json"), JSON.generate("composition" => composition))
+      probe = { "composition" => composition, "executed_package_sources" => ["tasks", "capture"] }
+      File.binwrite(File.join(evidence, "implementation.json"), JSON.generate(probe))
+      if mode == "split" && default_probe != :missing
+        default = probe.merge("selection" => "default")
+        default["selection"] = "split" if default_probe == :explicit
+        default["composition"] = { "mode" => "legacy" } if default_probe == :drift
+        default["executed_package_sources"] = [] if default_probe == :bypassed
+        File.binwrite(File.join(evidence, "default-implementation.json"), JSON.generate(default))
+      end
       File.binwrite(File.join(evidence, "acceptance.log"), "ACT feedback evidence: #{feedback}\n\x00\xff".b)
       File.binwrite(File.join(feedback, "raw"), "\x00\xff\x80".b)
       report = { "accepted" => accepted, "complete_offline_gate" => complete, "qualification" => qualification,
@@ -114,7 +130,7 @@ class CIQualificationTest < Minitest::Test
         "stages" => %w[ordinary git_contract native_default native_integration].map { |layer| { "layer" => layer, "complete" => true } } }
       File.write(File.join(feedback, "report.json"), JSON.generate(report))
       original_argv = ARGV.dup
-      ARGV.replace([evidence, "legacy", status])
+      ARGV.replace([evidence, mode, status])
       begin
         capture_io { load File.join(__dir__, "collect_evidence.rb") }
       ensure
@@ -129,6 +145,11 @@ class CIQualificationTest < Minitest::Test
   # accepted report; development qualification and composition drift fail.
   def test_collector_rejects_false_acceptance_and_preserves_failures
     collect_fixture
+    collect_fixture(mode: "split")
+    assert_raises(Errno::ENOENT) { collect_fixture(mode: "split", default_probe: :missing) }
+    %i[explicit drift bypassed].each do |invalid|
+      assert_raises(RuntimeError) { collect_fixture(mode: "split", default_probe: invalid) }
+    end
     [{ status: "7" }, { accepted: false }, { complete: false }, { drift: true }, { qualification: true }].each do |invalid|
       assert_raises(RuntimeError) { collect_fixture(**invalid) }
     end

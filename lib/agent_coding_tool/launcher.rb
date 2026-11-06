@@ -7,6 +7,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "shellwords"
+require_relative "manager_session"
 
 module AgentCodingTool
   # Execution evidence is deliberately separate from canonical lifecycle state.
@@ -406,6 +407,10 @@ module AgentCodingTool
     # external namespace. Unknown/foreign/malformed managed entries still refuse.
     def reports
       entries = IncidentalMetadata.children(@run_root).reject { |entry| entry == "launch.lock" }
+      if entries.include?(ManagerSession::NAMESPACE)
+        ManagerSession.validate_namespace!(@run_root)
+        entries.delete(ManagerSession::NAMESPACE)
+      end
       if entries.include?(ExternalActivity::NAMESPACE)
         external_activity.records
         entries.delete(ExternalActivity::NAMESPACE)

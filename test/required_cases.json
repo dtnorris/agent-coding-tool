@@ -176,6 +176,7 @@
       "FamilyStatusTest#test_batch39_exception_adds_no_status_probes"
     ],
     "test/launcher_test.rb": [
+      "LauncherTest#test_fake_worker_preload_receives_frozen_same_source_bootstrap",
       "LauncherTest#test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout",
       "LauncherTest#test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory",
       "LauncherTest#test_unavailable_coding_skill_refuses_launch_before_reservation_or_handoff",
@@ -414,6 +415,7 @@
       "TunnelCredentialTest#test_preserved_opaque_reason_and_safe_replacement"
     ],
     "test/evidence_tunnel_test.rb": [
+      "EvidenceTunnelTest#test_adapter_command_preserves_frozen_bootstrap_without_credentials",
       "EvidenceTunnelTest#test_owner_retries_transient_ledger_contention",
       "EvidenceTunnelTest#test_owner_bounds_sustained_initial_contention",
       "EvidenceTunnelTest#test_owner_retries_contention_while_ready",
@@ -478,6 +480,7 @@
       "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation"
     ],
     "test/bootstrap_test.rb": [
+      "BootstrapTest#test_frozen_child_environment_revalidates_its_source",
       "BootstrapTest#test_mode_resolution_and_inherited_composition",
       "BootstrapTest#test_invalid_modes_and_package_refusals",
       "BootstrapTest#test_public_status_delegation_and_compatible_refusals",
@@ -686,6 +689,7 @@
       "ExternalActivityTest#test_same_task_report_and_manual_start_races"
     ],
     "test/launcher_test.rb": [
+      "LauncherTest#test_fake_worker_preload_receives_frozen_same_source_bootstrap",
       "LauncherTest#test_launch_binds_pushed_base_independent_of_dirty_divergent_ordinary_checkout",
       "LauncherTest#test_prepared_prompt_is_consumed_without_reprepare_and_recommendation_is_advisory",
       "LauncherTest#test_unavailable_coding_skill_refuses_launch_before_reservation_or_handoff",
@@ -773,6 +777,7 @@
       "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
     ],
     "test/bootstrap_test.rb": [
+      "BootstrapTest#test_frozen_child_environment_revalidates_its_source",
       "BootstrapTest#test_mode_resolution_and_inherited_composition",
       "BootstrapTest#test_invalid_modes_and_package_refusals",
       "BootstrapTest#test_public_status_delegation_and_compatible_refusals",

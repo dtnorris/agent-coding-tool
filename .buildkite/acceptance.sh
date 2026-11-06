@@ -40,6 +40,15 @@ env -u ACT_RESOLVED_COMPOSITION -u ACT_SPLIT_DEVELOPMENT_ROOT \
   ruby -r "$root/test/support/no_git_execution.rb" -rbundler/setup \
   .buildkite/verify_implementation.rb "$mode" > "$artifacts/implementation.json"
 cat "$artifacts/implementation.json"
+if test "$mode" = split; then
+  # A fresh, bounded default probe uses the same provisioned published pins.
+  # No inherited selection or .env mode may stand in for the actual default.
+  env -u ACT_IMPLEMENTATION -u ACT_RESOLVED_COMPOSITION -u ACT_SPLIT_DEVELOPMENT_ROOT \
+    ruby -r "$root/test/support/no_git_execution.rb" -rbundler/setup \
+    .buildkite/verify_implementation.rb default > "$artifacts/default-implementation.json"
+  cat "$artifacts/default-implementation.json"
+  echo "ACT CI default published-split selection: PASS"
+fi
 set +e
 env -u ACT_RESOLVED_COMPOSITION -u ACT_SPLIT_DEVELOPMENT_ROOT \
   PATH="$root/test/support/bin:$PATH" \

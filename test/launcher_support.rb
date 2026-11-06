@@ -87,6 +87,9 @@ module LauncherSupport
     pipes = options.select { |key, _value| [:in, :out, :err].include?(key) }
     settings = options.reject { |key, _value| pipes.key?(key) }
     forwarded = environment.dup
+    # Only this reviewed fake worker preloads ACT from our source checkout.
+    # Codex itself may start a different checkout and keeps worker_env's isolation.
+    forwarded.merge!(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT)
     forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
     forwarded['ACT_TEST_CODING_SKILL'] = ENV['ACT_TEST_CODING_SKILL'] if @memory_broker || ENV['ACT_TEST_MEMORY_ENDPOINT']
     approval = ChildProcesses.permit('launcher_worker', arguments: command, environment: forwarded,

@@ -65,11 +65,11 @@ module AgentCodingTool
     end
 
     # Returns a source-bound composition from explicit env, this checkout's .env
-    # or legacy default. Development roots are explicit and never publication
-    # evidence. Missing/mismatched packages and inherited composition drift raise
+    # or published split default. Development roots are explicit and never prove
+    # publication. Missing/mismatched packages and inherited composition drift raise
     # Refused before production loads; the caller publishes the resolved env.
     def self.resolve(root:, env:)
-      mode = env.key?("ACT_IMPLEMENTATION") ? env["ACT_IMPLEMENTATION"] : file_mode(root) || "legacy"
+      mode = env.key?("ACT_IMPLEMENTATION") ? env["ACT_IMPLEMENTATION"] : file_mode(root) || "split"
       raise Refused, "bootstrap: ACT_IMPLEMENTATION must be legacy or split" unless %w[legacy split].include?(mode)
 
       result = { "mode" => mode, "packages" => {} }
@@ -118,7 +118,24 @@ module AgentCodingTool
       value.freeze
     end
 
+    # Snapshots only bootstrap inputs for descendants loading this same source
+    # checkout. Takes an already validated composition and its original resolver
+    # inputs; returns frozen settings, with relative component parents made
+    # absolute before a child changes cwd. Descendants still validate every pin
+    # and digest against their own lock; this is not a cross-checkout override.
+    def self.child_environment(root:, env:, composition:)
+      settings = { "ACT_IMPLEMENTATION" => composition.fetch("mode"),
+        "ACT_RESOLVED_COMPOSITION" => JSON.generate(composition),
+        "ACT_COMPONENT_ROOT" => nil, "ACT_SPLIT_DEVELOPMENT_ROOT" => nil }
+      if composition.fetch("mode") == "split"
+        key = env["ACT_SPLIT_DEVELOPMENT_ROOT"] ? "ACT_SPLIT_DEVELOPMENT_ROOT" : "ACT_COMPONENT_ROOT"
+        settings[key] = env[key] ? File.expand_path(env.fetch(key)) : File.expand_path("../agent-coding-tool-components", root)
+      end
+      immutable(settings)
+    end
+
     COMPOSITION = resolve(root: ROOT, env: ENV)
+    CHILD_ENVIRONMENT = child_environment(root: ROOT, env: ENV, composition: COMPOSITION)
     ENV["ACT_IMPLEMENTATION"] = COMPOSITION.fetch("mode")
     ENV["ACT_RESOLVED_COMPOSITION"] = JSON.generate(COMPOSITION)
   end

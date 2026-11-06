@@ -10,7 +10,7 @@ require 'shellwords'
 module TunnelProcesses
   ROOT = File.realpath(File.join(__dir__, '../..')).freeze
   SOURCE = File.join(ROOT, 'lib/agent_coding_tool/evidence_tunnel.rb').freeze
-  SOURCE_HASH = '480d21cf38f84222c473b287c7eb75f8560c0ecfb2f39494cb86a6c4a045cab2'
+  SOURCE_HASH = '4765689950eecec8a50e3cf09e5aeb0954e8f0639aa703e97afeb3a7caf5b9e8'
   CLIENT = File.join(__dir__, 'fixtures/tunnel_client.rb').freeze
   CLIENT_HASH = '42643463e393d10f17c24c6adbb53c6f6a55d443edbf3652e1c3f11b813d8a69'
   ENTRY = File.join(ROOT, 'bin/agent-coding-tool').freeze
@@ -39,7 +39,8 @@ module TunnelProcesses
         NoGitExecution.refuse!('native serve child') unless tail.length == 5 &&
           tail.take(4) == [ENTRY, 'evidence', 'serve', '--session'] &&
           adapter.options == { unsetenv_others: true } &&
-          (adapter.environment.keys - %w[PATH HOME TMPDIR LANG RUBYOPT ACT_COVERAGE_CONTEXT ACT_EXECUTION_AUDIT]).empty?
+          (adapter.environment.keys - %w[PATH HOME TMPDIR LANG RUBYOPT ACT_COVERAGE_CONTEXT ACT_EXECUTION_AUDIT
+            ACT_IMPLEMENTATION ACT_RESOLVED_COMPOSITION ACT_COMPONENT_ROOT ACT_SPLIT_DEVELOPMENT_ROOT]).empty?
         NoGitExecution.refuse!('native client site') unless line == TunnelProcesses.site(CLIENT, CLIENT_HASH, 'TunnelProcesses.adapter(config_path:')
       end
       super(script: NoGitExecution::GUARD, sha256: Digest::SHA256.file(NoGitExecution::GUARD).hexdigest,
@@ -145,6 +146,10 @@ module TunnelProcesses
       environment['ACT_EXECUTION_AUDIT'] = ENV['ACT_EXECUTION_AUDIT'] if ENV['ACT_EXECUTION_AUDIT']
       environment['ACT_TEST_TUNNEL_SUPPORT'] = File.realpath(__FILE__)
       environment['ACT_TEST_TUNNEL_CONFIG_SHA256'] = Digest::SHA256.file(File.join(session, 'tunnel.json')).hexdigest
+      # Test-only handoff for validating the configured adapter in the private
+      # client, which deliberately receives no production bootstrap settings.
+      environment['ACT_TEST_TUNNEL_ADAPTER_ENVIRONMENT'] = JSON.generate(
+        AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT.compact)
       # Open file streams are the only permitted additions to the Ruby envelope.
       permit = NoGitExecution::Permit.new(script: client, sha256: CLIENT_HASH,
         arguments: ['run', '--config', File.join(session, 'tunnel.json')], preloads: TunnelProcesses.preloads,
@@ -166,6 +171,10 @@ module TunnelProcesses
       config_path == File.join(session, 'tunnel.json') && File.stat(config_path).uid == Process.uid &&
       (File.stat(config_path).mode & 0o077).zero?
     environment = %w[PATH HOME TMPDIR LANG].to_h { |key| [key, ENV[key]] }.compact
+    bootstrap = JSON.parse(ENV.fetch('ACT_TEST_TUNNEL_ADAPTER_ENVIRONMENT'))
+    NoGitExecution.refuse!('adapter bootstrap keys') unless
+      (bootstrap.keys - %w[ACT_IMPLEMENTATION ACT_RESOLVED_COMPOSITION ACT_COMPONENT_ROOT ACT_SPLIT_DEVELOPMENT_ROOT]).empty?
+    environment.merge!(bootstrap)
     expected = ['/usr/bin/env', '-i', *environment.map { |key, value| "#{key}=#{value}" }, RbConfig.ruby, ENTRY, 'evidence', 'serve', '--session', session]
     NoGitExecution.refuse!('configured command') unless command == expected &&
       Digest::SHA256.file(config_path).hexdigest == ENV.fetch('ACT_TEST_TUNNEL_CONFIG_SHA256') &&

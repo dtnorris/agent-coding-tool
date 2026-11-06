@@ -35,6 +35,8 @@ module RetryProcesses
     pipes = options.select { |key, _value| %i[in out err].include?(key) }
     settings = options.reject { |key, _value| pipes.key?(key) }
     forwarded = environment.merge('ACT_RETRY_ROOT' => root)
+    # This reviewed child's shared-world preload loads our ACT checkout.
+    forwarded.merge!(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT)
     forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
     approval = ChildProcesses.permit('retry_worker', arguments: argv, environment: forwarded, options: settings)
     NoGitExecution.with_permit(approval) { Process.spawn(approval.environment, *approval.argv, **approval.options, **pipes) }
@@ -50,6 +52,7 @@ module RetryProcesses
       end
       return super unless root && argv.first == File.join(ChildProcesses::FIXTURES, 'retry_worker.rb')
       forwarded = env.merge('ACT_RETRY_ROOT' => root)
+      forwarded.merge!(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT)
       forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
       approval = ChildProcesses.permit('retry_worker', arguments: argv.drop(1), environment: forwarded,
         options: options.reject { |key, _value| key == :binmode }.merge(cwd ? { chdir: cwd } : {}))
@@ -67,6 +70,7 @@ module RetryProcesses
           return RetryProcesses.preflight(environment, arguments, options)
         end
         forwarded = environment.merge('ACT_RETRY_ROOT' => ENV.fetch('ACT_RETRY_ROOT'))
+        forwarded.merge!(AgentCodingTool::Bootstrap::CHILD_ENVIRONMENT)
         forwarded['ACT_COVERAGE_CONTEXT'] = ENV['ACT_COVERAGE_CONTEXT'] if ENV['ACT_COVERAGE_CONTEXT']
         approval = ChildProcesses.permit('retry_worker', arguments: arguments, environment: forwarded, options: options)
         return NoGitExecution.with_permit(approval) { super(approval.environment, *approval.argv, **approval.options) }

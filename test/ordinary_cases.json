@@ -320,6 +320,7 @@
     "TunnelCredentialTest#test_preserved_opaque_reason_and_safe_replacement": []
   },
   "test/evidence_tunnel_test.rb": {
+    "EvidenceTunnelTest#test_adapter_command_preserves_frozen_bootstrap_without_credentials": [],
     "EvidenceTunnelTest#test_owner_retries_transient_ledger_contention": [],
     "EvidenceTunnelTest#test_owner_bounds_sustained_initial_contention": [],
     "EvidenceTunnelTest#test_owner_retries_contention_while_ready": [],

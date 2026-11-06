@@ -18,11 +18,12 @@ Human review and integration remain required. The explicit `publish`
 command commits and pushes selected changes in the configured private data
 checkout only.
 
-## Optional package composition
+## Published split default and legacy rollback
 
-Legacy remains the default. Before production requires, the library and public
-entrypoint share one `ACT_IMPLEMENTATION=legacy|split` resolver: an explicit
-environment value wins over this ACT checkout's single allowlisted `.env` entry.
+Published split is the default when no implementation is selected. Before
+production requires, the library and public entrypoint share one
+`ACT_IMPLEMENTATION=legacy|split` resolver: an explicit environment value wins
+over this ACT checkout's single allowlisted `.env` entry, then the split default.
 The file is data: no interpolation, shell evaluation, unrelated environment
 loading or dependency `.env` discovery occurs. Invalid modes refuse startup.
 
@@ -34,13 +35,49 @@ The default component parent is `../agent-coding-tool-components` relative to
 this checkout; `ACT_COMPONENT_ROOT` explicitly selects another published root.
 Legacy needs no component checkout or optional Bundler resolution.
 
+Provision dependencies explicitly before starting an installation that uses split.
+From the intended ACT source checkout, use the existing pinned provisioning tool
+with a **new, nonexistent** component parent (its containing directory must exist):
+
+```sh
+BUNDLE_FROZEN=true bundle install
+ACT_COMPONENT_ROOT="$PWD/../agent-coding-tool-components" ACT_IMPLEMENTATION=split \
+  env -u ACT_RESOLVED_COMPOSITION -u ACT_SPLIT_DEVELOPMENT_ROOT \
+  bundle exec ruby .buildkite/prepare_components.rb "$PWD/../agent-coding-tool-components"
+env -u ACT_IMPLEMENTATION -u ACT_RESOLVED_COMPOSITION -u ACT_SPLIT_DEVELOPMENT_ROOT \
+  bundle exec ruby bin/agent-coding-tool implementation
+```
+
+The provisioner fetches only the exact published revisions in the composition,
+requires noninteractive access to the three remotes, refuses an existing parent,
+and verifies source digests before use. It is an explicit installation step,
+separate from ordinary startup and guarded testing. An alternate absolute
+`ACT_COMPONENT_ROOT` may be supplied to both provisioning and subsequent ACT
+commands. Preserve any existing component parent; choose a fresh path rather
+than overwriting it. An existing checkout `.env` selection remains effective;
+review it separately when authorizing installed adoption.
+
+For an independent legacy rollback invocation, even with components absent:
+
+```sh
+env -u ACT_RESOLVED_COMPOSITION ACT_IMPLEMENTATION=legacy \
+  bundle exec ruby bin/agent-coding-tool implementation
+```
+
+Use the same prefix with the intended ACT command in a new process. Clearing an
+inherited composition makes this a new selection; a running process and its
+existing descendants retain their frozen composition and reject mode changes.
+Explicit `ACT_IMPLEMENTATION=split` remains supported and validates identically
+to the default.
+
 The task pin selects the merged TaskStore implementation at
 `44968fc303668c8fd0483f3c2500ee83bdc1247b`, with all four production Ruby
 sources verified before loading. Published split mode uses `ACT_COMPONENT_ROOT`
 or the default component parent. `ACT_SPLIT_DEVELOPMENT_ROOT` remains an explicit
 development qualifier and cannot establish installed published acceptance.
 Removing a package, changing its revision or modifying pinned source refuses
-split startup. Legacy remains the default until explicitly selected otherwise.
+split startup, including when selected by default. Ordinary startup never
+fetches or installs dependencies.
 
 The repository-owned [Buildkite pipeline](.buildkite/pipeline.yml) runs separate
 complete legacy and published-split acceptance jobs against the same ACT commit.
@@ -48,9 +85,12 @@ Evidence remains on the executing agent; no Buildkite artifacts are uploaded.
 Each job runs the unchanged `bundle exec rake test:all` with fresh evidence;
 split provisions and verifies every published composition pin before guarded
 testing. See [operator setup and acceptance evidence](.buildkite/OPERATOR.txt)
-for the exact hosted bootstrap, rollout constraint and review/commit commands.
-Both complete CI passes are prerequisites for a separate reviewed default change;
-they do not establish installed adoption. Legacy remains the default here.
+for the hosted route fragment, remaining routing prerequisite and review/commit commands.
+The split job also runs a separate 30-second probe with `ACT_IMPLEMENTATION`
+and `ACT_RESOLVED_COMPOSITION` unset, requiring published TaskStore and gate
+capture calls and the same composition as full split acceptance. It adds no
+third full suite. Both complete CI passes on the candidate are required; they
+do not establish installed adoption or change any installed `.env`.
 
 Gate capture binds the accepted AB-OB-01B package at published revision
 `dd2258b7202a44dca1b2fe19a6c0a0d5408f5504`, with exact source digests in the

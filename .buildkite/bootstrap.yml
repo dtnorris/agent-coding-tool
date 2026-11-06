@@ -1,4 +1,5 @@
-# Operator-owned hosted configuration; this file is not uploaded recursively.
+# Hosted two-mode route fragment; retain the existing fallback step separately.
+# See OPERATOR.txt before editing hosted settings. Never upload this recursively.
 env:
   BUNDLE_FROZEN: "true"
   ACT_TEST_POLICY: /opt/homebrew/etc/buildkite-agent/act-feedback-policy.json
@@ -6,6 +7,7 @@ env:
 
 steps:
   - label: ":pipeline: Upload ACT acceptance pipeline"
+    if: build.branch == "main" || build.branch == "ci/full-split-qualification" || build.branch == "feat/split-default"
     agents:
       queue: act-macos
     command: buildkite-agent pipeline upload .buildkite/pipeline.yml

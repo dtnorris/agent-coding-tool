@@ -487,6 +487,27 @@
       "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias",
       "BootstrapTest#test_public_gate_capture_delegation_and_broken_handoffs",
       "BootstrapTest#test_observability_scaffold_refuses_adoption"
+    ],
+    "test/manager_session_test.rb": [
+      "ManagerSessionTest#test_continuous_public_entry_and_required_handoff_controls",
+      "ManagerSessionTest#test_identity_revision_digest_and_simultaneous_resume_refusals",
+      "ManagerSessionTest#test_malformed_missing_session_and_binary_output_hold_turn",
+      "ManagerAdapterTest#test_explicit_resume_and_unqualified_live_refusal",
+      "ManagerAdapterTest#test_output_limit_binary_status_and_malformed_streams",
+      "ManagerSessionTest#test_failed_gate_is_reviewed_without_overriding_host_verification",
+      "ManagerAdapterTest#test_foreign_manager_namespace_is_not_ignored",
+      "ManagerAdapterTest#test_host_recipe_refuses_unsafe_root_and_changed_pin_without_writes",
+      "ManagerSessionTest#test_native_executor_continuous_public_entry_and_removed_completion",
+      "ManagerAdapterTest#test_final_size_closed_fields_and_duplicate_decisions"
+    ],
+    "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
+      "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
+      "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",
+      "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",
+      "NativePilotExecutorTest#test_active_enclosing_expiry_worker_limit_and_declared_caps",
+      "NativePilotExecutorTest#test_controller_death_owned_teardown_and_concurrent_resume",
+      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse"
     ]
   },
   "integration": {
@@ -761,6 +782,22 @@
       "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias",
       "BootstrapTest#test_public_gate_capture_delegation_and_broken_handoffs",
       "BootstrapTest#test_observability_scaffold_refuses_adoption"
+    ],
+    "test/manager_session_test.rb": [
+      "ManagerSessionTest#test_continuous_public_entry_and_required_handoff_controls",
+      "ManagerSessionTest#test_identity_revision_digest_and_simultaneous_resume_refusals",
+      "ManagerSessionTest#test_malformed_missing_session_and_binary_output_hold_turn",
+      "ManagerSessionTest#test_failed_gate_is_reviewed_without_overriding_host_verification",
+      "ManagerSessionTest#test_native_executor_continuous_public_entry_and_removed_completion"
+    ],
+    "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
+      "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
+      "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",
+      "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",
+      "NativePilotExecutorTest#test_active_enclosing_expiry_worker_limit_and_declared_caps",
+      "NativePilotExecutorTest#test_controller_death_owned_teardown_and_concurrent_resume",
+      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse"
     ]
   }
 }

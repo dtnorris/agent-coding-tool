@@ -17,11 +17,11 @@ module AgentCodingTool
 
     # Binds private data and optional deterministic interruption/liveness seams.
     # Construction reads no evidence and creates nothing.
-    def initialize(data_root:, transport: NativeCommandTransport.new, liveness: RetryLiveness.new, fault: nil)
+    def initialize(data_root:, transport: NativeCommandTransport.new, liveness: RetryLiveness.new, fault: nil, task_store: nil, state_store: nil)
       @data = WorktreeManager.canonical_system_path(data_root)
       @runs, @archives = "#{@data}-runs", "#{@data}-resets"
-      @tasks = TaskStore.new(File.join(@data, "tasks"))
-      @states = StateStore.new(File.join(@data, "state"))
+      @tasks = task_store || TaskStore.new(File.join(@data, "tasks"))
+      @states = state_store || StateStore.new(File.join(@data, "state"))
       @transport, @liveness, @fault = transport, liveness, fault
       @archive = ResetArchive.new(transport: transport)
     end

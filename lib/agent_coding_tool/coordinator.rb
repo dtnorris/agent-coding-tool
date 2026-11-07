@@ -28,6 +28,29 @@ module AgentCodingTool
 
     def tasks = @task_store.all
 
+    # Returns a separate advisory coordinator for one status/next dispatch.
+    # First successful file/authority observations are reused only in this view;
+    # writers keep the original stores, locks and fresh admission checks.
+    def read_view
+      return self unless @task_store.respond_to?(:task_path)
+
+      view = clone
+      task_store = StatusReadView::Tasks.new(@task_store)
+      state_store = StatusReadView::States.new(@state_store)
+      inspector = @repo_inspector.respond_to?(:read_view) ? @repo_inspector.read_view : @repo_inspector
+      data_root = File.dirname(File.dirname(state_store.state_path("unused")))
+      view.instance_variable_set(:@task_store, task_store)
+      view.instance_variable_set(:@state_store, state_store)
+      view.instance_variable_set(:@repo_inspector, inspector)
+      if !@external_activity || @external_activity.is_a?(ExternalActivity)
+        view.instance_variable_set(:@external_activity, ExternalActivity.new(
+          data_root: data_root, task_store: task_store, state_store: state_store, repo_inspector: inspector))
+      end
+      view.instance_variable_set(:@reset_inspector, StatusReadView::Resets.new(@reset_inspector ||
+        TaskReset.new(data_root: data_root, transport: @transport, task_store: task_store, state_store: state_store)))
+      view
+    end
+
     # Returns the private observation seam using the existing task/state stores.
     # No paths are created by initialization or read-only status projection.
     def external_activity
@@ -117,8 +140,10 @@ module AgentCodingTool
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
       unless ids
         visible = filter_completed_tasks(selected_tasks, completion_filter)
-        selected_tasks = selected_tasks.select { |task| visible.include?(task) ||
-          external_snapshot.any? { |activity| activity["task_id"] == task["id"] } }
+        visible_objects = visible.to_h { |task| [task.object_id, true] }
+        external_ids = external_snapshot.to_h { |activity| [activity.fetch("task_id"), true] }
+        selected_tasks = selected_tasks.select { |task| visible_objects.key?(task.object_id) ||
+          external_ids.key?(task["id"]) }
       end
       selected_contexts = selected_tasks.map { |task| status_context(task) }
       overlaps_by_id = {}
@@ -186,6 +211,14 @@ module AgentCodingTool
       end.to_h
       authority_cache = {}
       external_snapshot = statuses.first&.fetch("external_reservations", []) || []
+      unlocked_by_dependency = Hash.new { |hash, id| hash[id] = [] }
+      all_tasks.each do |task|
+        state = @state_store.load(task.fetch("id"))
+        next if state.key?("icebox") || state["snapshot"] || state.dig("result", "outcome")
+
+        incomplete = incomplete_dependencies(task).uniq
+        unlocked_by_dependency[incomplete.first] << task if incomplete.length == 1
+      end
 
       statuses.filter_map do |status|
         next unless %w[READY CANDIDATE].include?(status.fetch("status"))
@@ -195,7 +228,7 @@ module AgentCodingTool
                                             .values
                                             .flatten(1)
                                             .uniq
-        unlocked = immediately_unlocked_tasks(id, all_tasks)
+        unlocked = unlocked_by_dependency.fetch(id, [])
         startable_authorities = unlocked.filter_map do |task|
           next unless external_activity.conflicts(task, @state_store.load(task.fetch("id")), snapshot: external_snapshot).empty?
           authorities = task_writable_authorities(task, authority_cache)
@@ -800,7 +833,8 @@ module AgentCodingTool
 
         [task.fetch("id"), completion_time(state), index]
       end
-      return selected_tasks.reject { |task| complete.any? { |id, _time, _index| id == task.fetch("id") } } if completion_filter == :active
+      complete_ids = complete.to_h { |id, _time, _index| [id, true] }
+      return selected_tasks.reject { |task| complete_ids.key?(task.fetch("id")) } if completion_filter == :active
 
       ranked = complete.select { |_id, time, _index| time }
       recent_ids = ranked.sort_by { |_id, time, index| [time, index] }
@@ -810,7 +844,7 @@ module AgentCodingTool
       visible_ids = recent_ids.merge(unranked_ids)
 
       selected_tasks.reject do |task|
-        complete.any? { |id, _time, _index| id == task.fetch("id") } &&
+        complete_ids.key?(task.fetch("id")) &&
           !visible_ids.key?(task.fetch("id"))
       end
     end
@@ -999,18 +1033,6 @@ module AgentCodingTool
           "state_path" => @state_store.state_path(id),
           "completion_snapshot" => state["completion_snapshot"]
         }
-      end
-    end
-
-    # Returns ordinary unstarted tasks whose final missing prerequisite is the
-    # supplied ID. Icebox grants no unlock opportunity; invalid state propagates.
-    def immediately_unlocked_tasks(completed_id, all_tasks)
-      all_tasks.select do |task|
-        state = @state_store.load(task.fetch("id"))
-        next false if state.key?("icebox") || state["snapshot"] || state.dig("result", "outcome")
-
-        incomplete = incomplete_dependencies(task)
-        !incomplete.empty? && incomplete.all? { |dependency| dependency == completed_id }
       end
     end
 

@@ -1023,6 +1023,13 @@ conflicting with each other or other fresh IN_FLIGHT/CANDIDATE writers under
 normal repository-authority rules. For a CANDIDATE, this models the state after
 the candidate is finished, so its own current write reservation is excluded.
 
+`status` and `next` reuse the first successful task, state, reset-history and
+effective repository-authority reads within that invocation. Files are observed
+individually, not as an atomic filesystem snapshot. A replacement after a read
+appears in the next invocation; failed reads still refuse. Writers retain their
+independent reads and admission checks. Exact pushed heads are checked afresh,
+deduplicated by remote URL/branch, with at most eight concurrent requests.
+
 One operator-approved exception promotes exactly `CL-WLO-01`, while READY,
 to the first existing READY CL position across `status`, `stat --fam CL`,
 `next` and `next --json`. Other families keep their positions; other CL tasks
@@ -2919,6 +2926,19 @@ gated complete/YAML checks, freshness, review and David's acceptance. It grants
 no real lifecycle transition, integration or publication authority.
 
 The test commands have distinct contracts:
+
+`python3 test/benchmark_status.py ROOT NEW_OUTPUT [N] [SAMPLES] [LATENCY]
+[COMPONENT_ROOT]` measures fresh production `status --full` processes on a
+sanitized deterministic registry (seed 41202611). Defaults are N=292, two warmups,
+20 samples per N/2N/5N/10N and seven distinct remote refs with 0.55-second waits.
+The sole modeled boundary is Git transport; local Git process cost and live
+network acceptance require separate host measurement. Supplying COMPONENT_ROOT
+uses the pinned split implementation; otherwise the diagnostic uses legacy.
+Raw stdout/stderr, source/data hashes, CPU time, read/probe counts, concurrency,
+every elapsed sample, median, nearest-rank p95 and maximum are retained. A
+nonzero command or failed performance/work budget fails the benchmark. Set
+`ACT_STAT_SCALES`, `ACT_STAT_WARMUPS` or `ACT_STAT_PROFILE=1` only for separately
+labeled diagnostics; these changed conditions do not establish acceptance.
 
 | Command | Required behavior |
 | --- | --- |

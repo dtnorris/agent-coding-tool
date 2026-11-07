@@ -489,7 +489,10 @@
       "BootstrapTest#test_revision_files_and_source_digest_refusal",
       "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias",
       "BootstrapTest#test_public_gate_capture_delegation_and_broken_handoffs",
-      "BootstrapTest#test_observability_scaffold_refuses_adoption"
+      "BootstrapTest#test_observability_scaffold_refuses_adoption",
+      "BootstrapTest#test_cross_mode_reservation_contention_and_release",
+      "BootstrapTest#test_reservation_identity_and_error_compatibility",
+      "BootstrapTest#test_lifecycle_scaffold_refuses_adoption"
     ],
     "test/manager_session_test.rb": [
       "ManagerSessionTest#test_continuous_public_entry_and_required_handoff_controls",
@@ -786,7 +789,10 @@
       "BootstrapTest#test_revision_files_and_source_digest_refusal",
       "BootstrapTest#test_canonical_fixture_roots_through_temporary_alias",
       "BootstrapTest#test_public_gate_capture_delegation_and_broken_handoffs",
-      "BootstrapTest#test_observability_scaffold_refuses_adoption"
+      "BootstrapTest#test_observability_scaffold_refuses_adoption",
+      "BootstrapTest#test_cross_mode_reservation_contention_and_release",
+      "BootstrapTest#test_reservation_identity_and_error_compatibility",
+      "BootstrapTest#test_lifecycle_scaffold_refuses_adoption"
     ],
     "test/manager_session_test.rb": [
       "ManagerSessionTest#test_continuous_public_entry_and_required_handoff_controls",

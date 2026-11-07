@@ -14,7 +14,7 @@ module ChildProcesses
     "native_pilot_process" => "b6b3d9149ec4177b067361441b6895f87562d107771e739aa4b7e36889e7fd38",
     "native_pilot_controller" => "171ca5b292e8f4f7e35d718cb02a1b28d6b4d96281cd925f70f35a01b4c772df",
     "manager_inference" => "fd1f325601c885e930dff62ebb8883f6b778bfbabfe0087e4115a65befedc0f2",
-    "bootstrap_cli" => "47a0ef4cd593068f31c3cc3c0608eedfecf071becdffc7d56a87a17440246d47",
+    "bootstrap_cli" => "9139cff2a98f0fb519d54ffe9bd0a402cede8cdc1c49420b2b9cd67d8509261a",
     "process_family" => "ac335450fd2d2acf30f9a3503a41878108c40784b362fbefc9aee5359f3aebec",
     "native_observer" => "42dc07d57751164e7180ccd17bfa7f5991f746828711d719723eba5c7c5c27a7",
     "feedback_worker" => "21dd58ac5596c110732afb351af9900f77ee02126e09da77d0d8d266d953cf89",

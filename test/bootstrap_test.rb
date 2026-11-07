@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require_relative "support/child_processes"
 require "pathname"
+require "timeout"
 
 # Qualifies the real bootstrap and public CLI on real task/package files. Native
 # Git is prohibited; detached fixture refs are declared source observations.
@@ -31,8 +32,29 @@ class BootstrapTest < Minitest::Test
     end
   end
 
-  # The public gate must invoke the package with real binary pipes and retain a
-  # failing child's status. This exempt fixture proves capture, not provenance.
+  # Correct hashes cannot make the old lifecycle scaffold a usable lock API.
+  # Split refuses before command execution; a fresh legacy process still starts.
+  def test_lifecycle_scaffold_refuses_adoption
+    with_composition do |main, components, lock|
+      package = File.join(components, "act-lifecycle")
+      File.unlink(File.join(package, "lib/act_lifecycle/reservation_lock.rb"))
+      entry = File.join(package, "lib/act_lifecycle.rb")
+      File.write(entry, File.read(entry).sub("require_relative \"act_lifecycle/reservation_lock\"\n", ""))
+      lock.fetch("packages").fetch("act-lifecycle")["files"] = Dir.glob("lib/**/*.rb", base: package).to_h do |path|
+        [path, Digest::SHA256.file(File.join(package, path)).hexdigest]
+      end
+      File.write(File.join(main, "split-composition.json"), JSON.generate(lock))
+      _out, err, status = cli(main, components, "implementation")
+      assert_equal 2, status.exitstatus
+      assert_includes err, "pinned act-lifecycle has no ReservationLock"
+      out, err, status = cli(main, components, "implementation", env: { "ACT_IMPLEMENTATION" => "legacy" })
+      assert status.success?, err
+      assert_equal "legacy", JSON.parse(out).fetch("mode")
+    end
+  end
+
+  # The public gate traverses all three packages with real locking/binary pipes
+  # and child status. This exempt fixture does not prove required provenance.
   def test_public_gate_capture_delegation_and_broken_handoffs
     with_composition do |main, components, _lock|
       data = File.join(main, "data")
@@ -50,7 +72,7 @@ class BootstrapTest < Minitest::Test
       File.write(state_path, YAML.dump(state))
       original_state = File.binread(state_path)
       env = { "AGENT_CODING_TOOL_DATA_DIR" => data,
-        "ACT_SPLIT_DEVELOPMENT_ROOT" => nil, "ACT_COMPONENT_ROOT" => components }
+        "ACT_IMPLEMENTATION" => nil, "ACT_SPLIT_DEVELOPMENT_ROOT" => nil, "ACT_COMPONENT_ROOT" => components }
       arguments = ["checkpoint", "gate", "T1", "--workspace", workspace, "--",
         RbConfig.ruby, File.join(ChildProcesses::FIXTURES, "checkpoint_validator.rb"), "share"]
       evidence = File.join("#{data}-runs", "checkpoints/T1/*/gate-*.finished.json")
@@ -63,6 +85,7 @@ class BootstrapTest < Minitest::Test
         assert_includes err, "validation command failed (7)" unless exit_code.zero?
         calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
         assert_equal [source], calls
+        assert_gate_packages(err, components)
       end
       receipts = Dir.glob(evidence).map { |path| JSON.parse(File.binread(path)) }
       assert_equal [0, 7], receipts.map { |receipt| receipt.dig("command_outcome", "exit_code") }.sort
@@ -83,6 +106,39 @@ class BootstrapTest < Minitest::Test
         end
       end
       assert_equal original_state, File.binread(state_path)
+      preserved_receipts = Dir.glob(evidence).to_h { |path| [path, File.binread(path)] }
+
+      # Inject a fault at each actual package call independently, preserving
+      # source bytes and coverage attribution. No failed handoff runs the child.
+      { "tasks" => "broken task handoff", "lifecycle" => "broken lifecycle handoff",
+        "observability" => "broken capture handoff" }.each do |name, message|
+        out, err, status = cli(main, components, *arguments, "0", env: env.merge("ACT_TEST_BROKEN_HANDOFF" => name))
+        refute status.success?
+        assert_includes err, message
+        refute_includes out.b, "out\x00\xff".b
+        _out, err, status = cli(main, components, *arguments, "0", env: env)
+        assert status.success?, err
+        assert_gate_packages(err, components)
+      end
+
+      # A real legacy holder blocks the default split gate before receipt or
+      # child effects. Release then admits the same public command and layout.
+      before = Dir.glob(evidence).size
+      with_reservation_holder(main, components, data, "legacy") do |identity, _input, _output|
+        lock = File.stat(File.join("#{data}-runs", "launch.lock"))
+        assert_equal identity, [lock.dev, lock.ino]
+        out, err, status = cli(main, components, *arguments, "0", env: env)
+        assert_equal 2, status.exitstatus
+        assert_includes err, "reservation lock: launch/recovery reservation busy; retry"
+        refute_includes out.b, "out\x00\xff".b
+        assert_equal before, Dir.glob(evidence).size
+        assert_empty package_calls(err, "CAPTURE")
+      end
+      _out, err, status = cli(main, components, *arguments, "0", env: env)
+      assert status.success?, err
+      assert_gate_packages(err, components)
+      assert_equal original_state, File.binread(state_path)
+      preserved_receipts.each { |path, bytes| assert_equal bytes, File.binread(path) }
 
       # Deliberately bypass the package with the retained legacy implementation.
       # Identical output must still fail the package-source journey assertion.
@@ -120,6 +176,127 @@ class BootstrapTest < Minitest::Test
       calls = JSON.parse(err.lines.grep(/^CAPTURE_SOURCE=/).fetch(0).delete_prefix("CAPTURE_SOURCE="))
       assert_equal [source], calls
       assert_equal original_state, File.binread(state_path)
+      preserved_receipts.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    end
+  end
+
+  # Returns one observer's real implementation paths; absent records fail loudly.
+  # Accepts raw stderr and the fixed observer name; malformed JSON propagates.
+  def package_calls(error, name)
+    JSON.parse(error.lines.grep(/^#{name}_SOURCE=/).fetch(0).split("=", 2).last)
+  end
+
+  # Requires actual TaskStore, ReservationLock (including borrowed validation),
+  # and GateCapture calls from the selected sources. Missing handoffs assert.
+  def assert_gate_packages(error, components)
+    assert_includes package_calls(error, "TASK"), { "method" => "load",
+      "path" => File.join(components, "act-tasks/lib/act_tasks/task_store.rb") }
+    assert_equal [File.join(components, "act-observability/lib/act_observability/gate_capture.rb")], package_calls(error, "CAPTURE")
+    locks = package_calls(error, "RESERVATION")
+    assert_operator locks.length, :>=, 2
+    assert_equal [File.join(components, "act-lifecycle/lib/act_lifecycle/reservation_lock.rb")], locks.uniq
+  end
+
+  # Holds one real child lock until the caller releases it through stdin. Both
+  # readiness and lifetime are bounded; real status/EOF/errors are never faked.
+  # Yields inode identity and pipes, then returns assertions; timeouts propagate.
+  def with_reservation_holder(main, components, data, mode)
+    ChildProcesses.popen("bootstrap_cli", arguments: [main, "reservation", data, "hold"],
+      environment: environment(components, mode)) do |input, output, error, waiter|
+      Timeout.timeout(5) do
+        ready = JSON.parse(output.gets)
+        assert_equal false, ready.fetch("borrowed")
+        assert_equal false, ready.fetch("closed")
+        yield ready.fetch("identity"), input, output
+        input.puts "release"
+        input.close
+        assert_equal "acquired", JSON.parse(output.gets).fetch("result")
+        assert waiter.value.success?, error.read
+      end
+    end
+  end
+
+  # Both fresh-process directions share the canonical inode and refuse before a
+  # mutator. Borrowed handles remain held/open; release permits fresh acquisition.
+  def test_cross_mode_reservation_contention_and_release
+    with_composition do |main, components, _lock|
+      data = File.join(main, "lock-data")
+      Dir.mkdir(data, 0o700)
+      effect = File.join(main, "effect")
+      %w[legacy split].each do |holder|
+        contender = holder == "legacy" ? "split" : "legacy"
+        identity = nil
+        with_reservation_holder(main, components, data, holder) do |actual, input, output|
+          identity = actual
+          input.puts "borrow"
+          assert_equal({ "result" => "borrowed", "closed" => false }, JSON.parse(output.gets))
+          out, _err, status = cli(main, components, "reservation", data, "acquire", effect,
+            env: { "ACT_IMPLEMENTATION" => contender })
+          assert_equal 75, status.exitstatus
+          record = JSON.parse(out)
+          assert_equal "AgentCodingTool::InvalidState", record.fetch("class")
+          assert_equal "reservation lock: launch/recovery reservation busy; retry", record.fetch("error")
+          contender == "split" ? assert_equal("ActLifecycle::InvalidState", record["cause"]) : assert_nil(record["cause"])
+          refute File.exist?(effect)
+        end
+        out, err, status = cli(main, components, "reservation", data, "acquire", effect,
+          env: { "ACT_IMPLEMENTATION" => contender })
+        assert status.success?, err
+        assert_equal identity, JSON.parse(out).fetch("identity")
+        assert_equal "mutated", File.binread(effect)
+        File.unlink(effect)
+      end
+    end
+  end
+
+  # Both modes preserve caller error classes on real unsafe files/IOs. A holder
+  # also refuses a replaced inode without closing its borrowed original handle.
+  def test_reservation_identity_and_error_compatibility
+    with_composition do |main, components, _lock|
+      data = File.join(main, "lock-data")
+      Dir.mkdir(data, 0o700)
+      runs = "#{data}-runs"
+      Dir.mkdir(runs, 0o700)
+      path = File.join(runs, "launch.lock")
+      other = File.join(main, "foreign-lock")
+      File.write(other, "foreign", perm: 0o600)
+      effect = File.join(main, "effect")
+      %w[legacy split].each do |mode|
+        File.write(path, "lock", perm: 0o600)
+        %w[malformed closed foreign public symlink hardlink].each do |fault|
+          File.chmod(0o640, path) if fault == "public"
+          if fault == "symlink"
+            File.unlink(path)
+            File.symlink(other, path)
+          end
+          File.link(path, File.join(main, "extra-link")) if fault == "hardlink"
+          action = %w[malformed closed foreign].include?(fault) ? fault : "acquire"
+          out, _err, status = cli(main, components, "reservation", data, action,
+            action == "acquire" ? effect : other, env: { "ACT_IMPLEMENTATION" => mode })
+          assert_equal 75, status.exitstatus
+          record = JSON.parse(out)
+          expected = { "malformed" => "NoMethodError", "closed" => "IOError" }.fetch(fault, "AgentCodingTool::InvalidState")
+          assert_equal expected, record.fetch("class")
+          if expected == "AgentCodingTool::InvalidState"
+            assert_equal "reservation: foreign/symlinked lock", record.fetch("error")
+            mode == "split" ? assert_equal("ActLifecycle::InvalidState", record["cause"]) : assert_nil(record["cause"])
+          end
+          refute File.exist?(effect)
+          File.unlink(path)
+          File.unlink(File.join(main, "extra-link")) if fault == "hardlink"
+          File.write(path, "lock", perm: 0o600)
+        end
+        with_reservation_holder(main, components, data, mode) do |_identity, input, output|
+          File.rename(path, path + ".old")
+          File.write(path, "replacement", perm: 0o600)
+          input.puts "borrow"
+          record = JSON.parse(output.gets)
+          assert_equal "AgentCodingTool::InvalidState", record.fetch("class")
+          assert_equal "reservation: foreign/symlinked lock", record.fetch("error")
+          assert_equal false, record.fetch("closed")
+        end
+        File.unlink(path + ".old")
+      end
     end
   end
 

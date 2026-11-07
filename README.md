@@ -1029,6 +1029,10 @@ individually, not as an atomic filesystem snapshot. A replacement after a read
 appears in the next invocation; failed reads still refuse. Writers retain their
 independent reads and admission checks. Exact pushed heads are checked afresh,
 deduplicated by remote URL/branch, with at most eight concurrent requests.
+If a Git head lookup fails, `status` shows affected tasks as FRESHNESS UNAVAILABLE
+and keeps other rows visible. The dashboard withholds NEXT and conditional
+unlock metrics until freshness is available. Malformed evidence still refuses;
+`next` and lifecycle admission retain their strict freshness checks.
 
 One operator-approved exception promotes exactly `CL-WLO-01`, while READY,
 to the first existing READY CL position across `status`, `stat --fam CL`,

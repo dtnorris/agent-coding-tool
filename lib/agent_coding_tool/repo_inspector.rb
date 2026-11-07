@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "command_transport"
+require_relative "errors"
 require "thread"
 
 module AgentCodingTool
@@ -22,6 +23,10 @@ module AgentCodingTool
   end
 
   class RepoInspector
+    # A pushed-head Git command exited unsuccessfully. Malformed evidence and
+    # transport exceptions retain their existing refusal types.
+    class PushedHeadUnavailable < RepositoryError; end
+
     # Seven representative refs fit in one latency wave; growth stays bounded.
     DEFAULT_REMOTE_CONCURRENCY = 8
 
@@ -76,6 +81,9 @@ module AgentCodingTool
       clone.tap { |view| view.instance_variable_set(:@authority_cache, {}) }
     end
 
+    # Returns exact heads keyed by [remote, branch]. An optional observer gets
+    # failed Git lookups in input order; without it the first error raises.
+    # Missing provenance, malformed output and transport errors always raise.
     def pushed_heads(references)
       targets = Array(references).each_with_object({}) do |reference, out|
         name = reference.fetch("name").to_s
@@ -120,8 +128,13 @@ module AgentCodingTool
       end
       workers.each(&:join)
 
-      first_error = targets.each_key.lazy.map { |key| errors[key] }.find(&:itself)
-      raise first_error if first_error
+      targets.each_key do |key|
+        error = errors[key]
+        next unless error
+        raise error unless block_given? && error.is_a?(PushedHeadUnavailable)
+
+        yield key, error
+      end
 
       results
     end
@@ -153,12 +166,12 @@ module AgentCodingTool
       stdout, stderr, success = @runner.capture(
         "git", "ls-remote", "--exit-code", remote_url, "refs/heads/#{branch}"
       )
-      parse_pushed_sha!(name, remote_url, branch, stdout, stderr, success)
+      parse_pushed_sha!(name, remote_url, branch, stdout, stderr, success, failure: PushedHeadUnavailable)
     end
 
-    def parse_pushed_sha!(name, remote, branch, stdout, stderr, success)
+    def parse_pushed_sha!(name, remote, branch, stdout, stderr, success, failure: RepositoryError)
       unless success
-        raise RepositoryError,
+        raise failure,
               "#{name}: cannot resolve pushed #{remote}/#{branch}: #{stderr.strip}"
       end
 

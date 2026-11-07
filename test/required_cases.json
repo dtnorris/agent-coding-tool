@@ -332,6 +332,7 @@
     ],
     "test/status_next_summary_test.rb": [
       "StatusNextSummaryTest#test_status_and_next_select_same_priority_preserving_parallel_set_without_extra_probes",
+      "StatusNextSummaryTest#test_status_keeps_healthy_rows_when_a_prepared_remote_is_unavailable",
       "StatusNextSummaryTest#test_prepared_task_gets_start_action_without_reprepare",
       "StatusNextSummaryTest#test_candidate_review_and_occupied_capacity_are_not_presented_as_completion",
       "StatusNextSummaryTest#test_running_writer_and_judgment_each_explain_no_available_start",

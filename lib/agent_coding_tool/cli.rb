@@ -782,25 +782,30 @@ module AgentCodingTool
       end
 
       statuses = if id
-                   coordinator.statuses([id])
+                   coordinator.statuses([id], report_unavailable: true)
                  else
-                   coordinator.statuses(completion_filter: options.fetch(:completion_filter))
+                   coordinator.statuses(completion_filter: options.fetch(:completion_filter), report_unavailable: true)
                  end
       broad_dashboard = id.nil?
       deferred = statuses.select { |item| item.fetch("status") == "ICEBOX" }
       compact_icebox = broad_dashboard && !options[:all] && !options.key?(:family) && !options[:icebox]
-      completion_metrics = {}
+      completion_metrics = nil
       next_id = nil
       family_summaries = {}
       if broad_dashboard
-        completion_metrics = completion_dashboard_metrics(statuses)
-        statuses = sort_statuses(statuses, completion_metrics)
-        if coordinator.respond_to?(:next_start_set)
+        freshness_known = statuses.none? { |item| item.fetch("status") == "FRESHNESS_UNAVAILABLE" }
+        completion_metrics = completion_dashboard_metrics(statuses) if freshness_known
+        ranking_metrics = completion_metrics || {}
+        statuses = sort_statuses(statuses, ranking_metrics)
+        if freshness_known && coordinator.respond_to?(:next_start_set)
           selection = coordinator.next_start_set(statuses, statuses)
           next_id = next_status_id(selection, statuses)
         end
         # Presentation subgroups must not change scheduling or global NEXT.
-        statuses = sort_statuses(statuses, completion_metrics, dashboard: true)
+        statuses = sort_statuses(statuses, ranking_metrics, dashboard: true)
+        unless freshness_known
+          puts_wrapped("NEXT withheld: repository freshness unavailable.", first_prefix: "", continuation_prefix: "  ")
+        end
         if options.key?(:family)
           statuses = statuses.select { |item| task_family(item.fetch("id")) == options[:family] }
         elsif !options[:all]
@@ -1319,6 +1324,10 @@ module AgentCodingTool
 
     def display_reason(item)
       reason = item.fetch("reason")
+      if item.fetch("status") == "FRESHNESS_UNAVAILABLE"
+        return normalize_minimal_text(reason.b.force_encoding(Encoding::UTF_8).scrub)
+      end
+
       if item.fetch("status") == "BLOCKED" && reason.start_with?(DEPENDENCY_REASON_PREFIX)
         "waiting on: #{reason.delete_prefix(DEPENDENCY_REASON_PREFIX)}"
       else
@@ -1338,6 +1347,7 @@ module AgentCodingTool
     # Eligibility consumers keep using status. Missing status raises KeyError.
     def human_status(item)
       status = item.fetch("status")
+      return "FRESHNESS UNAVAILABLE" if status == "FRESHNESS_UNAVAILABLE"
       return colorize_status(status) unless stale_in_flight?(item)
 
       label = "IN_FLIGHT (STALE)"
@@ -1469,7 +1479,7 @@ module AgentCodingTool
         return
       end
 
-      if %w[READY CANDIDATE].include?(status)
+      if completion_metrics && %w[READY CANDIDATE].include?(status)
         depth, count, unlock_count, parallel_width = completion_metrics.fetch(id, [0, 0, 0, 0])
         detail = "downstream: #{depth} #{pluralize(depth, 'level')} / #{count} #{pluralize(count, 'task')}; " \
                  "unlocks: #{unlock_count} #{pluralize(unlock_count, 'task')} / #{parallel_width} parallel"

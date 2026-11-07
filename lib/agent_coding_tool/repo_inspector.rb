@@ -22,7 +22,8 @@ module AgentCodingTool
   end
 
   class RepoInspector
-    DEFAULT_REMOTE_CONCURRENCY = 4
+    # Seven representative refs fit in one latency wave; growth stays bounded.
+    DEFAULT_REMOTE_CONCURRENCY = 8
 
     def initialize(config, runner: nil, transport: NativeCommandTransport.new, remote_concurrency: DEFAULT_REMOTE_CONCURRENCY)
       @config = config
@@ -57,12 +58,22 @@ module AgentCodingTool
 
     def repository_authority(name, spec)
       path = repository_path(name, spec)
-      ensure_repository!(name, path)
-
       remote = spec.fetch("remote", @config.default_remote)
       branch = spec.fetch("branch", @config.default_branch)
+      key = [path, remote, branch]
+      return @authority_cache.fetch(key) if @authority_cache&.key?(key)
+
+      ensure_repository!(name, path)
       remote_url = git!(name, path, "remote", "get-url", remote).strip
-      [remote_url, branch]
+      authority = [remote_url, branch]
+      @authority_cache[key] = authority if @authority_cache
+      authority
+    end
+
+    # Returns an invocation-local authority view. Pushed heads are deliberately
+    # never cached; native errors and the finite remote pool remain unchanged.
+    def read_view
+      clone.tap { |view| view.instance_variable_set(:@authority_cache, {}) }
     end
 
     def pushed_heads(references)

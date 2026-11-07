@@ -215,6 +215,27 @@ class RepoInspectorTest < Minitest::Test
     assert_equal 5, heads.length
     assert_equal 5, runner.command_count
     assert_operator runner.max_active, :<=, 2
+    resolution.join
+
+    # The production default fits seven refs in one wave, while a growing
+    # distinct-ref domain remains bounded. Duplicate inputs add no requests.
+    references = (1..17).map do |index|
+      { "name" => "T1/repo#{index}", "remote_url" => "git@github.com:example/repo#{index}.git", "branch" => "main" }
+    end
+    responses = references.to_h do |reference|
+      [[nil, ["git", "ls-remote", "--exit-code", reference.fetch("remote_url"), "refs/heads/main"]],
+       ["#{'1' * 40}\trefs/heads/main\n", "", true]]
+    end
+    runner = BlockingRunner.new(responses)
+    @runners << runner
+    inspector = AgentCodingTool::RepoInspector.new(config, runner: runner)
+    resolution = Thread.new { inspector.pushed_heads(references + references) }
+    runner.wait_until_active(8)
+    assert_equal 8, runner.max_active
+    runner.release
+    assert_equal 17, resolution.value.length
+    assert_equal 17, runner.command_count
+    assert_operator runner.max_active, :<=, 8
   ensure
     runner&.release
     resolution&.join(2)

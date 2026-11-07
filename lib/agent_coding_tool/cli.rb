@@ -111,6 +111,17 @@ module AgentCodingTool
 
     private
 
+    # Uses a separate advisory coordinator only until this dispatch returns or
+    # raises. Reusing a CLI instance never carries cached inputs into a writer
+    # or a later command. Test coordinators without a view retain their API.
+    def with_status_read_view
+      original = coordinator
+      @coordinator = original.respond_to?(:read_view) ? original.read_view : original
+      yield
+    ensure
+      @coordinator = original
+    end
+
     # Hosts a two-turn observation-only review through an ACT-installed runtime.
     # The runtime is a trusted embedding seam, never a CLI/model-issued grant.
     # Returns JSON or raises Error on malformed identities, evidence or missing
@@ -760,6 +771,12 @@ module AgentCodingTool
       unless argv.empty? && !(id && (options.key?(:family) || options[:icebox]))
         raise Error, "usage: agent-coding-tool status [TASK | --fam FAMILY] [--all | --active] [--icebox] [--min | --full]"
       end
+      with_status_read_view { render_status(id, options) }
+    end
+
+    # Renders a validated selector/presentation request from one advisory view.
+    # Returns output's result; missing families and invalid evidence still raise.
+    def render_status(id, options)
       if options.key?(:family) && !coordinator.tasks.any? { |task| task_family(task.fetch("id")) == options[:family] }
         raise Error, "unknown task family: #{options[:family]}"
       end
@@ -837,7 +854,7 @@ module AgentCodingTool
       json = argv == ["--json"]
       raise Error, "usage: agent-coding-tool next [--json]" unless argv.empty? || json
 
-      plan = next_plan
+      plan = with_status_read_view { next_plan }
       if json
         @out.puts JSON.generate(next_json_document(plan))
         return

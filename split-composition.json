@@ -2,18 +2,20 @@
   "packages": {
     "act-tasks": {
       "remote_url": "git@github.com:dtnorris/act-tasks.git",
-      "revision": "44968fc303668c8fd0483f3c2500ee83bdc1247b",
+      "revision": "bd9a86a03f9bafe325bfc21f3d8b983db1f81647",
       "files": {
         "lib/act_tasks/errors.rb": "b4417e0caf0d04d84ff4d29d652392ac78dc7ca5f795647c6bbbc8a42d2fd1a7",
         "lib/act_tasks/task_store.rb": "19fa0f8b59147266e7f424d34156a4a7cae49447b54222e58609d5fcd65cb391",
         "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b",
-        "lib/act_tasks.rb": "50fae1585054cd9d8a1a6175cec5fac4927e560292fe3b43eeaa003a1ffa359b"
+        "lib/act_tasks.rb": "925c5e99ffa3c9a213fd6caa25d2f2b2cf1c8173f755dd4ddf590f099ee994de",
+        "lib/act_tasks/completion_metrics.rb": "90cefbc8a6821e9724eb7e5337deeaa96b8c8a1141b8da5f5b937a6740b6fc6e"
       },
       "development_files": {
         "lib/act_tasks/errors.rb": "b4417e0caf0d04d84ff4d29d652392ac78dc7ca5f795647c6bbbc8a42d2fd1a7",
         "lib/act_tasks/task_store.rb": "19fa0f8b59147266e7f424d34156a4a7cae49447b54222e58609d5fcd65cb391",
         "lib/act_tasks/version.rb": "03c58097e16ac36cc6e944906e3c461b37221644e18ebd7b96242bf7f8ce098b",
-        "lib/act_tasks.rb": "50fae1585054cd9d8a1a6175cec5fac4927e560292fe3b43eeaa003a1ffa359b"
+        "lib/act_tasks.rb": "925c5e99ffa3c9a213fd6caa25d2f2b2cf1c8173f755dd4ddf590f099ee994de",
+        "lib/act_tasks/completion_metrics.rb": "90cefbc8a6821e9724eb7e5337deeaa96b8c8a1141b8da5f5b937a6740b6fc6e"
       }
     },
     "act-observability": {

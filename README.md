@@ -70,9 +70,9 @@ existing descendants retain their frozen composition and reject mode changes.
 Explicit `ACT_IMPLEMENTATION=split` remains supported and validates identically
 to the default.
 
-The task pin selects the merged TaskStore implementation at
-`44968fc303668c8fd0483f3c2500ee83bdc1247b`, with all four production Ruby
-sources verified before loading. Published split mode uses `ACT_COMPONENT_ROOT`
+The task pin selects the published `act-tasks` revision in
+`split-composition.json`, with every production Ruby source verified before
+loading. Published split mode uses `ACT_COMPONENT_ROOT`
 or the default component parent. `ACT_SPLIT_DEVELOPMENT_ROOT` remains an explicit
 development qualifier and cannot establish installed published acceptance.
 Removing a package, changing its revision or modifying pinned source refuses

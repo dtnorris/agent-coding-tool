@@ -27,10 +27,12 @@
     },
     "act-lifecycle": {
       "remote_url": "git@github.com:dtnorris/act-lifecycle.git",
-      "revision": "8e6265ddae3dcc51fd9a97c8f3126c5c06af8574",
+      "revision": "913cbcc337fb23fe577cb44628b37d3bdf0f290d",
       "files": {
-        "lib/act_lifecycle.rb": "782bceb651c5f9b54a47a3b3af9f1d52dfe3f3a68436105c0757096808ae76dd",
-        "lib/act_lifecycle/version.rb": "5f6a5617d03fdeafbce84fe51da7748e72f7326b6e31dac6e810bb0f88491841"
+        "lib/act_lifecycle/errors.rb": "8357c8aeb79f59781197a1b9aef52f0ac349070622f0f724e3df57a3fedbe7a3",
+        "lib/act_lifecycle/reservation_lock.rb": "36bfe4613a1d5d9843b1d63d1c4f3890f7f61cf9266bfa3424ce92f5d85ef6d7",
+        "lib/act_lifecycle/version.rb": "5f6a5617d03fdeafbce84fe51da7748e72f7326b6e31dac6e810bb0f88491841",
+        "lib/act_lifecycle.rb": "469ebb3b6211fb744a6723d4cdc34b0f9aa311e423e7892e2416f019db374397"
       }
     }
   }

@@ -5,7 +5,7 @@ require "digest"
 
 module AgentCodingTool
   # Resolves one process-wide implementation before production loads. The lock
-  # binds three exact source trees; only tasks supplies behavior in this seed.
+  # binds the task, capture and reservation implementations to exact source trees.
   module Bootstrap
     # Startup configuration or source identity could not be verified.
     class Refused < StandardError; end

@@ -1,6 +1,35 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require_relative "bootstrap"
+
+if AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "split"
+  require File.join(AgentCodingTool::Bootstrap::COMPOSITION.fetch("packages").fetch("act-lifecycle").fetch("root"), "lib/act_lifecycle")
+  unless defined?(ActLifecycle::ReservationLock)
+    raise AgentCodingTool::Bootstrap::Refused, "bootstrap: pinned act-lifecycle has no ReservationLock; check the published composition"
+  end
+  module AgentCodingTool
+    # Preserves main's error contract while the package owns the physical lock.
+    module ReservationLock
+      # Yields the package's owned or borrowed IO and returns the caller's value.
+      # Unsafe/busy locks become main InvalidState with the package error as cause;
+      # filesystem, IO and caller exceptions retain their original behavior.
+      def self.synchronize(data_root, held: nil)
+        caller_error = nil
+        ActLifecycle::ReservationLock.synchronize(data_root, held: held) do |lock|
+          yield lock
+        rescue ActLifecycle::InvalidState => error
+          caller_error = error
+          raise
+        end
+      rescue ActLifecycle::InvalidState => error
+        raise if error.equal?(caller_error)
+
+        raise InvalidState, error.message
+      end
+    end
+  end
+else
 
 module AgentCodingTool
   # Serializes scheduling and lifecycle writers with the existing launch lock.
@@ -57,4 +86,5 @@ module AgentCodingTool
     end
     private_class_method :validate!
   end
+end
 end

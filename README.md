@@ -28,7 +28,7 @@ The file is data: no interpolation, shell evaluation, unrelated environment
 loading or dependency `.env` discovery occurs. Invalid modes refuse startup.
 
 `split-composition.json` binds all three published component revisions and exact
-Ruby source hashes. Task loading/validation and bounded gate capture delegate; checkpoint
+Ruby source hashes. Task loading/validation, bounded gate capture and reservation locking delegate; checkpoint
 policy, ranking, scheduling, status and command authority stay in main. Split
 verifies every required package before loading production and never falls back.
 The default component parent is `../agent-coding-tool-components` relative to
@@ -103,6 +103,24 @@ The compatibility alias preserves the 4 MiB per-stream cap, binary output and ex
 command execution, checkpoint policy, receipt schemas and physical evidence
 paths remain main-owned. Capture persistence and console delivery retain separate
 outcomes from command status. Sharing, tunnels and recovery are not extracted.
+
+Reservation locking binds the accepted AB-LC-01B package at published revision
+`913cbcc337fb23fe577cb44628b37d3bdf0f290d`. The main facade translates
+`ActLifecycle::InvalidState` into `AgentCodingTool::InvalidState`, retaining its
+message and cause. Both implementations use the same canonical data-root plus
+`-runs/launch.lock` inode, private ownership/mode/link checks and nonblocking flock.
+Borrowed handles stay open and held; caller return values and IO errors propagate.
+StateStore, transitions, checkpoint provenance/history and retry/reset/cleanup
+remain in main. This lock seed and first composed proof do not complete the breakup.
+
+The existing bootstrap tests exercise a public checkpoint gate through all three
+packages, independent broken-handoff controls, real cross-process legacy/split
+contention and fresh-process rollback on the same disposable state/evidence layout.
+Their exempt task proves command bytes/status and persisted capture, not required
+checkpoint provenance or installed adoption. Main's complete `test:all`, YAML,
+coverage, source/case accounting and runtime gates remain required. Package default
+coverage and mapped floors remain package-owned. David owns host record/verify/gate,
+final acceptance, live writer exclusion/reconciliation, application and publication.
 
 `act implementation` prints the resolved mode, actual roots, checkout revisions
 and source digests, with development qualification marked explicitly. The frozen

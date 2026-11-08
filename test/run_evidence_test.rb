@@ -5,6 +5,7 @@ require_relative "support/child_processes"
 require_relative "support/memory_git/broker"
 require_relative "support/source_fixture"
 require_relative "support/checkpoint_processes"
+require_relative "support/zip_fixture"
 require "stringio"
 require "timeout"
 require "socket"
@@ -139,6 +140,7 @@ class RunEvidenceTest < Minitest::Test
 
   # Builds a complete closed read request bound to one manifest.
   def read_request(manifest, artifact = "final", offset: 0, length: 16_384)
+    artifact = manifest.dig("binding", "artifact") if manifest["evidence_source"] == "externally_supplied_zip"
     manifest.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader.identity_fields(manifest.fetch("binding"))).merge(
       "operation" => "read", "handle" => manifest.fetch("handle"), "revision" => manifest.fetch("revision"),
       "artifact" => artifact, "offset" => offset, "length" => length)
@@ -1628,6 +1630,98 @@ class RunEvidenceTest < Minitest::Test
         assert_equal 0, local_evidence("status", "--session", path)["decoded_bytes"]
       end
     end
+  end
+
+  # Cold public share CLI and the configured real adapter reconstruct an already
+  # created ZIP for a task with no managed run. Only the external tunnel client
+  # is fake. Both relative/spaced and absolute paths cross real process boundaries;
+  # a missing imported-byte handoff fails this same connector journey.
+  def test_native_imported_zip_continuous_public_journey
+    FileUtils.mkdir_p(File.join(@data, "tasks"))
+    File.write(File.join(@data, "tasks", "IMPORTED.yml"), YAML.dump("id" => "IMPORTED", "title" => "external evidence"))
+    members = { "review.txt" => "already completed\n", "binary.dat" => (0..255).to_a.pack("C*") * 80, "empty" => "".b }
+    original = ZipFixture.build(members)
+    source = File.join(@temporary, "completed result.zip")
+    File.binwrite(source, original)
+    digest = Digest::SHA256.file(source).hexdigest
+    client = tunnel_fixture
+    environment = { "AGENT_CODING_TOOL_DATA_DIR" => @data, "OPENAI_TUNNEL_KEY" => nil, "ACT_FIXTURE_TUNNEL_CLIENT" => client }
+    output, error, status = local_cli("share", "setup", "--env-file", @dotenv, "--client", client,
+      "--runtime-dir", @runtime, "--account", "fixture-account", "--workspace", "fixture-workspace",
+      "--endpoint", "tunnel_fixture/main", environment: environment)
+    assert_equal 0, status, error
+    old_manifest = nil
+    2.times do |iteration|
+      evidence_process("share", "tunnel", "--min", "30", environment: environment) do |input, ready, errors, waiter|
+        wire = nil
+        begin
+          assert IO.select([ready], nil, nil, 5), "startup missing"
+          assert_empty JSON.parse(ready.gets)["tasks"]
+          assert IO.select([ready], nil, nil, 5), "readiness missing"
+          assert_equal "ready", JSON.parse(ready.gets)["status"]
+          path = JSON.parse(File.binread("#{@data}-sharing/active.json")).fetch("session")
+          wire = Dir.chdir(path) { UNIXSocket.new("wire") }
+          exchange = lambda do |arguments, success: true|
+            wire.write(JSON.generate(rpc("tools/call", arguments)) + "\n")
+            wire.flush
+            assert IO.select([wire], nil, nil, 5), "connector response missing"
+            frame = wire.gets
+            assert frame, "adapter closed before response"
+            assert_operator frame.bytesize, :<=, AgentCodingTool::EvidenceAdapter::FRAME
+            result = JSON.parse(frame).fetch("result")
+            assert_equal !success, result.fetch("isError"), result.inspect
+            success ? JSON.parse(result.dig("content", 0, "text")) : result
+          end
+          assert_empty exchange.call({ "operation" => "discover" })["tasks"]
+          exchange.call(read_request(old_manifest, "bundle"), success: false) if old_manifest
+          evidence_process("share", "IMPORTED", iteration.zero? ? "./completed result.zip" : source,
+            environment: environment, cwd: @temporary) do |_cli_input, cli_output, cli_error, cli_waiter|
+            imported = JSON.parse(cli_output.read)
+            assert cli_waiter.value.success?, cli_error.read
+            assert_equal digest, imported.dig("import", "sha256")
+            assert_equal !iteration.zero?, imported.dig("import", "reused")
+          end
+          refute File.exist?(File.join("#{@data}-runs", "IMPORTED"))
+          discovered = exchange.call({ "operation" => "discover", "task_id" => "IMPORTED" }).dig("tasks", 0, "runs")
+          assert_equal 1, discovered.length
+          identity = { "task_id" => "IMPORTED", "artifact" => discovered.first.fetch("artifact_id") }
+          manifest = exchange.call(identity.merge("operation" => "select"))
+          assert_equal "externally_supplied_zip", manifest["evidence_source"]
+          refute_includes JSON.generate(manifest), @temporary
+          received, offset = "".b, 0
+          loop do
+            evidence = exchange.call(read_request(manifest, "bundle", offset: offset))
+            chunk = evidence.fetch("data").unpack1("m0")
+            assert_equal Digest::SHA256.hexdigest(chunk), evidence["chunk_sha256"]
+            received << chunk
+            break unless evidence["next_offset"]
+            offset = evidence["next_offset"]
+          end
+          assert_equal original, received
+          assert_equal digest, Digest::SHA256.hexdigest(received)
+          assert_equal members, ZipFixture.inspect_members(received)
+          retained = File.join("#{@data}-imports", identity["artifact"], "bundle")
+          File.rename(retained, "#{retained}.removed")
+          exchange.call(read_request(manifest, "bundle"), success: false)
+          File.rename("#{retained}.removed", retained)
+          old_manifest = manifest
+          _, revoke_error, revoke_status = local_cli("share", "revoke", "IMPORTED", environment: environment)
+          assert_equal 0, revoke_status, revoke_error
+          exchange.call(read_request(manifest, "bundle"), success: false)
+        ensure
+          original_failure = $!
+          _, stop_error, stop_status = local_cli("share", "stop", environment: environment)
+          assert_equal 0, stop_status, stop_error
+          wire&.close
+          input.close unless input.closed?
+          final_status = Timeout.timeout(5) { waiter.value }
+          diagnostics = errors.read
+          assert final_status.success?, diagnostics unless original_failure
+        end
+      end
+    end
+    assert_equal original, File.binread(source)
+    refute File.exist?(File.join(@data, "state", "IMPORTED.yml"))
   end
 
   # Composes local source consent with the actual configured adapter over the

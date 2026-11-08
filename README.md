@@ -2199,6 +2199,93 @@ be recalled**. A new tunnel has a fresh identity and starts with no task shares;
 explicitly re-share before retrieving durable artifacts again. A failed startup
 reservation can be closed with `act share stop` after its controller exits.
 
+To share an **already-created ZIP** for an existing task, use the same ready
+tunnel and pass exactly one local file in terminal two. No managed attempt,
+Codex session, capture receipt or task lifecycle transition is required:
+
+```sh
+act share TASK './completed results.zip'
+act share TASK '/absolute/path/completed results.zip' --min 30
+```
+
+Quote paths containing spaces; relative paths resolve against the invoking
+terminal's current directory. The explicit pathname authorizes only that ZIP's
+bytes for the existing whole-workspace task audience. The command validates a
+readable, owned, regular, single-link, nonsymlink file and copies it privately
+before publication. Symlink ancestors, hardlink aliases, source replacement or
+changes during admission refuse. ZIP envelope checks accept classic single-disk
+archives, including empty archives; ZIP64, split archives, prefixed archives and
+trailing bytes are unsupported. Member contents and CRCs are not validated on
+the server. ACT neither unpacks nor executes the ZIP, browses its entries nor
+promises to detect secrets inside the explicitly selected bundle.
+
+The local result reports the task, `artifact_id`, filename, size, SHA-256 and
+whether existing bytes were reused. This is **externally supplied evidence**,
+labelled `externally_supplied_zip`; it establishes no ACT-witnessed execution,
+worker outcome, verified result or checkpoint. Import/share changes no task,
+repository, acceptance or lifecycle state. Managed and captured follow-up
+evidence retain their separate provenance. Local source directories and paths
+are not stored in the import manifest, discovery, activity or remote responses.
+Only the selected basename is public. Refusals do not echo the local pathname.
+
+Imports are limited to **4 MiB per ZIP**, **64 immutable artifacts** and
+**64 MiB of retained ZIP bytes per data root**, plus bounded metadata and one
+staging copy within that allowance. These storage limits span tasks and tunnel
+sessions. Admission also requires room in the current nonrenewable tunnel
+budgets: ZIP size in decoded bytes, `2 * ZIP size + 128 KiB` of wire headroom and
+`ceil(ZIP size / 16 KiB) + 4` requests with one request left over. This is a
+conservative retrieval preflight, not reserved exclusive capacity; concurrent
+reads, retries, refusals and other evidence still consume the same budgets.
+Unsupported size, exhausted storage or insufficient headroom refuses before
+successful sharing. Reads remain at most 16 KiB, base64-encoded inside 64 KiB MCP
+frames; request and response encoding costs count toward cumulative wire usage.
+Regranting and reimporting reset none of these admission counters.
+
+Same-task identical bytes reuse the original immutable copy, identity and
+filename, even when imported from another filename. Changed bytes with the same
+filename receive another identity; earlier selections never advance. Subsequent
+source edits/deletion have no effect on retained bytes. Complete copies and
+task-bound manifests live under the owned 0700 private sibling
+`<data-directory>-imports`, outside source and ACTD Git content. Atomic directory
+publication hides incomplete copies. Failed writes preserve earlier shares; a
+retry under the writer lock removes only the known private `.pending` staging
+files. Unexpected recovery contents refuse for owner inspection. A failure
+after durable retention can leave a complete reusable copy without granting a
+new scope; retry the same command after inspecting `act share status`.
+
+Copies persist until the owner disposes of them; there is no expiry-based
+storage collector. Revocation/expiry stops access, not retention. Stop the
+tunnel and confirm its owner has exited before removing an exact imported
+artifact directory (or the whole imports root) to reclaim space. Removal makes
+its existing handles refuse; do not edit retained files/manifests or remove
+storage while an import/read is active. A new tunnel starts unshared regardless
+of retained copies. Explicitly sharing the task again grants its retained
+imports along with existing task evidence; it never restores old handles.
+
+The additive `read_run_evidence` adapter contract reuses the installed tool's
+`artifact` input for ZIP identity; it needs no new tool input schema and
+fabricates no attempt/invocation/session fields. Task-scoped
+`discover`/`refresh` returns imported entries in the existing paged `runs`
+inventory with their source label, filename, byte size and SHA-256. Select with
+`{"operation":"select","task_id":"TASK","artifact":"zip-HEX"}`.
+Use those two identities and the returned `handle`/`revision` for `manifest` or
+`read`; keep `artifact: "zip-HEX"`, set `offset: 0`, `length: 16384`, base64-decode
+`data`, and repeat from `next_offset` until null. Verify each `chunk_sha256`,
+the reconstructed byte count and whole `sha256` against the host's printed
+import result before inspection. Remote callers cannot submit a host path or
+change grants. Every released chunk rechecks task lease/generation and tunnel
+admission; missing or changed retained bytes refuse, including on old handles.
+
+Treat archive entries as untrusted on the receiving side. Prefer bounded
+in-memory inspection of specific members. Limit entry count, total and per-entry
+decompressed size and compression ratio; refuse absolute/traversal paths and
+links. If extraction is necessary, use a fresh disposable root and enforce
+containment before writing each member. Never execute retrieved content. A
+filename, discovery result or manifest alone does not establish successful
+retrieval. Actual Mac-to-manager acceptance requires the installed connector to
+reconstruct and inspect the approved real completed bundle, with host/retrieved
+size and digests recorded; offline adapter checks cannot establish that gate.
+
 To preserve one separately launched headless Codex CLI follow-up for the same
 task, run the explicit host capture command after sharing the task:
 

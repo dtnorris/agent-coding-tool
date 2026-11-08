@@ -19,7 +19,7 @@ module AgentCodingTool
     # Grants or revokes one registered task. Returns requested/effective expiry
     # and scope generation. Revocation invalidates all existing task handles;
     # delivered bytes cannot be recalled. Renewal of an active scope keeps handles.
-    def share_task(task, seconds:, revoke: false)
+    def share_task(task, seconds:, revoke: false, zip: nil)
       transaction(wait: 1) do |state|
         raise Refused, "share.not_ready" unless sharing?(state) && state["ready"] && reason(state) == "active"
         raise Refused, "share.minutes" unless seconds.is_a?(Integer) && seconds.between?(60, EvidenceSession::LIMITS.fetch("seconds"))
@@ -30,6 +30,17 @@ module AgentCodingTool
           RunEvidenceStore.task_context(state.dig("grant", "data_root"), task)
         end
         raise Refused, "share.task_limit" if !scopes.key?(task) && scopes.length >= 16
+        imported = if zip
+          raise Refused, "import.revoke" if revoke
+          ImportedEvidence.new(state.dig("grant", "data_root")).admit(task, zip) do |record|
+            chunks = (record.fetch("bytes") + RunEvidenceReader::MAX_CHUNK - 1) / RunEvidenceReader::MAX_CHUNK
+            remaining = state.fetch("grant").fetch("limits")
+            raise Refused, "import.admission_budget" unless reason(state) == "active" &&
+              state["requests"] + chunks + 4 < remaining["requests"] &&
+              state["decoded_bytes"] + record["bytes"] <= remaining["decoded_bytes"] &&
+              state["wire_bytes"] + record["bytes"] * 2 + 131_072 <= remaining["wire_bytes"]
+          end
+        end
         old = scopes[task]
         now = Time.now.to_f
         generation = old ? old.fetch("generation") : 0
@@ -40,11 +51,13 @@ module AgentCodingTool
           "requested_expires_at" => requested, "expires_at" => [requested, state.fetch("expires_at")].min,
           "monotonic_expires_at" => Process.clock_gettime(Process::CLOCK_MONOTONIC) + [seconds, state.fetch("expires_at") - now].min }
         scopes[task] = scope
-        scope.merge("task_id" => task, "status" => revoke ? "revoked" : "shared",
+        result = scope.merge("task_id" => task, "status" => revoke ? "revoked" : "shared",
           "requested_expiry" => Time.at(requested).utc.iso8601,
           "effective_expiry" => Time.at(scope.fetch("expires_at")).utc.iso8601,
           "clipped" => requested > scope.fetch("expires_at"),
           "audience" => state.dig("grant", "transport"), "delivered_bytes" => "cannot be recalled")
+        result["import"] = imported if imported
+        result
       end
     end
 
@@ -82,7 +95,8 @@ module AgentCodingTool
       identity = request.slice(*identities)
       raise Refused, "selection.identity" unless identity.keys.sort == identities.sort &&
         identity["task_id"].is_a?(String) && identity["task_id"].match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) &&
-        (identities == RunEvidenceReader::EXTERNAL_IDENTITIES ? identity["invocation_id"].is_a?(String) && identity["invocation_id"].match?(/\Aexternal-[0-9a-f]{32}\z/) :
+        (identities == RunEvidenceReader::IMPORT_IDENTITIES ? identity["artifact"].is_a?(String) && identity["artifact"].match?(/\Azip-[0-9a-f]{64}\z/) :
+          identities == RunEvidenceReader::EXTERNAL_IDENTITIES ? identity["invocation_id"].is_a?(String) && identity["invocation_id"].match?(/\Aexternal-[0-9a-f]{32}\z/) :
           identity["attempt"].is_a?(Integer) && identity["attempt"].positive? &&
           %w[invocation_id session_id].all? { |key| identity[key].is_a?(String) && identity[key].match?(/\A[A-Za-z0-9_-]{1,128}\z/) })
       scope = task_scope!(state, identity.fetch("task_id"))

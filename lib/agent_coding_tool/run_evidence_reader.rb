@@ -17,15 +17,18 @@ module AgentCodingTool
     CONTEXT_ARTIFACTS = %w[prompt launch_input].freeze
     IDENTITIES = %w[task_id attempt invocation_id session_id].freeze
     EXTERNAL_IDENTITIES = %w[task_id invocation_id].freeze
+    IMPORT_IDENTITIES = %w[task_id artifact].freeze
 
     # Returns closed identity fields; external IDs never claim Codex sessions.
     def self.identity_fields(binding)
+      return IMPORT_IDENTITIES if binding["source"] == "externally_supplied_zip"
       binding["source"] == "external_codex_cli" ? EXTERNAL_IDENTITIES : IDENTITIES
     end
 
     # Resolves the installed public identity shape without accepting a source
-    # selector. Only an external invocation namespace can use its smaller shape.
+    # selector. External invocation and ZIP namespaces use distinct smaller shapes.
     def self.request_identity_fields(request)
+      return IMPORT_IDENTITIES if request["artifact"].is_a?(String) && request["artifact"].match?(/\Azip-[0-9a-f]{64}\z/)
       external = request["source"].nil? && !request.key?("attempt") && !request.key?("session_id") &&
         request["invocation_id"].is_a?(String) && request["invocation_id"].match?(/\Aexternal-[0-9a-f]{32}\z/)
       external ? EXTERNAL_IDENTITIES : IDENTITIES
@@ -116,7 +119,8 @@ module AgentCodingTool
       @revision = Digest::SHA256.hexdigest(JSON.generate([@binding, @approvals, handoff_sha256]))
       refuse!("invalid binding") unless @binding.is_a?(Hash)
       refuse!("invalid artifact selection") unless @approvals.is_a?(Hash) &&
-        @approvals.keys.all? { |name| ARTIFACTS.include?(name) || CONTEXT_ARTIFACTS.include?(name) || name.match?(/\Avalidation:gate-[0-9a-f-]+\.(started|finished)\.json\z/) ||
+        @approvals.keys.all? { |name| @binding["source"] == "externally_supplied_zip" && name == @binding["artifact"] ||
+          ARTIFACTS.include?(name) || CONTEXT_ARTIFACTS.include?(name) || name.match?(/\Avalidation:gate-[0-9a-f-]+\.(started|finished)\.json\z/) ||
           @paged && name.match?(/\Avalidation:gate-[0-9a-f-]+\.command\.json\z/) ||
           name.match?(/\Avalidation_output:gate-[0-9a-f-]+\.(stdout|stderr)\z/) ||
           name.match?(/\Avalidation_result:gate-[0-9a-f-]+\.observation\.json\z/) ||
@@ -166,10 +170,16 @@ module AgentCodingTool
           metadata.merge!("registration_sha256" => @handoff_sha256, "capture_status" => report["status"],
             "worker_signal" => report["signal"], "outcome" => report["outcome"])
         end
+        if @binding["source"] == "externally_supplied_zip"
+          %w[handoff_sha256 launch_status worker_exit_status].each { |key| metadata.delete(key) }
+          metadata.merge!("registration_sha256" => @handoff_sha256,
+            "validation_assurance" => "externally supplied evidence; no ACT-witnessed execution or verified result")
+        end
         if operation == "manifest"
           offset = request.fetch("offset", 0)
           refuse!("invalid manifest offset") unless offset.is_a?(Integer) && offset.between?(0, @approvals.length)
           entries = @paged ? @approvals.to_a.slice(offset, 16) : @approvals.to_a
+          entries = entries.map { |name, spec| [name, spec.reject { |key, _| key == "path" }] } if @binding["source"] == "externally_supplied_zip"
           return metadata.merge("artifacts" => JSON.parse(JSON.generate(entries.to_h)),
             "artifact_total" => @approvals.length, "next_offset" => @paged && offset + entries.length < @approvals.length ? offset + entries.length : nil)
         end
@@ -193,11 +203,13 @@ module AgentCodingTool
         @output_bytes -= chunk.bytesize
         following = offset + chunk.bytesize
         status = %w[pending truncated].include?(spec["status"]) ? spec["status"] : following < total ? "truncated" : "complete"
-        metadata.merge("artifact" => request["artifact"], "source" => spec.fetch("path").dup,
+        result = metadata.merge("artifact" => request["artifact"], "source" => spec.fetch("path").dup,
           "sha256" => spec.fetch("sha256").dup, "bytes" => total,
           "offset" => offset, "next_offset" => following < total ? following : nil,
           "status" => status, "capture_status" => spec["capture_status"], "encoding" => "base64", "data" => [chunk].pack("m0"),
           "chunk_sha256" => Digest::SHA256.hexdigest(chunk))
+        %w[source capture_status].each { |key| result.delete(key) } if @binding["source"] == "externally_supplied_zip"
+        result
       end
     rescue KeyError, TypeError, JSON::ParserError => error
       raise Refused, "malformed evidence/request: #{error.class}"
@@ -227,6 +239,8 @@ module AgentCodingTool
       refuse!("root escape") unless File.realpath(path) == path && File.realpath(root) == root
       bytes = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW) do |file|
         refuse!("nonregular or oversized source") unless file.stat.file? && file.stat.uid == Process.uid && file.stat.size <= MAX_FILE
+        refuse!("unsafe imported source") if @binding["source"] == "externally_supplied_zip" &&
+          (file.stat.nlink != 1 || !(file.stat.mode & 0o077).zero?)
         file.binmode.read(MAX_FILE + 1) || "".b
       end
       refuse!("stale source") unless bytes.bytesize <= MAX_FILE && Digest::SHA256.hexdigest(bytes) == digest &&
@@ -239,6 +253,11 @@ module AgentCodingTool
     # Rechecks the immutable approved handoff and its launch provenance. Missing
     # session binding refuses; current workspace state is not inferred from it.
     def report!
+      if @binding["source"] == "externally_supplied_zip"
+        report = RunEvidenceStore.parse(bytes!(File.join(@run_dir, "registration.json"), @run_dir, @handoff_sha256))
+        ImportedEvidence.validate_record(report, @binding)
+        return report
+      end
       if @binding["source"] == "external_codex_cli"
         report = RunEvidenceStore.parse(bytes!(File.join(@run_dir, "registration.json"), @run_dir, @handoff_sha256))
         ExternalFollowup.validate_record(report, @binding)
@@ -277,6 +296,13 @@ module AgentCodingTool
     # supplies the worker binding. Raw receipt output/status is never rewritten.
     def artifact!(name, report)
       spec = @approvals.fetch(name)
+      if @binding["source"] == "externally_supplied_zip"
+        refuse!("import artifact binding") unless name == report["artifact_id"] && spec["path"] == File.join(@run_dir, "bundle") &&
+          spec.slice("filename", "sha256", "bytes") == report.slice("filename", "sha256", "bytes")
+        bytes = bytes!(spec.fetch("path"), @run_dir, spec.fetch("sha256"))
+        refuse!("import size") unless bytes.bytesize == spec["bytes"]
+        return bytes
+      end
       if @binding["source"] == "external_codex_cli"
         recorded = report.fetch("files").fetch(name)
         refuse!("external artifact binding") unless recorded == spec.reject { |key, _| key == "path" } &&

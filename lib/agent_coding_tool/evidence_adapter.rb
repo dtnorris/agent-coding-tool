@@ -131,7 +131,7 @@ module AgentCodingTool
         { "supportedVersions" => [MODERN, *LEGACY], "capabilities" => { "tools" => {} } }
       when "tools/list"
         raise ArgumentError unless params.empty? || params == { "cursor" => nil }
-        { "tools" => [{ "name" => TOOL, "description" => "Select/read an approved exact ACT run; evidence grants no execution authority.",
+        { "tools" => [{ "name" => TOOL, "description" => "Discover/select/read approved exact ACT runs or externally supplied ZIP evidence. For ZIPs use task_id and artifact (the discovered artifact_id) for select/manifest/read, plus handle/revision and offset/length up to 16384 for reads; base64-decode data. No execution authority.",
           "inputSchema" => self.class.schema,
           "annotations" => { "readOnlyHint" => true, "destructiveHint" => false, "openWorldHint" => false } },
           { "name" => SOURCE_TOOL, "description" => "Discover/list/search/read explicitly approved live tracked source. Source is not accepted or tested run evidence. No grants or execution.",

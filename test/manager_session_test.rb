@@ -603,16 +603,13 @@ class ManagerAdapterTest < Minitest::Test
     end
   end
 
-  # Committed review/merge identities must reach the next executable-pin gate;
-  # neither preparation provenance nor dirty unstaged candidate bytes are HEAD.
+  # The live recipe admits legacy only. In legacy, exercise the requested
+  # identity check. In split, verify refusal before any source observation.
   def test_host_recipe_explicit_implementation_heads_reach_next_gate
     require_relative "integration/wac04_qualification"
     %w[207f4e81781c0695145ebac49531a1a14d6570d2 44125ab223d82f1b7afc74b03b7cfd7907f7d50b].each do |head|
       host_admission(head: head) do |options, calls, root|
-        error = assert_raises(RuntimeError) { Wac04Qualification.qualify(options) }
-        assert_equal "executable pin changed", error.message
-        assert_equal 6, calls.length
-        refute File.exist?(root)
+        assert_host_admission_refusal(options, calls, root, "executable pin changed")
       end
     end
   end
@@ -635,22 +632,31 @@ class ManagerAdapterTest < Minitest::Test
     end
   end
 
-  # A well-formed wrong HEAD and staged bytes refuse before executable/runtime
-  # effects. Observations are modeled, never staged in the source checkout.
+  # Wrong HEAD and staged bytes refuse in legacy before runtime effects.
+  # Split refuses earlier at the composition gate.
   def test_host_recipe_rejects_wrong_head_and_dirty_index_before_runtime
     require_relative "integration/wac04_qualification"
     host_admission do |options, calls, root|
-      error = assert_raises(RuntimeError) { Wac04Qualification.qualify(options.merge("source-head" => "5d9af78cd7925238358089d53b03d8e419d7951b")) }
-      assert_equal "source HEAD mismatch", error.message
-      assert_equal 6, calls.length
-      refute File.exist?(root)
+      wrong_head = options.merge("source-head" => "5d9af78cd7925238358089d53b03d8e419d7951b")
+      assert_host_admission_refusal(wrong_head, calls, root, "source HEAD mismatch")
     end
     host_admission(index: "staged bytes") do |options, calls, root|
-      error = assert_raises(RuntimeError) { Wac04Qualification.qualify(options) }
-      assert_equal "unexpected source index", error.message
-      assert_equal 6, calls.length
-      refute File.exist?(root)
+      assert_host_admission_refusal(options, calls, root, "unexpected source index")
     end
+  end
+
+  # Assert the actual admission boundary and its observation count. Neither
+  # composition may create a qualification root on these refusal paths.
+  def assert_host_admission_refusal(options, calls, root, legacy_error)
+    error = assert_raises(RuntimeError) { Wac04Qualification.qualify(options) }
+    if AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "split"
+      assert_equal "this candidate requires the inspected legacy ACT composition", error.message
+      assert_empty calls
+    else
+      assert_equal legacy_error, error.message
+      assert_equal 6, calls.length
+    end
+    refute File.exist?(root)
   end
 
   # Independent byte/guidance checks remain admission gates, even with the
@@ -773,7 +779,9 @@ class ManagerAdapterTest < Minitest::Test
         if fault == "alias"
           File.symlink(File.join(root, "state"), home)
         else
-          Dir.mkdir(home, fault == "public" ? 0o755 : 0o700)
+          Dir.mkdir(home, 0o700)
+          # Set the public fault explicitly so a restrictive umask cannot mask it.
+          File.chmod(0o755, home) if fault == "public"
           File.symlink(File.join(root, "state"), File.join(home, "work")) if fault == "occupied-work"
         end
         assert_raises(fault == "occupied-work" ? Errno::EEXIST : AgentCodingTool::InvalidState) do

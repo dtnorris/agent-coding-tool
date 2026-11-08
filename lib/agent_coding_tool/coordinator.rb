@@ -135,7 +135,8 @@ module AgentCodingTool
     # Resolves one lifecycle/freshness snapshot and overlays private observations.
     # Open activity survives completion filtering; no records/timestamps change.
     # Invalid lifecycle or freshness provenance retains its existing refusals.
-    def statuses(ids = nil, completion_filter: :all, strict_freshness: false)
+    # Only advisory callers may project failed Git lookups as unavailable rows.
+    def statuses(ids = nil, completion_filter: :all, strict_freshness: false, report_unavailable: false)
       external_snapshot = external_activity.active_snapshot
       selected_tasks = ids ? Array(ids).map { |id| @task_store.load(id) } : tasks
       unless ids
@@ -165,12 +166,14 @@ module AgentCodingTool
         freshness_references(pending.fetch("task"), pending.fetch("snapshot"))
       end
       validate_freshness_references!(references) if strict_freshness
-      pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references)
+      unavailable = {}
+      observe_failure = ->(key, error) { unavailable[key] = error } if report_unavailable && !strict_freshness
+      pushed_heads = references.empty? ? {} : @repo_inspector.pushed_heads(references, &observe_failure)
       validate_freshness!(references, pushed_heads) if strict_freshness
       yield pushed_heads if block_given?
 
       resolved = contexts.to_h do |context|
-        status = context["status"] || freshness_status(context.fetch("pending"), pushed_heads)
+        status = context["status"] || freshness_status(context.fetch("pending"), pushed_heads, unavailable)
         [status.fetch("id"), status]
       end
 
@@ -926,12 +929,24 @@ module AgentCodingTool
     end
 
     # Resolves prepared state against batched observed heads, retaining original
-    # candidate provenance. Returns presentation data; malformed references raise.
-    def freshness_status(pending, pushed_heads)
+    # candidate provenance. An observed lookup failure projects unknown freshness
+    # while retaining the recorded lifecycle. Malformed references still raise.
+    def freshness_status(pending, pushed_heads, unavailable)
       task = pending.fetch("task")
       state = pending.fetch("state")
       outcome = pending.fetch("outcome")
       snapshot = pending.fetch("snapshot")
+      lifecycle = outcome == "candidate_complete" ? "CANDIDATE" : state["started_at"] ? "IN_FLIGHT" : "PREPARED"
+      unless unavailable.empty?
+        failures = freshness_references(task, snapshot).filter_map do |reference|
+          unavailable[reference.values_at("remote_url", "branch")]
+        end
+        unless failures.empty?
+          details = failures.uniq.map(&:message).join("; ")
+          return status_hash("FRESHNESS_UNAVAILABLE", task, state, "recorded #{lifecycle}; #{details}")
+                 .merge("lifecycle_status" => lifecycle)
+        end
+      end
 
       refresh, stale = changed_repositories(task, snapshot, pushed_heads).partition do |name|
         snapshot.key?(name) && task.fetch("repositories").fetch(name).fetch("access") == "read_only"
@@ -949,7 +964,7 @@ module AgentCodingTool
       reason = "pushed branch changed: #{stale.join(', ')}" unless stale.empty?
       status = status_hash(label, task, state, reason)
       # Lifecycle is recorded evidence, independent of effective eligibility.
-      status["lifecycle_status"] = outcome == "candidate_complete" ? "CANDIDATE" : state["started_at"] ? "IN_FLIGHT" : "PREPARED"
+      status["lifecycle_status"] = lifecycle
       unless stale.empty?
         status["writable_source_changes"] = stale.filter_map do |name|
           previous = snapshot[name]
@@ -1122,7 +1137,10 @@ module AgentCodingTool
 
     def collision_records(overlaps, effective_statuses, states:)
       effective_statuses.filter_map do |status|
-        next unless states.include?(status.fetch("status"))
+        effective = status.fetch("status")
+        # Unknown freshness cannot erase a recorded active reservation in status.
+        next unless states.include?(effective) ||
+                    (effective == "FRESHNESS_UNAVAILABLE" && states.include?(status["lifecycle_status"]))
         next unless overlaps.key?(status.fetch("id"))
 
         {

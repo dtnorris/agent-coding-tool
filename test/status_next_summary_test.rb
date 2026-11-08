@@ -69,6 +69,71 @@ class StatusNextSummaryTest < Minitest::Test
     end
   end
 
+  # Reproduces a saved host-local remote that Git cannot open on this host.
+  # Only Git transport is modeled; real coordinator and CLI own both outcomes.
+  def test_status_keeps_healthy_rows_when_a_prepared_remote_is_unavailable
+    with_workspace do |dir|
+      local_origin = File.join(dir, "other-host", "registration-artifacts", ".git", "act-origin.git")
+      write_task(dir, id: "OS-MIG-02", repositories: repo("registration-artifacts").merge(repo("healthy")))
+      write_task(dir, id: "HEALTHY", repositories: repo("healthy"))
+      write_task(dir, id: "READY-OTHER", repositories: repo("independent"))
+      fixture = FakeInspector.new(heads: { "registration-artifacts" => "a" * 40, "healthy" => "b" * 40 },
+                                  remote_urls: { "registration-artifacts" => local_origin })
+      seeded = coordinator_for_inspector(dir, fixture)
+      seeded.prepare("OS-MIG-02")
+      seeded.prepare("HEALTHY")
+      states = AgentCodingTool::StateStore.new(File.join(dir, "state"))
+      states.write("OS-MIG-02", states.load("OS-MIG-02").merge("started_at" => "2026-11-07T12:00:00Z"))
+
+      malformed = false
+      runner = Object.new
+      runner.define_singleton_method(:capture) do |*argv|
+        case argv
+        when ["git", "ls-remote", "--exit-code", local_origin, "refs/heads/main"]
+          malformed ? ["bad\trefs/heads/main\n", "", true] : ["", "fatal: does not appear to be a git repository", false]
+        when ["git", "ls-remote", "--exit-code", "git@github.com:example/healthy.git", "refs/heads/main"]
+          ["#{"b" * 40}\trefs/heads/main\n", "", true]
+        else
+          raise "unexpected Git command: #{argv.inspect}"
+        end
+      end
+      coordinator = coordinator_for_inspector(dir, AgentCodingTool::RepoInspector.new(nil, runner: runner))
+      before = state_bytes(dir)
+
+      compact = output_for(dir, coordinator, %w[status])
+      assert_match(/^OS-MIG-02:\s+FRESHNESS UNAVAILABLE/, compact)
+      assert_match(/^HEALTHY:\s+PREPARED \[write collis/, compact)
+      assert_match(/^READY-OTHER:\s+READY/, compact)
+      assert_includes compact, "NEXT withheld: repository freshness unavailable."
+      refute_includes compact, "(NEXT)"
+      full = output_for(dir, coordinator, %w[status --full], terminal_width: 240)
+      assert_includes full, "recorded IN_FLIGHT"
+      assert_includes full, "OS-MIG-02 (FRESHNESS_UNAVAILABLE) writes healthy"
+      assert_includes output_for(dir, coordinator, %w[status OS-MIG-02 --full]), "cannot resolve pushed #{local_origin}/main"
+
+      [%w[next], %w[next --json]].each do |args|
+        out, err = StringIO.new, StringIO.new
+        cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: out, err: err)
+        cli.instance_variable_set(:@coordinator, coordinator)
+        assert_equal 2, cli.run(args)
+        assert_empty out.string
+        assert_includes err.string, "cannot resolve pushed"
+      end
+      assert_raises(AgentCodingTool::RepositoryError) do
+        coordinator.statuses(["OS-MIG-02"], strict_freshness: true)
+      end
+
+      malformed = true
+      out, err = StringIO.new, StringIO.new
+      cli = AgentCodingTool::CLI.new(root: dir, data_root: dir, out: out, err: err)
+      cli.instance_variable_set(:@coordinator, coordinator)
+      assert_equal 2, cli.run(%w[status])
+      assert_empty out.string
+      assert_includes err.string, "malformed pushed ref"
+      assert_equal before, state_bytes(dir)
+    end
+  end
+
   def test_prepared_task_gets_start_action_without_reprepare
     with_workspace do |dir|
       write_task(dir, id: "A")

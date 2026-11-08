@@ -3,12 +3,15 @@
 require_relative "act24_continuity"
 require_relative "../../lib/agent_coding_tool"
 require_relative "../../lib/agent_coding_tool/native_pilot_executor"
+require_relative "../../lib/agent_coding_tool/codex_manager_adapter"
 require "stringio"
 
 # Host-only qualification and bounded native WAC-04 journey. All synthetic Git
 # creation and live inference require the operator's separate authorization.
 # No command here changes an ordinary repository or ACTD lifecycle/checkpoint.
 module Wac04Qualification
+  # Original prepared input provenance; implementation admission uses an explicit HEAD.
+  PREPARATION_SOURCE_HEAD = "5d9af78cd7925238358089d53b03d8e419d7951b"
   SOURCE = File.realpath(File.join(__dir__, "../.."))
   EXECUTOR = AgentCodingTool::NativePilotExecutor
   PROBE = File.join(SOURCE, "test/integration/wac04_executor_probe.rb")
@@ -37,8 +40,18 @@ module Wac04Qualification
   def self.configuration(root, codex, source, mode)
     ruby = File.realpath(RbConfig.ruby)
     prefix = File.realpath(RbConfig::CONFIG.fetch("prefix"))
+    # Homebrew's default gem search escapes prefix before the probe can start.
+    # Use only bundled gems already covered by the existing read-only grant.
+    gems = File.join(prefix, "lib/ruby/gems", RbConfig::CONFIG.fetch("ruby_version"))
     homes = %w[manager worker gate].to_h { |role| [role, File.join(root, "#{role}-home")] }
     homes.each_value { |home| Dir.mkdir(home, 0o700) unless File.exist?(home) }
+    homes.each_value { |home| EXECUTOR.private_directory!(home) }
+    # Installed Codex refuses helper aliases when CODEX_HOME is inside TMPDIR.
+    # Keep temporary files below the existing role grant, separate from its home.
+    homes.each_value { |home| Dir.mkdir(File.join(home, "tmp"), 0o700) }
+    manager_cwd = File.join(homes.fetch("manager"), "work")
+    Dir.mkdir(manager_cwd, 0o700)
+    EXECUTOR.private_directory!(manager_cwd)
     auth = nil
     if mode == "live"
       auth = File.realpath(File.join(ENV.fetch("CODEX_HOME", File.join(ENV.fetch("HOME"), ".codex")), "auth.json"))
@@ -57,13 +70,14 @@ module Wac04Qualification
       [role, path]
     end
     environments = homes.to_h do |role, home|
-      [role, { "PATH" => "/usr/bin:/bin", "HOME" => home, "CODEX_HOME" => home, "TMPDIR" => home,
+      [role, { "PATH" => "/usr/bin:/bin", "HOME" => home, "CODEX_HOME" => home, "TMPDIR" => File.join(home, "tmp"),
+        "GEM_HOME" => gems, "GEM_PATH" => gems,
         "LANG" => "C", "LC_ALL" => "C", "TZ" => "UTC" }]
     end
     pins = source.fetch("files").to_h { |path, sha| [File.expand_path(path, SOURCE), sha] }
     [codex, ruby, *profiles.values].each { |path| pins[path] = Digest::SHA256.file(path).hexdigest }
     config = { "executable" => codex, "pins" => pins, "profiles" => profiles, "environments" => environments,
-      "manager_cwd" => File.join(root, "scratch"), "worker_home" => homes.fetch("worker"),
+      "manager_cwd" => manager_cwd, "worker_home" => homes.fetch("worker"), "worker_final_artifact" => "worker-change.txt",
       "worktree_root" => worktree_root, "run_root" => File.join(root, "case", "data-runs"),
       "gate_argv" => [ruby, WORKER, "validate", root], "manager_skill" => MANAGER_SKILL }
     if mode == "offline"
@@ -72,6 +86,50 @@ module Wac04Qualification
         "worker" => [ruby, WORKER, "worker", root] }
     end
     config
+  end
+
+  # Describes a captured probe without decoding arbitrary bytes. Returns bounded
+  # prefixes and complete hashes/status; raw streams remain in native receipts.
+  def self.probe_facts(result, stage)
+    { "stage" => stage, "exit" => result.exitstatus, "signal" => result.termsig }.merge(
+      %w[stdout stderr].to_h do |name|
+        bytes = result.public_send(name)
+        [name, { "bytes" => bytes.bytesize, "sha256" => Digest::SHA256.hexdigest(bytes),
+          "prefix_base64" => [bytes.byteslice(0, 2048)].pack("m0"), "prefix_only" => bytes.bytesize > 2048 }]
+      end)
+  end
+
+  # Interprets captured cwd operations, including exceptions encoded by a probe
+  # that exits zero. Returns semantic success plus bounded raw diagnostics;
+  # malformed JSON is failure data, never a successful process qualification.
+  def self.manager_cwd_facts(result, expected)
+    facts = probe_facts(result, "manager-cwd").merge("expected" => expected, "qualified" => false)
+    begin
+      operations = JSON.parse(result.stdout)
+      facts["operations"] = operations
+      facts["qualified"] = result.success? && operations == {
+        "getcwd" => { "value" => expected }, "realpath" => { "value" => expected }, "stat" => { "value" => true } }
+    rescue JSON::ParserError => error
+      facts["parse_error"] = error.message
+    end
+    facts
+  end
+
+  # Runs only the fixed Ruby cwd probe through the existing inference-substitute
+  # seam in a separate harmless ledger. Uses the actual manager cwd/profile/env;
+  # never invokes Codex or consumes a live turn. Exact streams/status are kept by
+  # the native supervisor, and the semantic receipt is saved before refusal.
+  def self.qualify_manager_cwd(root, config)
+    probe = config.merge("inference_prefixes" => { "manager" => [File.realpath(RbConfig.ruby), PROBE, "cwd"] })
+    executor = pilot(root, "qualify-manager-cwd", probe, seconds: 10)
+    argv = AgentCodingTool::CodexManagerAdapter.new(executable: config.fetch("executable"), identity: {}).argv(nil)
+    result = executor.capture("manager", argv, input: "", cwd: config.fetch("manager_cwd"))
+    facts = manager_cwd_facts(result, config.fetch("manager_cwd")).merge(
+      "profile_sha256" => Digest::SHA256.file(config.fetch("profiles").fetch("manager")).hexdigest,
+      "environment" => config.fetch("environments").fetch("manager"), "inference_invocations" => 0)
+    Act24Continuity.save(File.join(root, "manager-cwd.json"), facts, exclusive: true)
+    raise "manager cwd unqualified; inspect manager-cwd.json and qualify-manager-cwd raw receipts: #{JSON.generate(facts)}" unless facts.fetch("qualified")
+    facts
   end
 
   # Creates one exclusive private ledger in existing ACT checkpoint storage.
@@ -95,20 +153,25 @@ module Wac04Qualification
     FileUtils.mkdir_p(workspace, mode: 0o700)
     File.write(File.join(root, "secret"), "host-only", mode: "wx", perm: 0o600)
     receipts = {}
+    stage = "manager-cwd"
+    receipts["manager_cwd"] = qualify_manager_cwd(root, config)
     %w[manager worker gate].each do |role|
+      stage = "boundary-#{role}"
       probe = config.merge("profiles" => config.fetch("profiles").merge("gate" => config.fetch("profiles").fetch(role)),
         "environments" => config.fetch("environments").merge("gate" => config.fetch("environments").fetch(role)),
         "gate_argv" => [File.realpath(RbConfig.ruby), PROBE, "boundary", root, role, workspace])
       executor = pilot(root, "qualify-#{role}", probe, seconds: 20)
       result = executor.capture("gate", probe.fetch("gate_argv"), input: "", cwd: workspace)
-      raise "#{role} confinement unqualified" unless result.success? && result.stdout.include?("BOUNDARY PASS #{role}") && result.stdout.include?("EXEC DENIED")
-      receipts[role] = { "stdout_base64" => [result.stdout].pack("m0"), "stderr_base64" => [result.stderr].pack("m0"), "exit" => result.exitstatus }
+      receipts[role] = probe_facts(result, stage)
+      raise "#{role} confinement unqualified: #{JSON.generate(receipts[role])}" unless result.success? && result.stdout.include?("BOUNDARY PASS #{role}") && result.stdout.include?("EXEC DENIED")
     end
+    stage = "binary-status"
     binary = config.merge("gate_argv" => [File.realpath(RbConfig.ruby), PROBE, "binary", root])
     result = pilot(root, "qualify-binary", binary, seconds: 10).capture("gate", binary.fetch("gate_argv"), input: "", cwd: workspace)
-    raise "byte/status preservation failed" unless result.stdout == "checked\x00\xff".b && result.stderr == "diagnostic\x00\xfe".b && result.exitstatus == 7
+    raise "byte/status preservation failed: #{JSON.generate(probe_facts(result, stage))}" unless result.stdout == "checked\x00\xff".b && result.stderr == "diagnostic\x00\xfe".b && result.exitstatus == 7
     receipts["binary"] = { "stdout_base64" => [result.stdout].pack("m0"), "stderr_base64" => [result.stderr].pack("m0"), "exit" => 7 }
     sleeper = config.merge("gate_argv" => [File.realpath(RbConfig.ruby), PROBE, "sleep", root], "probe_cwd" => workspace)
+    stage = "enclosing-expiry"
     enclosing = pilot(root, "qualify-enclosing", sleeper, seconds: 2)
     begin
       enclosing.capture("gate", sleeper.fetch("gate_argv"), input: "", cwd: workspace)
@@ -121,6 +184,7 @@ module Wac04Qualification
       raise "enclosing child teardown overran lease" if result.fetch("lease_overrun")
       receipts["enclosing_expiry"] = result
     end
+    stage = "turn-expiry"
     expired = pilot(root, "qualify-expiry", sleeper.merge("gate_seconds" => 0.2), seconds: 5)
     begin
       expired.capture("gate", sleeper.fetch("gate_argv"), input: "", cwd: workspace)
@@ -129,6 +193,7 @@ module Wac04Qualification
       raise unless error.message.include?("expired")
       receipts["expiry"] = error.message
     end
+    stage = "controller-death"
     pilot(root, "qualify-death", sleeper, seconds: 10)
     directory = File.join(root, "case", "data-runs", "checkpoints", "qualify-death")
     controller = Process.spawn({ "PATH" => "/usr/bin:/bin" }, File.realpath(RbConfig.ruby), DRIVER, directory,
@@ -152,7 +217,15 @@ module Wac04Qualification
     raise "controller death teardown failed" unless receipt.fetch("failure").include?("controller died") && !FeedbackRuntime.identity(ownership.fetch("child"))
     receipts["controller_death"] = ownership.merge(receipt)
     raise "boundary probe changed control" unless File.binread(File.join(root, "secret")) == "host-only"
+    # Retain the harmless worker's bytes outside the future task worktrees;
+    # the actual role policy was tested, but probe paths are not ACT candidates.
+    File.rename(workspace, File.join(root, "qualification-candidate"))
+    Dir.rmdir(File.dirname(workspace))
     receipts
+  rescue StandardError => error
+    Act24Continuity.save(File.join(root, "rehearsal-blocked.json"),
+      { "stage" => stage, "reason" => "#{error.class}: #{error.message}", "completed" => receipts }, exclusive: true)
+    raise
   ensure
     if controller
       Process.kill("KILL", controller) rescue Errno::ESRCH
@@ -163,40 +236,23 @@ module Wac04Qualification
   # Qualifies only a fresh declared host fixture and literal reviewed pins. All
   # installed CLI observations are read-only, time bounded and retained. No live
   # calls, synthetic Git mutations or credential copies occur in this phase.
-  def self.qualify(options)
+  # Requires a literal full source-head plus the independent byte digest; missing,
+  # malformed or mismatched HEAD/index refuses before fixture/runtime effects.
+  # Returns the qualification receipt; failed checks raise and never repair inputs.
+  def self.qualify(options, mode = "live")
     root = File.expand_path(options.fetch("root"))
     parent = File.dirname(root)
     raise "fresh WAC-04 host fixture required" unless File.realpath(parent) == parent &&
       File.basename(parent) == "agent-coding-tool-data-fixtures" && File.basename(root).match?(/\AWAC-04-host-[A-Za-z0-9-]+\z/) &&
       !File.exist?(root) && !File.symlink?(root)
+    expected_head = options["source-head"]
+    raise "explicit source HEAD required (40 lowercase hex characters)" unless expected_head.is_a?(String) && expected_head.match?(/\A[0-9a-f]{40}\z/)
     source = pin
     raise "source pin changed" unless source.fetch("sha256") == options.fetch("source-sha256")
     raise "manager guidance path changed" unless File.realpath(SKILLS) == SKILLS && File.realpath(MANAGER_SKILL) == MANAGER_SKILL
     raise "manager guidance pin changed" unless Digest::SHA256.file(MANAGER_SKILL).hexdigest == MANAGER_SKILL_SHA256
     raise "this candidate requires the inspected legacy ACT composition" unless AgentCodingTool::Bootstrap::COMPOSITION.fetch("mode") == "legacy"
-    codex = File.realpath(options.fetch("codex"))
-    raise "executable pin changed" unless Digest::SHA256.file(codex).hexdigest == options.fetch("codex-sha256")
-    raise "Darwin host required" unless RUBY_PLATFORM.include?("darwin")
-    Dir.mkdir(root, 0o700)
-    created = true
-    %w[scratch case].each { |name| Dir.mkdir(File.join(root, name), 0o700) }
     transport = AgentCodingTool::NativeCommandTransport.new
-    observations = {}
-    { "version" => ["--version"], "exec" => ["exec", "--help"], "resume" => ["exec", "resume", "--help"],
-      "auth" => ["login", "status"], "features" => ["features", "list"] }.each do |name, arguments|
-      result = transport.call([codex, *arguments], timeout: 5,
-        env: ENV.to_h.slice("HOME", "CODEX_HOME", "PATH", "LANG", "LC_ALL"), unsetenv_others: true)
-      File.binwrite(File.join(root, "#{name}.stdout"), result.stdout)
-      File.binwrite(File.join(root, "#{name}.stderr"), result.stderr)
-      raise "runtime observation failed: #{name}" unless result.success?
-      observations[name] = result.stdout + result.stderr
-    end
-    raise "unsupported installed version" unless observations.fetch("version").strip.match?(/\Acodex-cli 0\.(162\.1|166\.0)\z/)
-    %w[exec resume].each do |name|
-      raise "missing installed flags: #{name}" unless %w[--json --config --ignore-user-config --ignore-rules --skip-git-repo-check].all? { |flag| observations.fetch(name).include?(flag) }
-    end
-    raise "ChatGPT authentication required" unless observations.fetch("auth").lines.any? { |line| line.strip == "Logged in using ChatGPT" }
-    raise "explicit resume unavailable" unless observations.fetch("resume").include?("[SESSION_ID] [PROMPT]")
     git_observation = transport.call(["/usr/bin/xcrun", "--find", "git"], timeout: 5)
     raise "Git unavailable" unless git_observation.success?
     git = File.realpath(git_observation.stdout.strip)
@@ -209,11 +265,45 @@ module Wac04Qualification
       raise "source observation failed" unless result.success?
       source_state[name] = { "base64" => [result.stdout].pack("m0"), "sha256" => Digest::SHA256.hexdigest(result.stdout) }
     end
-    raise "unexpected source baseline/index" unless source_state.fetch("head").fetch("base64").unpack1("m0").strip == "5d9af78cd7925238358089d53b03d8e419d7951b" &&
-      source_state.fetch("index").fetch("base64").unpack1("m0").empty?
+    source_state["actual_head"] = source_state.fetch("head").fetch("base64").unpack1("m0").strip
+    source_state["expected_head"] = expected_head
+    source_state["preparation_head"] = PREPARATION_SOURCE_HEAD
+    raise "source HEAD mismatch" unless source_state.fetch("actual_head") == expected_head
+    raise "unexpected source index" unless source_state.fetch("index").fetch("base64").unpack1("m0").empty?
     source_state["realpath"] = SOURCE
     source_state["composition"] = AgentCodingTool::Bootstrap::COMPOSITION
+    codex = File.realpath(options.fetch("codex"))
+    raise "executable pin changed" unless Digest::SHA256.file(codex).hexdigest == options.fetch("codex-sha256")
+    raise "Darwin host required" unless RUBY_PLATFORM.include?("darwin")
+    Dir.mkdir(root, 0o700)
+    created = true
+    %w[scratch case].each { |name| Dir.mkdir(File.join(root, name), 0o700) }
+    observations = {}
+    runtime_status = {}
+    { "version" => ["--version"], "exec" => ["exec", "--help"], "resume" => ["exec", "resume", "--help"],
+      "auth" => ["login", "status"], "features" => ["features", "list"] }.each do |name, arguments|
+      stage = "runtime-#{name}"
+      result = transport.call([codex, *arguments], timeout: 5,
+        env: ENV.to_h.slice("HOME", "CODEX_HOME", "PATH", "LANG", "LC_ALL"), unsetenv_others: true)
+      File.binwrite(File.join(root, "#{name}.stdout"), result.stdout)
+      File.binwrite(File.join(root, "#{name}.stderr"), result.stderr)
+      runtime_status[name] = probe_facts(result, stage)
+      Act24Continuity.save(File.join(root, "runtime-status.json"), runtime_status)
+      raise "runtime observation failed: #{JSON.generate(runtime_status[name])}" unless result.success?
+      observations[name] = result.stdout + result.stderr
+    end
+    stage = "installed-version"
+    raise "unsupported installed version" unless observations.fetch("version").strip.match?(/\Acodex-cli 0\.(162\.1|166\.0)\z/)
+    %w[exec resume].each do |name|
+      stage = "installed-#{name}-flags"
+      raise "missing installed flags: #{name}" unless %w[--json --config --ignore-user-config --ignore-rules --skip-git-repo-check].all? { |flag| observations.fetch(name).include?(flag) }
+    end
+    stage = "installed-authentication"
+    raise "ChatGPT authentication required" unless observations.fetch("auth").lines.any? { |line| line.strip == "Logged in using ChatGPT" }
+    stage = "installed-explicit-resume"
+    raise "explicit resume unavailable" unless observations.fetch("resume").include?("[SESSION_ID] [PROMPT]")
     isolated_config = File.join(root, "sandbox-config")
+    stage = "installed-read-only-sandbox"
     Dir.mkdir(isolated_config, 0o700)
     target = File.join(isolated_config, "read-only-deny")
     tool_probe = transport.call([codex, "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
@@ -222,16 +312,23 @@ module Wac04Qualification
       unsetenv_others: true, timeout: 10)
     File.binwrite(File.join(root, "read-only.stdout"), tool_probe.stdout)
     File.binwrite(File.join(root, "read-only.stderr"), tool_probe.stderr)
-    raise "installed read-only tool sandbox unqualified" unless tool_probe.success? && tool_probe.stdout.include?("READ-ONLY DENIED") && !File.exist?(target)
-    config = configuration(root, codex, source, "qualify")
+    runtime_status["read-only"] = probe_facts(tool_probe, stage)
+    Act24Continuity.save(File.join(root, "runtime-status.json"), runtime_status)
+    raise "installed read-only tool sandbox unqualified: #{JSON.generate(runtime_status['read-only'])}" unless tool_probe.success? && tool_probe.stdout.include?("READ-ONLY DENIED") && !File.exist?(target)
+    stage = "role-rehearsals"
+    config = configuration(root, codex, source, mode)
     rehearsals = rehearse(root, config)
     raise "source changed during qualification" unless pin == source
-    receipt = { "source" => source, "source_observations" => source_state, "runtime" => observations, "rehearsals" => rehearsals,
+    receipt = { "source" => source, "source_observations" => source_state, "runtime" => observations, "rehearsals" => rehearsals, "config" => config, "mode" => mode,
       "status" => "PASS harmless host qualification only", "live_continuity" => "NOT RUN" }
     Act24Continuity.save(File.join(root, "qualification.json"), receipt, exclusive: true)
     receipt
   rescue StandardError => error
-    Act24Continuity.save(File.join(root, "blocked.json"), { "status" => "BLOCKED", "reason" => error.message }, exclusive: true) if created
+    if created
+      Act24Continuity.save(File.join(root, "blocked.json"), { "status" => "BLOCKED", "stage" => stage || "source-admission",
+        "failure_class" => error.class.name, "reason" => error.message }, exclusive: true)
+      Act24Continuity.save(File.join(root, "RESULT.json"), failure_report(root, exit_status: nil, signal: nil, failure: nil), exclusive: true)
+    end
     raise
   end
 
@@ -241,8 +338,10 @@ module Wac04Qualification
   # All candidate execution is the fixed read-only byte validator, never eval.
   def self.journey(options, live: false, qualification: nil, lease: nil)
     raise "separate bounded host live authorization required" if live && !options["authorize-live"]
-    qualification ||= qualify(options)
+    stage = "qualification"
+    qualification ||= qualify(options, live ? "live" : "offline")
     root = File.expand_path(options.fetch("root"))
+    raise "qualification mode mismatch" unless qualification.fetch("mode") == (live ? "live" : "offline")
     git, diagnostic, status = Open3.capture3("/usr/bin/xcrun", "--find", "git")
     raise "Git unavailable: #{diagnostic}" unless status.success?
     git = File.realpath(git.strip)
@@ -278,16 +377,17 @@ module Wac04Qualification
     # patch instruction; it cannot execute shells or write authoritative records.
     task_path = File.join(data, "tasks", "T.yml")
     task = YAML.safe_load(File.binread(task_path))
-    task["constraints"] = ["Use the native apply_patch tool to add worker-change.txt containing exactly worker followed by newline (seven bytes). " \
-      "No shell, network tools, Git commands, other agents, installs or services. Do not run validation; the host owns it. " \
-      "The original synthetic file.txt contains base followed by newline. Finish with a plain text summary. " \
-      "Repository inspection and export instructions are superseded for this tiny host-seeded fixture only; all provenance is already host-bound."]
+    task["constraints"] = ["Do not invoke any tools or edit files. The CLI will write your final response unchanged as worker-change.txt. " \
+      "Your entire final response must be exactly the word worker followed by one newline (seven UTF-8 bytes); no Markdown, explanation or other text. " \
+      "Do not omit the newline. Do not run validation; the independent host owns it. " \
+      "Repository inspection/export and summary instructions are superseded only for this tiny host-seeded fixture; provenance is host-bound."]
     File.write(task_path, YAML.dump(task))
-    config = configuration(root, File.realpath(options.fetch("codex")), qualification.fetch("source"), live ? "live" : "offline")
+    config = qualification.fetch("config").dup
     config["enclosing_lease"] = lease if lease
     pilot(root, "native-WAC-04", config)
     calls = []
     entry = lambda do |*argv, expected: 0|
+      stage = "public-entry:#{argv.take(2).join('/')}"
       raise "bound source changed" unless pin == qualification.fetch("source")
       output, diagnostic = StringIO.new, StringIO.new
       cli = AgentCodingTool::CLI.new(root: SOURCE, data_root: data, out: output, err: diagnostic,
@@ -310,6 +410,7 @@ module Wac04Qualification
     handoff = Act24Continuity.read(Dir.glob("#{data}-runs/T/*/handoff.json").fetch(0))
     raise "worker session must be independent" if handoff.fetch("session_id") == first.fetch("session_id")
     workspace = handoff.fetch("workspace")
+    raise "worker candidate/final evidence mismatch" unless File.binread(File.join(workspace, "worker-change.txt")) == File.binread(handoff.fetch("final_path"))
     entry.call("checkpoint", "record", "T", "--workspace", workspace)
     entry.call("checkpoint", "verify", "T", "--workspace", workspace)
     entry.call("checkpoint", "gate", "T", "--workspace", workspace, "--", *config.fetch("gate_argv"))
@@ -337,7 +438,7 @@ module Wac04Qualification
         session = role == "manager" ? first.fetch("session_id") : handoff.fetch("session_id")
         matches = Dir.glob(File.join(root, "#{role}-home", "sessions", "**", "*.jsonl")).select { |path| File.basename(path).include?(session) }
         raise "missing/ambiguous #{role} history" unless matches.length == 1
-        models = File.foreach(matches.first).filter_map do |line|
+        models = File.foreach(matches.first, encoding: "UTF-8").filter_map do |line|
           event = JSON.parse(line)
           event.dig("payload", "model") if event["type"] == "turn_context"
         end.uniq
@@ -352,7 +453,7 @@ module Wac04Qualification
     Act24Continuity.save(File.join(root, live ? "live.json" : "offline.json"), receipt, exclusive: true)
     receipt
   rescue StandardError => error
-    Act24Continuity.save(File.join(root, "journey-blocked.json"), { "status" => "BLOCKED", "reason" => error.message }, exclusive: true) if qualification
+    Act24Continuity.save(File.join(root, "journey-blocked.json"), { "status" => "BLOCKED", "stage" => stage, "failure_class" => error.class.name, "reason" => error.message }, exclusive: true) if qualification
     raise
   ensure
     ENV.replace(original_env) if original_env
@@ -365,7 +466,7 @@ module Wac04Qualification
   # bounds the durable native ledger, so reconstruction cannot renew the pilot.
   def self.bounded_journey(options, live:)
     raise "separate bounded host live authorization required" if live && !options["authorize-live"]
-    qualification = qualify(options)
+    qualification = qualify(options, live ? "live" : "offline")
     root = File.expand_path(options.fetch("root"))
     lease = { "deadline" => Time.now.to_f + 900, "monotonic_deadline" => EXECUTOR.clock + 900 }
     Act24Continuity.save(File.join(root, "enclosing-lease.json"), lease, exclusive: true)
@@ -412,7 +513,12 @@ module Wac04Qualification
     Act24Continuity.save(File.join(root, "controller-supervision.json"), lease.merge(
       "exit" => status.exitstatus, "signal" => status.termsig, "failure" => reason,
       "stdout_sha256" => Digest::SHA256.file(stdout.path).hexdigest, "stderr_sha256" => Digest::SHA256.file(stderr.path).hexdigest), exclusive: true)
-    raise "bounded journey failed: #{reason || status.exitstatus || status.termsig}; inspect #{root}" unless reason.nil? && status.success?
+    unless reason.nil? && status.success?
+      report = failure_report(root, exit_status: status.exitstatus, signal: status.termsig, failure: reason)
+      Act24Continuity.save(File.join(root, "RESULT.json"), report, exclusive: true)
+      raise "bounded journey failed at #{report['stage']}: #{report['failure_class']}: #{report['reason']} " \
+        "(exit=#{status.exitstatus.inspect}, signal=#{status.termsig.inspect}); inspect #{root}/RESULT.json"
+    end
     Act24Continuity.read(File.join(root, live ? "live.json" : "offline.json"))
   ensure
     if controller
@@ -422,6 +528,35 @@ module Wac04Qualification
     previous&.each { |signal, handler| Signal.trap(signal, handler) }
     stdout&.close
     stderr&.close
+  end
+
+  # Consolidates the failed stage, exception, public command and raw receipt
+  # references without interpreting candidate content. Returns bounded failure
+  # metadata; missing receipts stay explicit. Malformed receipts raise normally.
+  def self.failure_report(root, exit_status:, signal:, failure:)
+    blocked_path = File.join(root, "journey-blocked.json")
+    blocked_path = File.join(root, "blocked.json") unless File.file?(blocked_path)
+    blocked = File.file?(blocked_path) ? Act24Continuity.read(blocked_path) : {}
+    calls_path = File.join(root, "public-calls.json")
+    calls = File.file?(calls_path) ? Act24Continuity.read(calls_path) : []
+    command = calls.last
+    manager_failures = Dir.glob(File.join(root, "case/data-runs/.manager-sessions/*/failure-*.json"))
+    native_receipts = Dir.glob(File.join(root, "case/data-runs/checkpoints/native-WAC-04/*.json")).reject do |path|
+      %w[ledger.json config.json].include?(File.basename(path)) || path.end_with?(".started.json")
+    end
+    paths = Dir.glob(File.join(root, "case/data-runs/checkpoints/*/*.{json,stdout,stderr}")) +
+      %w[controller.stdout controller.stderr controller-supervision.json journey-blocked.json public-calls.json blocked.json runtime-status.json manager-cwd.json startup.json].map { |name| File.join(root, name) }
+    paths += Dir.glob(File.join(root, "case/data-runs/.manager-sessions/*/{failure,result}-*.json"))
+    { "status" => "BLOCKED", "stage" => blocked["stage"] || "controller-supervision",
+      "failure_class" => blocked["failure_class"] || "RuntimeError",
+      "reason" => blocked["reason"] || failure || "controller exited without a complete journey receipt",
+      "controller_exit" => exit_status, "controller_signal" => signal,
+      "controller_failure" => failure, "public_command" => command,
+      "underlying_failures" => manager_failures.sort.to_h { |path| [path.delete_prefix(root + "/"), Act24Continuity.read(path)] },
+      "native_command_status" => native_receipts.sort.to_h { |path| [path.delete_prefix(root + "/"), Act24Continuity.read(path)] },
+      "raw_evidence" => paths.select { |path| File.file?(path) }.sort.to_h do |path|
+        [path.delete_prefix(root + "/"), { "bytes" => File.size(path), "sha256" => Digest::SHA256.file(path).hexdigest }]
+      end, "live_retry_authorized" => false, "live_continuity" => "UNPROVEN" }
   end
 
   # Explicit host entry: pin/qualify/offline/run. Run requires a separate consent
@@ -434,13 +569,13 @@ module Wac04Qualification
     end
     options = {}
     parser = OptionParser.new do |opts|
-      %w[root source-sha256 codex codex-sha256].each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
+      %w[root source-head source-sha256 codex codex-sha256].each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
       opts.on("--authorize-live") { options["authorize-live"] = true }
     end
     parser.require_exact = true
     parser.parse!(arguments)
-    required = %w[codex codex-sha256 root source-sha256] + (action == "run" ? ["authorize-live"] : [])
-    raise "usage: pin | {qualify|offline|run} --root FRESH_PATH --source-sha256 HASH --codex PATH --codex-sha256 HASH [--authorize-live for run]" unless
+    required = %w[codex codex-sha256 root source-head source-sha256] + (action == "run" ? ["authorize-live"] : [])
+    raise "usage: pin | {qualify|offline|run} --root FRESH_PATH --source-head FULL_COMMIT_SHA --source-sha256 HASH --codex PATH --codex-sha256 HASH [--authorize-live for run]" unless
       %w[qualify offline run].include?(action) && arguments.empty? && options.keys.sort == required.sort
     result = action == "qualify" ? qualify(options) : bounded_journey(options, live: action == "run")
     puts JSON.pretty_generate(result)

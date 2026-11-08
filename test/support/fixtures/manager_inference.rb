@@ -41,5 +41,7 @@ if mode == "binary"
   exit 7
 end
 puts JSON.generate("type" => "thread.started", "thread_id" => mode == "wrong-session" ? "wrong-manager" : session) unless mode == "missing-session"
+puts JSON.generate("type" => "turn.started")
+puts JSON.generate("type" => "item.completed", "item" => { "type" => "agent_message", "text" => "Reviewing the supplied task evidence." })
 puts JSON.generate("type" => "item.completed", "item" => { "type" => "agent_message", "text" => mode == "malformed" ? "{}" : JSON.generate(decision) })
 puts JSON.generate("type" => "turn.completed") unless mode == "incomplete"

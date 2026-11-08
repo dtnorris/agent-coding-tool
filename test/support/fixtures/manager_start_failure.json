@@ -1,0 +1,14 @@
+{
+  "provenance": "Retained f731b687-c513-4499-bbdd-67788d86f27a; role-home path replaced, no private history or credentials. Hashes below cover sanitized bytes.",
+  "result": {
+    "stdout_base64": "",
+    "stderr_base64": "V0FSTklORzogcHJvY2VlZGluZywgZXZlbiB0aG91Z2ggd2UgY291bGQgbm90IGNyZWF0ZSBQQVRIIGFsaWFzZXM6IFJlZnVzaW5nIHRvIGNyZWF0ZSBoZWxwZXIgYmluYXJpZXMgdW5kZXIgdGVtcG9yYXJ5IGRpciAiPFJPTEVfSE9NRT4iIChjb2RleF9ob21lOiBBYnNvbHV0ZVBhdGhCdWYoIjxST0xFX0hPTUU+IikpCkVycm9yOiBPcGVyYXRpb24gbm90IHBlcm1pdHRlZCAob3MgZXJyb3IgMSkK",
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "605a35ca4b70473d7fdcfd25b399b7b1cef8b72b55d11490de50acc555c21afb",
+    "exit_status": 1,
+    "signal": null,
+    "truncated": false,
+    "session_id": null,
+    "final_base64": ""
+  }
+}

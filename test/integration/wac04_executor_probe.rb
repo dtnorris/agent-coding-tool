@@ -6,6 +6,18 @@ require "json"
 require "socket"
 mode, root, role = ARGV
 case mode
+when "cwd"
+  # Capture each operation independently: process exit zero is not cwd success.
+  operations = {}
+  { "getcwd" => -> { Dir.pwd }, "realpath" => -> { File.realpath(".") },
+    "stat" => -> { File.stat(".").directory? } }.each do |name, operation|
+    begin
+      operations[name] = { "value" => operation.call }
+    rescue SystemCallError => error
+      operations[name] = { "class" => error.class.name, "errno" => error.errno, "message" => error.message }
+    end
+  end
+  puts JSON.generate(operations)
 when "read-only"
   begin
     File.write(root, "forbidden")

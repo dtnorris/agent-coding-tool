@@ -62,22 +62,81 @@ module AgentCodingTool
         "stdout_sha256" => Digest::SHA256.hexdigest(output), "stderr_sha256" => Digest::SHA256.hexdigest(diagnostic),
         "exit_status" => result.exitstatus, "signal" => result.termsig, "truncated" => truncated,
         "session_id" => nil, "final_base64" => "" }
-      return envelope if truncated
+      if truncated
+        envelope["response_error"] = "output limit exceeded"
+        return envelope
+      end
+      events = []
       begin
-        events = output.lines.map { |line| RunEvidenceStore.parse(line) }
-        sessions = events.select { |event| event["type"] == "thread.started" }.map { |event| event["thread_id"] }
-        finals = events.select { |event| event["type"] == "item.completed" && event.dig("item", "type") == "agent_message" }
-        completed = events.count { |event| event["type"] == "turn.completed" }
-        tools = events.any? { |event| event["item"].is_a?(Hash) && !%w[agent_message reasoning].include?(event.dig("item", "type")) }
-        if sessions.length == 1 && (!session || sessions.first == session) && finals.length == 1 && completed == 1 && !tools &&
-            events.none? { |event| %w[error turn.failed].include?(event["type"]) }
-          envelope["session_id"] = sessions.first
-          envelope["final_base64"] = [finals.first.fetch("item").fetch("text")].pack("m0")
+        raise InvalidState, "JSONL is not UTF-8" unless output.dup.force_encoding("UTF-8").valid_encoding?
+        output.lines.each do |line|
+          event = RunEvidenceStore.parse(line)
+          raise InvalidState, "JSONL event must be an object" unless event.is_a?(Hash)
+          events << event
         end
-      rescue JSON::ParserError, KeyError, TypeError, NoMethodError
-        # Raw output and real status survive malformed/truncated/binary events.
+      rescue JSON::ParserError, InvalidState => error
+        envelope["response_error"] = "JSONL parse failure: #{error.message}"
+      end
+      sessions = events.select { |event| event["type"] == "thread.started" }.map { |event| event["thread_id"] }
+      if sessions.length == 1 && sessions.first.is_a?(String) && sessions.first.match?(ManagerSession::IDENTIFIER) &&
+          (!session || sessions.first == session)
+        envelope["session_id"] = sessions.first
+      else
+        envelope["session_error"] = "session handoff missing, duplicate or wrong"
+      end
+      unless envelope["response_error"] || envelope["session_error"]
+        begin
+          envelope["final_base64"] = [final_message!(events)].pack("m0")
+        rescue JSON::ParserError => error
+          envelope["response_error"] = "final JSON parse failure: #{error.message}"
+        rescue InvalidState => error
+          envelope["response_error"] = "response contract failure: #{error.message}"
+        end
       end
       envelope
+    end
+
+    private
+
+    # Selects the terminal decision in the phase-less exec JSONL contract. Earlier
+    # messages may be plain progress only, never structured/decision-bearing text.
+    # Tools, errors, unknown events, conflicting messages and incomplete turns
+    # raise InvalidState; malformed final JSON raises JSON::ParserError.
+    def final_message!(events)
+      allowed = %w[thread.started turn.started item.started item.updated item.completed turn.completed]
+      raise InvalidState, "unknown, failed or error event" unless events.all? { |event| allowed.include?(event["type"]) }
+      raise InvalidState, "incomplete or duplicate turn" unless events.count { |event| event["type"] == "turn.completed" } == 1 &&
+        events.last["type"] == "turn.completed" && events.first["type"] == "thread.started" &&
+        events.count { |event| event["type"] == "turn.started" } == 1
+      started = events.index { |event| event["type"] == "turn.started" }
+      raise InvalidState, "turn start out of order" if started && started != 1
+      messages = []
+      events.each do |event|
+        next unless event["type"].start_with?("item.")
+        item = event["item"]
+        raise InvalidState, "tool or malformed item event" unless item.is_a?(Hash) && %w[agent_message reasoning].include?(item["type"])
+        next unless item["type"] == "agent_message"
+        raise InvalidState, "nonterminal agent message event" unless event["type"] == "item.completed"
+        raise InvalidState, "agent message text missing" unless item["text"].is_a?(String)
+        messages << item["text"]
+      end
+      raise InvalidState, "missing final decision" if messages.empty?
+      messages[0...-1].each do |progress|
+        raise InvalidState, "ambiguous or multiple decisions" if progress.match?(/[{}\[\]]|\b(?:decision|ACCEPT|CONTINUE|BLOCKED|STOP|DEFER)\b/i) ||
+          progress.strip.empty?
+        begin
+          RunEvidenceStore.parse(progress)
+        rescue JSON::ParserError
+          next
+        end
+        raise InvalidState, "structured progress is ambiguous"
+      end
+      raise InvalidState, "final decision is not terminal" unless events[-2]["type"] == "item.completed" &&
+        events[-2].dig("item", "type") == "agent_message"
+      final = messages.last
+      raise InvalidState, "final decision exceeds limit" if final.bytesize > ManagerSession::FINAL_LIMIT
+      raise InvalidState, "final decision must be an object" unless RunEvidenceStore.parse(final).is_a?(Hash)
+      final
     end
   end
 end

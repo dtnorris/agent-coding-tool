@@ -1,0 +1,14 @@
+{
+  "provenance": "Retained 5dda2d8b-ffd6-4eb2-bce3-c80ab32dd9e3 result-1.json; exact 128-byte managed-preferences startup failure, no redaction needed. Existing earlier startup fixture remains separate.",
+  "result": {
+    "stdout_base64": "",
+    "stderr_base64": "RXJyb3I6IHRocmVhZC9zdGFydDogdGhyZWFkL3N0YXJ0IGZhaWxlZDogZmFpbGVkIHRvIGxvYWQgY29uZmlndXJhdGlvbjogRmFpbGVkIHRvIHN5bmNocm9uaXplIG1hbmFnZWQgcHJlZmVyZW5jZXMgKGNvZGUgLTMyNjAwKQo=",
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "bb38c0d526acee9c1f67e6986c7377cc9268b75da6dc5b72fe45002fb4e73ef5",
+    "exit_status": 1,
+    "signal": null,
+    "truncated": false,
+    "session_id": null,
+    "final_base64": ""
+  }
+}

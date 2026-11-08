@@ -65,6 +65,78 @@ class NativePilotExecutorTest < Minitest::Test
     File.write(File.join(destination, "#{self.name}-#{@receipt_number}.json"), JSON.generate("scope" => "production supervision; sandbox/boot/inference observations modeled", "files" => files), mode: "wx", perm: 0o600)
   end
 
+  # The CLI-writer fake alone produces candidate bytes. Production staging,
+  # supervisor retention and the independent validator reject malformed artifacts
+  # without rewriting them or renewing the consumed worker reservation.
+  def test_worker_final_artifact_and_rejections
+    %w[worker worker-empty worker-no-newline worker-wrong worker-missing worker-symlink worker-hardlink worker-oversized worker-tool worker-tool-error worker-mismatch worker-status worker-binary-diagnostic worker-timeout].each do |mode|
+      fixture do |_unused, directory, workspace, _profile|
+        root = File.dirname(directory)
+        control = File.join(root, "artifact-control")
+        Dir.mkdir(control, 0o700)
+        ruby = File.realpath(RbConfig.ruby)
+        script = File.join(ChildProcesses::FIXTURES, "native_pilot_worker.rb")
+        config = @config.merge("worker_final_artifact" => "worker-change.txt", "turn_seconds" => mode == "worker-timeout" ? 0.2 : 2,
+          "gate_argv" => [ruby, script, "validate", root],
+          "inference_prefixes" => { "worker" => [ruby, script, mode, root] })
+        executor = EXECUTOR.create(control, config, seconds: 10)
+        final = File.join(root, "runs", "T", "invocation", "final.txt")
+        FileUtils.mkdir_p(File.dirname(final), mode: 0o700)
+        output, diagnostic = %w[out err].map { |name| File.open(File.join(root, name), "w+", 0o600) }
+        argv = [ruby, "exec", "--sandbox", "workspace-write", "--output-last-message", final, "-"]
+        input = File.open(File::NULL)
+        pid = executor.spawn({}, *argv, chdir: workspace, in: input, out: output, err: diagnostic)
+        _pid, status = Process.waitpid2(pid)
+        assert_equal 1, read(control).dig("counts", "worker"), mode
+        artifact = File.join(workspace, "worker-change.txt")
+        if %w[worker worker-no-newline worker-wrong worker-status worker-binary-diagnostic].include?(mode)
+          assert_equal mode == "worker-status" ? 7 : 0, status.exitstatus, mode
+          assert_equal File.binread(artifact), File.binread(final), mode
+          gate = executor.gate(config.fetch("gate_argv"), cwd: workspace, out: StringIO.new, err: StringIO.new)
+          assert_equal %w[worker worker-status worker-binary-diagnostic].include?(mode), gate.success?, mode
+          assert_equal "worker", File.binread(artifact) if mode == "worker-no-newline"
+          assert_equal "diagnostic\x00\xfe".b, File.binread(diagnostic.path) if mode == "worker-binary-diagnostic"
+        else
+          assert_equal 125, status.exitstatus, mode
+          refute File.exist?(final), mode
+          assert read(control).fetch("held"), mode
+          assert_raises(AgentCodingTool::InvalidState) { executor.spawn({}, *argv, chdir: workspace, in: input, out: output, err: diagnostic) }
+        end
+        input.close
+        output.close
+        diagnostic.close
+        preserve_native_receipt(control)
+      end
+    end
+  end
+
+  # Independent fixed validation rejects byte and filesystem substitutions even
+  # when no inference is involved; the fixture's bad inputs never become a grant.
+  def test_independent_artifact_validator_paths_and_bytes
+    %w[valid wrong empty missing truncated symlink hardlink].each do |mode|
+      fixture do |_executor, directory, workspace, _profile|
+        root = File.dirname(directory)
+        candidate = File.join(workspace, "worker-change.txt")
+        content = { "valid" => "worker\n", "wrong" => "other!\n", "empty" => "", "truncated" => "worker" }.fetch(mode, "worker\n")
+        if %w[symlink hardlink].include?(mode)
+          outside = File.join(root, "outside")
+          File.binwrite(outside, content)
+          mode == "symlink" ? File.symlink(outside, candidate) : File.link(outside, candidate)
+        elsif mode != "missing"
+          File.binwrite(candidate, content)
+        end
+        control = File.join(root, "validator-control")
+        Dir.mkdir(control, 0o700)
+        command = [File.realpath(RbConfig.ruby), File.join(ChildProcesses::FIXTURES, "native_pilot_worker.rb"), "validate", root]
+        executor = EXECUTOR.create(control, @config.merge("gate_argv" => command), seconds: 10)
+        outcome = executor.gate(command, cwd: workspace, out: StringIO.new, err: StringIO.new)
+        assert_equal mode == "valid", outcome.success?, mode
+        assert_equal 1, read(control).dig("counts", "gate")
+        assert_equal content, File.binread(candidate) if %w[valid wrong empty truncated].include?(mode)
+      end
+    end
+  end
+
   # Reads inert durable native control facts without interpreting model output.
   def read(directory, name = "ledger.json")
     JSON.parse(File.binread(File.join(directory, name)))

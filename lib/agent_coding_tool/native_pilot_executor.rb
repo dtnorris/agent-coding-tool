@@ -90,6 +90,13 @@ module AgentCodingTool
       lines << '(deny file-read* file-write* (regex #".*/[.]git(/|$)"))'
       # No process-fork grant: disabled shell/agent/app/plugin tools cannot
       # create children, escape process groups, or reach a local control channel.
+      # CFPreferences enforces these domain filters separately from Mach lookup.
+      # Do not add apple.cfprefs.* shared memory or a system.sb import: neither
+      # preserves this profile's restricted reads. Host qualification is required.
+      unless role == "gate"
+        lines << '(allow user-preference-read managed-preference-read (preference-domain "com.openai.codex"))'
+        lines << '(allow mach-lookup (global-name "com.apple.cfprefsd.daemon") (global-name "com.apple.cfprefsd.agent") (local-name "com.apple.cfprefsd.agent"))'
+      end
       lines << "(allow network*)" unless role == "gate"
       lines.join("\n") + "\n"
     end
@@ -101,20 +108,24 @@ module AgentCodingTool
     end
 
     # Launcher-compatible process boundary. Only the declared workspace and CLI
-    # shape are accepted; final output is written to a model-owned staging path,
-    # then copied by the supervisor into private evidence after size/type checks.
+    # shape are accepted. The pinned T recipe may select its fixed workspace
+    # artifact; other callers retain home staging. Only the CLI writes the file,
+    # then the supervisor copies its unchanged bytes into private run evidence.
     # Returns an owned supervisor PID for Launcher's ordinary lifecycle handling.
     def spawn(environment, *argv, **options)
       cwd = File.realpath(options.fetch(:chdir))
       raise InvalidState, "pilot: aliased worker cwd" unless options.fetch(:chdir) == cwd
       raise InvalidState, "pilot: foreign worker cwd" unless cwd.start_with?(@config.fetch("worktree_root") + "/T/")
+      raise InvalidState, "pilot: ambiguous worker final" unless argv.count("--output-last-message") == 1
       final_index = argv.index("--output-last-message")
       raise InvalidState, "pilot: missing worker final" unless final_index
       final = argv.fetch(final_index + 1)
       raise InvalidState, "pilot: foreign evidence final" unless final.start_with?(@config.fetch("run_root") + "/T/") && File.basename(final) == "final.txt" &&
         File.expand_path(final) == final && File.realpath(File.dirname(final)) == File.dirname(final)
       command = argv.dup
-      staged = File.join(@config.fetch("worker_home"), "final.txt")
+      artifact = @config["worker_final_artifact"]
+      raise InvalidState, "pilot: unsupported fixture artifact" if artifact && artifact != "worker-change.txt"
+      staged = artifact ? File.join(cwd, artifact) : File.join(@config.fetch("worker_home"), "final.txt")
       raise InvalidState, "pilot: occupied worker final" if File.exist?(staged) || File.symlink?(staged)
       command[final_index + 1] = staged
       command.insert(-2, "--skip-git-repo-check", "-c", "features.shell_tool=false", "-c", "features.apps=false", "-c", "features.plugins=false", "-c", 'web_search="disabled"', "-c", 'model_reasoning_effort="high"')
@@ -335,6 +346,25 @@ module AgentCodingTool
       end
     end
 
+    # Binds the fixture artifact to one completed, tool-free inference response.
+    # Malformed events, tool/error events or a writer/transcript mismatch hold the
+    # reserved worker turn; neither file bytes nor newline are changed here.
+    def validate_worker_artifact!(bytes, transcript, diagnostic)
+      raise InvalidState, "worker tool runtime error" if diagnostic.match?(/\bERROR codex_core::tools::/)
+      events = transcript.lines.map { |line| RunEvidenceStore.parse(line) }
+      allowed = %w[thread.started turn.started item.started item.updated item.completed turn.completed]
+      raise InvalidState, "invalid worker artifact stream" unless events.all? { |event| event.is_a?(Hash) && allowed.include?(event["type"]) } &&
+        events.count { |event| event["type"] == "thread.started" } == 1 &&
+        events.count { |event| event["type"] == "turn.started" } == 1 &&
+        events.count { |event| event["type"] == "turn.completed" } == 1 && events.last["type"] == "turn.completed"
+      raise InvalidState, "worker tool event refused" if events.any? do |event|
+        event["type"].start_with?("item.") && (!event["item"].is_a?(Hash) || !%w[agent_message reasoning].include?(event.dig("item", "type")))
+      end
+      messages = events.select { |event| event["type"] == "item.completed" && event.dig("item", "type") == "agent_message" }
+      raise InvalidState, "worker candidate/final stream mismatch" unless messages.length == 1 && messages.first.dig("item", "text").is_a?(String) &&
+        messages.first.dig("item", "text").b == bytes
+    end
+
     # Independently enforces absolute/turn deadlines, parent death and byte caps.
     # Keeps the direct child waitable until group teardown, preventing PID/group
     # reuse. Profiles forbid process-group escape executables; descendant signal
@@ -365,7 +395,7 @@ module AgentCodingTool
         target = Process.spawn(environment, "/usr/bin/sandbox-exec", "-f", profile, *executed,
           chdir: cwd, in: input, out: write_out, err: write_err, pgroup: true, unsetenv_others: true, close_others: true)
         [write_out, write_err].each(&:close)
-        self.class.save(@directory, "#{token}.started.json", { "supervisor" => Process.pid, "controller" => owner, "child" => target, "deadline" => deadline, "role" => role })
+        self.class.save(@directory, "#{token}.started.json", { "supervisor" => Process.pid, "controller" => owner, "child" => target, "deadline" => deadline, "role" => role, "argv" => argv })
         streams = { read_out => output, read_err => error }
         loop do
           supervision_check!(owner, deadline)
@@ -386,9 +416,22 @@ module AgentCodingTool
           end
         end
         if final
-          stat = File.lstat(final.first)
-          raise InvalidState, "invalid worker final" unless stat.file? && !stat.symlink? && stat.nlink == 1 && stat.size <= 65_536
-          bytes = File.binread(final.first)
+          raise InvalidState, "aliased worker final" unless File.realpath(File.dirname(final.first)) == File.dirname(final.first)
+          File.open(final.first, File::RDONLY | File::NONBLOCK | File::NOFOLLOW) do |file|
+            stat = file.stat
+            actual = File.lstat(final.first)
+            raise InvalidState, "invalid worker final" unless stat.file? && stat.nlink == 1 && stat.size <= 65_536 &&
+              [stat.dev, stat.ino] == [actual.dev, actual.ino]
+            bytes = file.read(65_537) || "".b
+            raise InvalidState, "empty worker artifact" if @config["worker_final_artifact"] && bytes.empty?
+            raise InvalidState, "changed worker final" unless bytes.bytesize == stat.size && file.stat.size == stat.size
+            @final_bytes = bytes
+          end
+          bytes = @final_bytes
+          if @config["worker_final_artifact"]
+            logs.each_value(&:flush)
+            validate_worker_artifact!(bytes, File.binread(File.join(@directory, "#{token}.worker.stdout")), File.binread(File.join(@directory, "#{token}.worker.stderr")))
+          end
           ledger do |state|
             raise InvalidState, "cumulative output limit" if state.fetch("bytes") + bytes.bytesize > OUTPUT_LIMIT
             state["bytes"] += bytes.bytesize
@@ -414,7 +457,9 @@ module AgentCodingTool
         end
         self.class.save(@directory, "#{token}.json", { "exit_status" => status&.exitstatus, "signal" => status&.termsig,
           "failure" => failure, "truncated" => !!failure&.include?("output limit"), "role" => role,
-          "stopped_monotonic" => stopped_at, "lease_overrun" => lease_overrun })
+          "stopped_monotonic" => stopped_at, "lease_overrun" => lease_overrun,
+          "worker_final" => final && @final_bytes && { "path" => final.first, "bytes" => @final_bytes.bytesize,
+            "sha256" => Digest::SHA256.hexdigest(@final_bytes) } })
         ledger do |state|
           state["held"] = failure if failure
           state["active"] = nil

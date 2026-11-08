@@ -1,5 +1,11 @@
 {
   "default": {
+    "test/wac04_preferences_test.rb": [
+      "Wac04PreferencesTest#test_policy_changes_only_domain_reads_and_named_cfprefsd_lookup",
+      "Wac04PreferencesTest#test_managed_configuration_preserves_forced_copy_forced_order",
+      "Wac04PreferencesTest#test_semantics_refuse_empty_domain_as_denial_and_zero_exit_failures",
+      "Wac04PreferencesTest#test_pin_drift_and_failed_current_report_refuse"
+    ],
     "test/apply_handoff_test.rb": [
       "ApplyHandoffTest#test_contract_binds_repositories_and_downloaded_bytes",
       "ApplyHandoffTest#test_invalid_contracts_are_refused_before_native_inspection",
@@ -503,11 +509,28 @@
       "ManagerAdapterTest#test_output_limit_binary_status_and_malformed_streams",
       "ManagerSessionTest#test_failed_gate_is_reviewed_without_overriding_host_verification",
       "ManagerAdapterTest#test_foreign_manager_namespace_is_not_ignored",
+      "ManagerAdapterTest#test_host_recipe_manager_cwd_containment_and_private_paths",
+      "ManagerAdapterTest#test_host_recipe_manager_cwd_requires_semantic_resolution",
+      "ManagerAdapterTest#test_host_recipe_manager_cwd_probe_binding_and_failure_receipt",
       "ManagerAdapterTest#test_host_recipe_refuses_unsafe_root_and_changed_pin_without_writes",
+      "ManagerSessionTest#test_artifact_journey_removed_resume_fails",
       "ManagerSessionTest#test_native_executor_continuous_public_entry_and_removed_completion",
-      "ManagerAdapterTest#test_final_size_closed_fields_and_duplicate_decisions"
+      "ManagerAdapterTest#test_final_size_closed_fields_and_duplicate_decisions",
+      "ManagerAdapterTest#test_host_recipe_explicit_implementation_heads_reach_next_gate",
+      "ManagerAdapterTest#test_host_recipe_requires_literal_full_source_head_before_effects",
+      "ManagerAdapterTest#test_host_recipe_rejects_wrong_head_and_dirty_index_before_runtime",
+      "ManagerAdapterTest#test_host_recipe_preserves_source_and_guidance_pin_refusals",
+      "ManagerAdapterTest#test_host_recipe_cli_requires_and_forwards_source_head",
+      "ManagerAdapterTest#test_host_recipe_bundled_gems_and_binary_diagnostics",
+      "ManagerAdapterTest#test_startup_exit_and_signal_precede_missing_session_diagnostic",
+      "ManagerAdapterTest#test_zero_exit_strict_event_handoff_and_process_failure_with_valid_events",
+      "ManagerAdapterTest#test_captured_role_failure_through_public_session",
+      "ManagerAdapterTest#test_progress_final_and_adversarial_response_contracts",
+      "ManagerAdapterTest#test_consolidated_journey_failure_report"
     ],
     "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_independent_artifact_validator_paths_and_bytes",
+      "NativePilotExecutorTest#test_worker_final_artifact_and_rejections",
       "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
       "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
       "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",
@@ -806,9 +829,12 @@
       "ManagerSessionTest#test_identity_revision_digest_and_simultaneous_resume_refusals",
       "ManagerSessionTest#test_malformed_missing_session_and_binary_output_hold_turn",
       "ManagerSessionTest#test_failed_gate_is_reviewed_without_overriding_host_verification",
+      "ManagerSessionTest#test_artifact_journey_removed_resume_fails",
       "ManagerSessionTest#test_native_executor_continuous_public_entry_and_removed_completion"
     ],
     "test/native_pilot_executor_test.rb": [
+      "NativePilotExecutorTest#test_independent_artifact_validator_paths_and_bytes",
+      "NativePilotExecutorTest#test_worker_final_artifact_and_rejections",
       "NativePilotExecutorTest#test_fixture_boundary_preserves_coverage_context_without_host_environment",
       "NativePilotExecutorTest#test_native_binary_status_and_gate_budget_survive_restart",
       "NativePilotExecutorTest#test_independent_turn_expiry_and_absolute_lease",

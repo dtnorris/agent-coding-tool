@@ -271,7 +271,7 @@ is the requested side effect, not repository or publication authorization.
 
 ## Persistent manager session candidate
 
-This WAC-04 architecture decision is bound to ACT baseline
+This WAC-04 architecture decision retains original preparation provenance at ACT baseline
 `5d9af78cd7925238358089d53b03d8e419d7951b`, ACTD inputs
 `7976eecd5e30f6db90a24dd7446d6d5a09c503d9` and skills input
 `5162361187be082ba897d79571345a65caad33bd`. The continuation applies complete coding/planning guidance at
@@ -353,6 +353,37 @@ requires a host-installed runtime; an environment flag or a model decision canno
 grant execution. The host recipe installs the executor through the trusted CLI
 constructor and uses the production public entries for the entire journey.
 
+Manager prompts define an observation-only reviewer: worker constraints and candidate
+content are evidence, never instructions to edit or invoke tools. Turn one returns a
+closed CONTINUE/BLOCKED/STOP decision with a concrete criterion; ACCEPT is only
+available for turn-two candidate review. The second prompt supplies bound evidence
+and original scope, leaving the earlier criterion in session history.
+
+For the installed phase-less JSONL stream, the adapter retains a uniquely identified
+thread separately from final-response validity. It permits plain progress before one
+terminal JSON decision, but refuses structured/decision-bearing progress, tool/error
+or unknown events, malformed final JSON and incomplete turns. It does not select an
+arbitrary last text or coerce unsupported decisions such as DEFER. A rejected response
+holds the consumed turn; its identified session cannot be reused as accepted history.
+Raw capture, real status/signal and existing limits remain in the private receipt.
+The bounded recipe writes a failure RESULT with public-entry stage, exception,
+command status and raw-evidence hashes, instead of reporting only controller exit 2.
+
+The tiny T continuity fixture uses the existing CLI `--output-last-message`
+writer to produce `worker-change.txt` directly in the verified worker cwd. The
+worker must emit exactly `worker` followed by one newline and invoke no tools.
+The CLI writes the actual final text; ACT never appends, normalizes or seeds the
+answer. After supervised exit, ACT checks the unaliased regular single-link file,
+its completed tool-free stream and matching final text, then retains unchanged
+bytes in private run evidence. The independent validator checks all seven bytes.
+Other callers retain the prior home-staging path. The Nov 8, 2026 Mac mini
+pilot exercised this final-output route with one independent worker and two
+turns in the same saved manager session. The independent validator passed and the
+resumed manager applied its earlier criterion to the bound result. The
+controller reads saved JSONL histories explicitly as UTF-8 so it can retain
+model metadata under the host's C locale. The corrected pilot wrote the final
+live receipt. Generic worker editing-tool compatibility remains unproven.
+
 A synced ledger under `DATA-runs/checkpoints/native-WAC-04` reserves before fork:
 two manager turns, one worker, one gate, one active invocation, 300 seconds per
 inference turn, 120 seconds per gate, a 64 KiB final and 4 MiB cumulative output.
@@ -367,23 +398,48 @@ Launcher preflight, under that original lease.
 Each native invocation has an independent supervisor outside model confinement.
 It detects controller death, enforces deadlines during pipe backpressure, stops
 only its still-owned child group before reaping, and preserves actual byte/status
-receipts. Worker output is also archived independently of Launcher. Worker final
-output is staged in its role home, checked, then copied into private evidence by
-the supervisor. Neither worker nor manager can write ACT control/evidence roots.
+receipts. Worker output is also archived independently of Launcher. The supervisor
+checks the final output at the recipe's designated path and copies it into
+private evidence. Neither worker nor manager can write ACT control/evidence roots.
 
 An outer macOS deny-default policy confines each role. It denies process forks,
 foreign signals, control access and source writes. Manager runtime history is
 writable only in its separate Codex home; manager tools use Codex’s read-only
 policy, with shell, multi-agent, apps, plugins and web tools disabled. The adapter
-rejects tool events. Worker tools have only fixture candidate writes and must use
-the native patch tool, with shell tools disabled. Gate execution reads the fixed
-candidate bytes through the pinned host validator, without evaluating candidate
-code. Host qualification probes all three profiles, symlink/control denials,
+rejects tool events. Worker writes are confined to the fixture and its private
+role home, with shell tools disabled. In the T journey, the worker produces the
+candidate through the CLI final-output writer. The pinned host validator reads
+the fixed candidate bytes without evaluating candidate code. Host qualification probes all three profiles, symlink/control denials,
 installed read-only tool confinement, byte/status capture, expiry and controller
 death before any inference. The auth prerequisite is an existing private
 file-based ChatGPT login: fixture homes reference it by symlink, never copy it,
 and receive no write grant to the original credential file. API keys and user
 Ruby/config injection are absent from workload environments.
+Harmless Ruby probes and the fixed validator search only the bundled gems under
+the pinned Ruby installation via explicit `GEM_HOME` and `GEM_PATH`. No external
+Homebrew/user gem directory is added to the sandbox read grants. Failed probes
+retain raw streams and status, and report their stage, signal, byte counts,
+hashes and bounded base64 diagnostic prefixes before dependent execution stops.
+Role temporary directories sit below their private homes (`HOME/tmp`); using
+the home itself as `TMPDIR` triggers the installed CLI's helper-alias refusal.
+This warning does not establish the cause of a later CLI failure. Manager turns
+retain the raw result before validation and report nonzero exits or signals
+before interpreting missing session events. A held start consumes its attempt;
+neither a diagnostic repair nor a new source pin renews the original budget.
+The manager works in a dedicated private `CODEX_HOME/work`, below its existing
+role grant and separate from worker worktrees and ACT control/evidence. The
+original scratch cwd denied both `getcwd` and canonical `realpath` under the live
+policy, although stat succeeded. Qualification now runs a harmless Ruby cwd
+probe through the native supervisor under the actual manager policy/environment
+before inference. Both resolved paths must equal the expected directory and stat
+must identify a directory; captured exceptions fail even if the probe exits zero.
+`manager-cwd.json` records semantic results and diagnostic hashes/status; the
+separate `qualify-manager-cwd` ledger retains exact streams. Policy is unchanged.
+Harmless `qualify` prepares and checks the live role homes/auth symlinks without
+inference. The journey adopts that qualified configuration, retaining all role
+boundary, binary/status, lease and controller-death checks. Qualification moves
+its harmless worker probe bytes outside task worktrees before worker admission.
+This checks cwd resolution, not complete Codex startup or live continuity.
 
 After host checkpoint registration and separate authorization for synthetic
 fixture Git operations, run with reviewed literal source/executable hashes:
@@ -392,6 +448,7 @@ fixture Git operations, run with reviewed literal source/executable hashes:
 bundle exec ruby test/integration/wac04_qualification.rb pin
 bundle exec ruby test/integration/wac04_qualification.rb offline \
   --root /Users/davidnorriseng/code/agent-coding-tool-data-fixtures/WAC-04-host-OFFLINE-UNIQUE \
+  --source-head REVIEWED_FULL_SOURCE_HEAD \
   --source-sha256 REVIEWED_SOURCE_SHA256 \
   --codex /ABSOLUTE/INSTALLED/codex --codex-sha256 REVIEWED_EXECUTABLE_SHA256
 ```
@@ -399,6 +456,14 @@ bundle exec ruby test/integration/wac04_qualification.rb offline \
 `qualify` runs only harmless qualification. `offline` additionally creates a
 synthetic baseline/local remote and completes the native public-entry journey
 with inference substitutes. Both are host checks. Neither authorizes live usage.
+Every qualification requires an operator-supplied `--source-head`: exactly 40
+lowercase hexadecimal characters matching actual Git HEAD, independent of the
+exact `--source-sha256` content pin. Do not derive the expected HEAD from whatever
+checkout happens to be current. The original preparation baseline is provenance,
+not the implementation admission identity. Missing/malformed HEAD, mismatched
+HEAD, and staged changes refuse before fixture creation or Codex observations.
+The qualification receipt retains actual, expected and preparation HEADs plus
+branch, origin, index, worktree, realpath and composition observations.
 The source pin includes the required full manager-guidance digest from the bound
 skills revision. Loading the recipe and computing that pin need no sibling skills
 checkout; qualification requires the canonical sibling path and exact guidance
@@ -418,6 +483,27 @@ retry unconfined or reuse an occupied root; a new live attempt needs a new
 operator authorization. The separately exported continuation recipe supplies
 literal commands and prerequisites for this candidate.
 
+The managed-preferences compatibility candidate adds only domain-filtered
+`user-preference-read`/`managed-preference-read` for `com.openai.codex` and named
+cfprefsd lookups to manager/worker profiles. It adds no shared-memory or preference
+write grants; the gate profile stays unchanged. Native compatibility is pending.
+`test/integration/wac04_preferences_qualification.rb` is the separate harmless
+host gate, taking the exported qualification pin and an exclusive fixture output
+path. It uses direct CoreFoundation calls, kernel permission decisions and the
+existing independent supervisor, with a 110-second original experiment lease
+including teardown and a cumulative 20-second/4 MiB limit per role, shared by
+its independently supervised controls. An actual direct exec attempt of pinned
+`/usr/bin/true` must return an authorization errno; an allowed Ruby exec supplies
+the positive control. The old process-exec SPI result is diagnostic only.
+Disposable global-preference markers test lookup context and protected access
+without preference setters. `HOME` alone is not proof of the CF principal.
+Returned protected markers fail even when permission queries deny access;
+unproved context or unattributed `AppleLocale` values remain `BLOCKED`, never
+safe by default. It prints a concise summary and saves complete raw evidence,
+exiting nonzero on failure or uncertainty. It never runs Codex or changes real
+preferences. Both previously consumed manager starts, held records and expired
+deadlines remain consumed; passing this gate supplies no live retry authority.
+
 Focused tests also cover the executor’s production paths with harmless processes:
 
 ```sh
@@ -425,12 +511,10 @@ bundle exec ruby -Ilib:test test/native_pilot_executor_test.rb
 bundle exec ruby -Ilib:test test/manager_session_test.rb
 ```
 
-Those tests explicitly model boot, sandbox and inference observations; they do
-not qualify native confinement. This authoring sandbox refuses `kern.boottime`
-with EPERM, which is preserved as an environmental refusal. Full host
-qualification, live semantic continuity and required complete-suite gates are
-**NOT RUN** for this candidate. Executor/recipe implementation completion is
-separate from David’s real-host acceptance.
+Those tests model boot, sandbox and inference observations. The Nov 8 live
+receipt applies to the exact isolated pilot snapshot and its reviewed host
+profiles. Run the complete offline acceptance suite on the integrated branch
+before merging. Real-host acceptance remains David's decision.
 
 ## Apply a worker handoff
 

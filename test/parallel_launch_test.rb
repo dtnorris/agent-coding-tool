@@ -62,6 +62,122 @@ class ParallelLaunchTest < Minitest::Test
     nil
   end
 
+  # An unrelated preparation is not a reservation. Public launch must consume
+  # the target's own preparation and preserve the sibling's bytes; failures raise.
+  def test_unstarted_sibling_with_added_writer_does_not_block_public_launch
+    fixture(git: true, process: true) do
+      sibling = File.join(@root, "sibling")
+      memory_repository(@memory_world, path: sibling, remote: "#{sibling}.git")
+      repositories = { "old" => { "access" => "write", "path" => sibling } }
+      write_task(@data, id: "S", repositories: repositories)
+      constructor = AgentCodingTool::Launcher.method(:new)
+      factory = ->(**options) { constructor.call(**options, codex: @fake, spawner: method(:spawn_fake_worker)) }
+      AgentCodingTool::Launcher.stub(:new, factory) do
+        %w[S T].each do |id|
+          code, _output, error = public_cli("prepare", id)
+          assert_equal 0, code, error
+        end
+        missing = File.join(@root, "unprovisioned")
+        repositories["registration-artifacts"] = { "access" => "write", "path" => missing }
+        write_task(@data, id: "S", repositories: repositories)
+        sibling_paths = [File.join(@data, "tasks", "S.yml"), @store.state_path("S"),
+                         @store.load("S").fetch("prompt_path")]
+        preserved = sibling_paths.to_h { |path| [path, File.binread(path)] }
+        target_prompt = File.binread(@store.load("T").fetch("prompt_path"))
+        code, _output, error = public_cli("launch", "T", "--codex")
+        assert_equal 0, code, error
+        assert_equal "exited", handoff("T").fetch("status")
+        assert @store.load("T")["started_at"]
+        assert File.binread(handoff("T").fetch("stdin_path")).start_with?(target_prompt)
+        assert_equal ["T"], Dir.glob("#{@data}-runs/*/*/handoff.json").map { |path|
+          JSON.parse(File.binread(path)).fetch("task_id") }
+        preserved.each { |path, bytes| assert_equal bytes, File.binread(path) }
+        refute File.exist?(missing)
+        refute File.exist?(File.join(@root, "worktrees", "S"))
+
+        code, _output, error = public_cli("launch", "S", "--codex")
+        assert_equal 2, code
+        assert_includes error, "incompatible preparation"
+        preserved.each { |path, bytes| assert_equal bytes, File.binread(path) }
+        refute File.exist?(File.join("#{@data}-runs", "S"))
+      end
+    end
+  end
+
+  # Active and retained candidate reservations with missing writers fail before
+  # target allocation, even with an override. Public CLI returns a bounded error.
+  def test_reserved_sibling_with_added_writer_refuses_before_target_allocation
+    %w[started candidate_complete].each do |reservation|
+      fixture(git: true) do
+        sibling = File.join(@root, "sibling")
+        memory_repository(@memory_world, path: sibling, remote: "#{sibling}.git")
+        repositories = { "old" => { "access" => "write", "path" => sibling } }
+        write_task(@data, id: "S", repositories: repositories)
+        %w[S T].each { |id| @coordinator.prepare(id) }
+        if reservation == "started"
+          @coordinator.start("S")
+        else
+          @coordinator.record("S", outcome: "candidate_complete", artifact: "fixture candidate")
+        end
+        repositories["registration-artifacts"] = { "access" => "write", "path" => File.join(@root, "unprovisioned") }
+        write_task(@data, id: "S", repositories: repositories)
+        preserved = %w[S T].to_h { |id| [@store.state_path(id), File.binread(@store.state_path(id))] }
+        worker = launcher
+        AgentCodingTool::Launcher.stub(:new, worker) do
+          [[], ["--allow-write-collision"]].each do |override|
+            code, _output, error = public_cli("launch", "T", "--codex", *override)
+            assert_equal 2, code
+            assert_equal "ERROR: launch: S/registration-artifacts: missing prepared writer evidence\n", error
+            preserved.each { |path, bytes| assert_equal bytes, File.binread(path) }
+            refute File.exist?(File.join(@root, "worktrees", "T"))
+            refute File.exist?(File.join("#{@data}-runs", "T"))
+            refute File.exist?(File.join(@root, "argv"))
+          end
+          repositories.delete("registration-artifacts")
+          write_task(@data, id: "S", repositories: repositories)
+          code, _output, error = public_cli("launch", "T", "--codex")
+          assert_equal 0, code, error
+          assert_equal preserved.fetch(@store.state_path("S")), File.binread(@store.state_path("S"))
+        end
+      end
+    end
+  end
+
+  # Skipping unreserved state must not skip nonterminal run authority. Both an
+  # old preparation and absent state refuse overlap without touching the report.
+  def test_unreserved_sibling_run_still_blocks_overlapping_public_launch
+    [true, false].each do |prepared|
+      fixture(git: true) do
+        sibling = File.join(@root, "sibling")
+        memory_repository(@memory_world, path: sibling, remote: "#{sibling}.git")
+        repositories = { "old" => { "access" => "write", "path" => sibling } }
+        write_task(@data, id: "S", repositories: repositories)
+        %w[S T].each { |id| @coordinator.prepare(id) }
+        preparation = @store.load("T").fetch("snapshot")
+        repositories["registration-artifacts"] = { "access" => "write", "path" => File.join(@root, "unprovisioned") }
+        write_task(@data, id: "S", repositories: repositories)
+        @store.write("S", {}) unless prepared
+        path = File.join("#{@data}-runs", "S", "earlier", "handoff.json")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.chmod(0o700, "#{@data}-runs")
+        bytes = JSON.generate("schema_version" => AgentCodingTool::Launcher::SCHEMA,
+          "task_id" => "S", "preparation" => preparation, "writable_repository" => "repo", "status" => "running")
+        File.binwrite(path, bytes)
+        worker = launcher
+        AgentCodingTool::Launcher.stub(:new, worker) do
+          code, _output, error = public_cli("launch", "T", "--codex", "--allow-write-collision")
+          assert_equal 2, code
+          assert_includes error, "S has partial, interrupted or unknown execution evidence"
+        end
+        assert_equal bytes, File.binread(path)
+        refute @store.load("T")["started_at"]
+        refute File.exist?(File.join(@root, "worktrees", "T"))
+        refute File.exist?(File.join("#{@data}-runs", "T"))
+        refute File.exist?(File.join(@root, "argv"))
+      end
+    end
+  end
+
   # Cold public prepare/launch must admit a verified active sibling by default.
   # Cold guarded CLIs share main's modeled Git authority and retain real workers.
   def test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint

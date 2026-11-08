@@ -248,6 +248,9 @@
       "NextTest#test_next_rejects_arguments_without_reading_or_changing_state"
     ],
     "test/parallel_launch_test.rb": [
+      "ParallelLaunchTest#test_unstarted_sibling_with_added_writer_does_not_block_public_launch",
+      "ParallelLaunchTest#test_reserved_sibling_with_added_writer_refuses_before_target_allocation",
+      "ParallelLaunchTest#test_unreserved_sibling_run_still_blocks_overlapping_public_launch",
       "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
       "ParallelLaunchTest#test_cross_baseline_launch_preserves_managed_reservations",
@@ -761,6 +764,9 @@
       "LauncherTest#test_external_report_after_worker_handoff_blocks_automatic_and_multi_delivery"
     ],
     "test/parallel_launch_test.rb": [
+      "ParallelLaunchTest#test_unstarted_sibling_with_added_writer_does_not_block_public_launch",
+      "ParallelLaunchTest#test_reserved_sibling_with_added_writer_refuses_before_target_allocation",
+      "ParallelLaunchTest#test_unreserved_sibling_run_still_blocks_overlapping_public_launch",
       "ParallelLaunchTest#test_default_parallel_launch_owns_distinct_roots_and_preserves_stale_checkpoint",
       "ParallelLaunchTest#test_foreign_sibling_worktree_record_blocks_without_disturbing_first_worker",
       "ParallelLaunchTest#test_cross_baseline_launch_preserves_managed_reservations",

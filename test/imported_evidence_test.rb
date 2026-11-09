@@ -6,8 +6,8 @@ require "agent_coding_tool/share_controller"
 require "minitest/mock"
 require "stringio"
 
-# Only transport readiness is external here. CLI, import, durable leases, binary
-# reader and modern MCP frames use production code and real private files/pipes.
+# Covers imported evidence through the public CLI and modern MCP frames.
+# The repeat-download case substitutes an in-memory archive body.
 class ImportedEvidenceTest < Minitest::Test
   # Creates an existing task with no managed attempt and a ready synthetic tunnel.
   def setup
@@ -26,6 +26,10 @@ class ImportedEvidenceTest < Minitest::Test
     @path = File.join("#{@data}-sharing", "session-#{'a' * 32}")
     start_session(@path)
     File.write("#{@data}-sharing/active.json", JSON.generate("session" => @path), perm: 0o600)
+  end
+
+  # Creates a small source ZIP for the cases that exercise local import behavior.
+  def prepare_zip_fixture
     @members = { "review.txt" => "completed synthetic review\n", "binary.dat" => (0..255).to_a.pack("C*") * 80, "empty" => "".b }
     @zip = ZipFixture.build(@members)
     @source = File.join(@temporary, "completed results.zip")
@@ -103,190 +107,99 @@ class ImportedEvidenceTest < Minitest::Test
     type.const_set(name, original)
   end
 
-  # Counts actual retained bundle reads and streaming hash inputs, including
-  # hidden selection work. All other filesystem and digest behavior stays real.
-  # Returns the yielded value; original methods are restored on exceptions.
-  def measure_retained_work(metrics)
-    open_file = File.method(:open)
-    new_hash = Digest::SHA256.method(:new)
-    tracked_open = lambda do |path, *arguments, **options, &block|
-      next open_file.call(path, *arguments, **options, &block) unless block && path.is_a?(String) && path.end_with?("/bundle")
-      open_file.call(path, *arguments, **options) do |file|
-        read = file.method(:read)
-        file.define_singleton_method(:read) do |*sizes|
-          part = read.call(*sizes)
-          metrics["retained_read_bytes"] += part.bytesize if part
-          metrics["maximum_read"] = [metrics["maximum_read"], sizes.first || 0].max
-          part
-        end
-        Thread.current[:act_zip_hash_metrics] = metrics
-        begin
-          block.call(file)
-        ensure
-          Thread.current[:act_zip_hash_metrics] = nil
-        end
-      end
-    end
-    tracked_hash = lambda do |*arguments|
-      hash = new_hash.call(*arguments)
-      update = hash.method(:update)
-      hash.define_singleton_method(:update) do |bytes|
-        observed = Thread.current[:act_zip_hash_metrics]
-        observed["retained_hash_bytes"] += bytes.bytesize if observed
-        update.call(bytes)
-      end
-      hash
-    end
-    File.stub(:open, tracked_open) { Digest::SHA256.stub(:new, tracked_hash) { yield } }
-  end
-
-  # Reads a small review, then reconstructs 13 MiB once and exact 100 MiB twice
-  # archives exclusively through production CLI/discover/select/framed reads.
-  # The receiving loop has only pipe endpoints and private destination storage;
-  # it never opens the retained bundle. Full gates include instrumentation and
-  # a cap+1 refusal without publication. This case belongs to native_default so
-  # the ordinary feedback runtime budget remains a useful independent signal.
-  def test_large_framed_zip_journeys_and_linear_retained_work
-    [13 * 1024 * 1024, 100 * 1024 * 1024].each do |target|
-      # One tunnel/task lease covers review, full retrieval and repeat retrieval.
-      start_session(File.join("#{@data}-sharing", "session-#{target.to_s(16).rjust(32, '0')}"))
-      File.write("#{@data}-sharing/active.json", JSON.generate("session" => @session.instance_variable_get(:@path)))
-      File.binwrite(@source, @zip)
-      review_record = share("FIRST", @source).fetch("import") if target == 104857600
-      members = { "review.txt" => "ACT-43 generated review\n", "binary.dat" => Random.new(43).bytes(2048), "payload.bin" => "".b }
-      overhead = ZipFixture.build(members).bytesize
-      members["payload.bin"] = Random.new(4300).bytes(target - overhead)
-      bytes = ZipFixture.build(members)
-      File.binwrite(@source, bytes)
-      expected = Digest::SHA256.hexdigest(bytes)
-      metrics = { "bytes" => target, "sha256" => expected, "retained_read_bytes" => 0,
-        "retained_hash_bytes" => 0, "maximum_read" => 0, "chunk_size" => 32768,
-        "request_wire" => 0, "response_wire" => 0, "maximum_frame" => 0, "calls" => 0 }
-      incoming, sender = IO.pipe
-      receiver, outgoing = IO.pipe
-      adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
-      exchange = lambda do |arguments|
-        request = JSON.generate(rpc(arguments)) + "\n"
-        metrics["request_wire"] += request.bytesize
-        metrics["calls"] += 1
-        sender.write(request)
-        assert IO.select([receiver], nil, nil, 10), "missing framed response"
-        frame = receiver.gets(AgentCodingTool::EvidenceAdapter::FRAME + 1)
-        refute_nil frame
-        assert_operator frame.bytesize, :<=, AgentCodingTool::EvidenceAdapter::FRAME
-        assert frame.end_with?("\n"), "incomplete bounded frame"
-        metrics["response_wire"] += frame.bytesize
-        metrics["maximum_frame"] = [metrics["maximum_frame"], frame.bytesize].max
-        envelope = JSON.parse(frame).fetch("result")
-        refute envelope.fetch("isError"), envelope.inspect
-        JSON.parse(envelope.dig("content", 0, "text"))
-      end
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      repetitions = target == 104857600 ? 2 : 1
-      metrics["retrievals"] = []
-      metrics["review_bytes"] = review_record ? 1024 : 0
-      measure_retained_work(metrics) do
-        server = Thread.new { adapter.serve(incoming, outgoing) }
-        begin
-          record = share("FIRST", @source).fetch("import")
-          assert_equal target, record["bytes"]
-          lease = @session.transaction(wait: 1) { |state| state.fetch("scopes").fetch("FIRST").dup }
-          if review_record
-            discovery = exchange.call("operation" => "discover", "task_id" => "FIRST")
-            review = discovery.fetch("tasks").first.fetch("runs").find { |entry| entry["sha256"] == review_record["sha256"] }
-            review_manifest = exchange.call(identity(review).merge("operation" => "select"))
-            evidence = exchange.call(read_request(review_manifest, length: 1024))
-            chunk = evidence.fetch("data").unpack1("m0")
-            assert_equal @zip.byteslice(0, 1024), chunk
-            assert_equal Digest::SHA256.hexdigest(chunk), evidence["chunk_sha256"]
-          end
-          discovery = exchange.call("operation" => "discover", "task_id" => "FIRST")
-          discovered = discovery.fetch("tasks").first.fetch("runs").find { |entry| entry["sha256"] == expected }
-          refute_nil discovered
-          manifest = exchange.call(identity(discovered).merge("operation" => "select"))
-          repetitions.times do |retrieval|
-            destination = File.join(@temporary, "received-#{target}-#{retrieval}.zip")
-            received_hash, offset = Digest::SHA256.new, 0
-            File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |received|
-              loop do
-                evidence = exchange.call(read_request(manifest, offset: offset, length: 32768))
-                chunk = evidence.fetch("data").unpack1("m0")
-                assert_equal offset, evidence["offset"]
-                assert_equal expected, evidence["sha256"]
-                assert_equal target, evidence["bytes"]
-                assert_equal Digest::SHA256.hexdigest(chunk), evidence["chunk_sha256"]
-                assert_operator chunk.bytesize, :<=, 32768
-                assert_operator chunk.bytesize, :>, 0
-                offset += chunk.bytesize
-                assert_operator offset, :<=, target
-                offset < target ? assert_equal(offset, evidence["next_offset"]) : assert_nil(evidence["next_offset"])
-                received.write(chunk)
-                received_hash.update(chunk)
-                break unless evidence["next_offset"]
-              end
-            end
-            assert_equal target, offset
-            assert_equal expected, received_hash.hexdigest
-            assert_equal target, File.size(destination)
-            metrics["retrievals"] << { "bytes" => File.size(destination), "sha256" => received_hash.hexdigest }
-            # Inspect only the two approved small stored members under the fixture
-            # inspector's finite decompression limits; the large payload is opaque.
-            prefix_size = ZipFixture.build(members.reject { |name, _| name == "payload.bin" }).bytesize
-            prefix = File.binread(destination, prefix_size)
-            prefix = prefix.byteslice(0, prefix.index("payload.bin") - 30)
-            assert_equal members.slice("review.txt", "binary.dat"), ZipFixture.inspect_members(prefix)
-          end
-          assert_equal lease, @session.transaction(wait: 1) { |state| state.fetch("scopes").fetch("FIRST") }
-          metrics["same_task_lease"] = true
-        ensure
-          sender.close
-          server.join(5)
-          refute server.alive?, "adapter did not terminate"
-        end
-      end
-      metrics["seconds"] = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      status = @session.status(wait: 1)
-      metrics.merge!(status.slice("requests", "wire_bytes", "decoded_bytes", "limits", "byte_policy"))
-      assert_equal (1 + repetitions) * target + (review_record ? @zip.bytesize + 1024 : 0), metrics["retained_read_bytes"]
-      assert_equal target + (review_record ? @zip.bytesize : 0), metrics["retained_hash_bytes"]
-      assert_equal 32768, metrics["maximum_read"]
-      assert_operator metrics["maximum_frame"], :<=, AgentCodingTool::EvidenceAdapter::FRAME
-      assert_equal repetitions * ((target + 32767) / 32768) + 2 + (review_record ? 3 : 0), metrics["calls"]
-      assert_equal repetitions * target + (review_record ? 1024 : 0), metrics["decoded_bytes"]
-      if review_record
-        assert_operator metrics["decoded_bytes"], :>, 104857600
-        assert_operator metrics["wire_bytes"], :>, 167772160
-      end
-      assert_equal %w[requests seconds], metrics["limits"].keys.sort
-      assert_equal "active", status["status"]
-      assert_equal metrics["request_wire"] + metrics["response_wire"], metrics["wire_bytes"]
-      assert_operator metrics["seconds"], :<, 1800
-      if ENV["ACT43_RESULTS"]
-        File.write(File.join(ENV.fetch("ACT43_RESULTS"), "journey-#{target}.json"), JSON.pretty_generate(metrics))
-      end
-      [incoming, receiver, outgoing].each(&:close)
-    end
-    start_session(File.join("#{@data}-sharing", "session-#{'c' * 32}"))
-    File.write("#{@data}-sharing/active.json", JSON.generate("session" => @session.instance_variable_get(:@path)))
+  # Proves framed reads and repeat retrieval beyond the old cumulative caps
+  # through the real adapter, reader and ledger, with opaque in-memory bytes.
+  def test_framed_import_can_be_read_twice_past_old_byte_caps
+    archive = AgentCodingTool::ImportedEvidence
+    chunk_size = 32_768
+    bytes = Random.new(43).bytes(2 * chunk_size + 2)
+    digest = Digest::SHA256.hexdigest(bytes)
+    artifact_id = "zip-#{Digest::SHA256.hexdigest("FIRST:#{digest}")}"
+    directory = File.join("#{@data}-imports", artifact_id)
+    FileUtils.mkdir_p(directory, mode: 0o700)
+    record = { "schema" => archive::SCHEMA, "source" => archive::SOURCE,
+      "task_id" => "FIRST", "artifact_id" => artifact_id, "filename" => "opaque.zip",
+      "bytes" => bytes.bytesize, "sha256" => digest }
+    File.write(File.join(directory, "registration.json"), JSON.generate(record), perm: 0o600)
     share("FIRST")
-    before = AgentCodingTool::ImportedEvidence.new(@data).discover("FIRST")
-    scope = @session.transaction { |state| state["scopes"]["FIRST"].dup }
-    # A one-byte ZIP comment makes a valid classic archive exactly cap+1;
-    # this is not merely an oversized sparse/non-ZIP input.
-    File.open(@source, "r+b") do |file|
-      file.seek(-2, IO::SEEK_END)
-      file.write([1].pack("v") + "x")
+    lease = @session.transaction { |state| state.fetch("scopes").fetch("FIRST") }
+
+    old_limits = AgentCodingTool::EvidenceSession::SHARING_LIMITS
+    @session.charge(wire: old_limits.fetch("wire_bytes") - 1, decoded: old_limits.fetch("decoded_bytes") - 1)
+    before = @session.status
+    retained_identity = ["synthetic archive"]
+    retained = lambda do |path, root:, size:, digest: nil, identity: nil, offset: 0, length: 0|
+      assert_equal [File.join(directory, "bundle"), directory, bytes.bytesize], [path, root, size]
+      assert_equal record.fetch("sha256"), digest if digest
+      assert_equal retained_identity, identity if identity
+      { "identity" => retained_identity, "data" => bytes.byteslice(offset, length) }
     end
-    assert_equal 104857601, File.size(@source)
-    assert_includes share("FIRST", @source, success: false), "100 MiB"
-    assert_equal before, AgentCodingTool::ImportedEvidence.new(@data).discover("FIRST")
-    assert_equal scope, @session.transaction { |state| state["scopes"]["FIRST"] }
+
+    incoming, sender = IO.pipe
+    receiver, outgoing = IO.pipe
+    adapter = AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new)
+    exchange = lambda do |arguments, success: true|
+      sender.write(JSON.generate(rpc(arguments)) + "\n")
+      assert IO.select([receiver], nil, nil, 10), "missing framed response"
+      frame = receiver.gets(AgentCodingTool::EvidenceAdapter::FRAME + 1)
+      refute_nil frame
+      assert_operator frame.bytesize, :<=, AgentCodingTool::EvidenceAdapter::FRAME
+      assert frame.end_with?("\n"), "incomplete bounded frame"
+      envelope = JSON.parse(frame).fetch("result")
+      assert_equal !success, envelope.fetch("isError")
+      JSON.parse(envelope.dig("content", 0, "text")) if success
+    end
+
+    archive.stub(:retained, retained) do
+      server = Thread.new { adapter.serve(incoming, outgoing) }
+      begin
+        discovery = exchange.call({ "operation" => "discover", "task_id" => "FIRST" })
+        discovered = discovery.fetch("tasks").first.fetch("runs").find { |entry| entry["artifact_id"] == artifact_id }
+        refute_nil discovered
+        assert_equal archive::SOURCE, discovered.fetch("evidence_source")
+        manifest = exchange.call(identity(discovered).merge("operation" => "select"))
+        exchange.call(read_request(manifest, length: chunk_size + 1), success: false)
+
+        2.times do
+          received = "".b
+          [0, chunk_size, 2 * chunk_size].each do |offset|
+            evidence = exchange.call(read_request(manifest, offset: offset, length: chunk_size))
+            chunk = evidence.fetch("data").unpack1("m0")
+            assert_equal offset, evidence.fetch("offset")
+            assert_equal digest, evidence.fetch("sha256")
+            assert_equal bytes.bytesize, evidence.fetch("bytes")
+            assert_equal Digest::SHA256.hexdigest(chunk), evidence.fetch("chunk_sha256")
+            assert_equal [chunk_size, bytes.bytesize - offset].min, chunk.bytesize
+            received << chunk
+            if received.bytesize == bytes.bytesize
+              assert_nil evidence.fetch("next_offset")
+            else
+              assert_equal received.bytesize, evidence.fetch("next_offset")
+            end
+          end
+          assert_equal digest, Digest::SHA256.hexdigest(received)
+        end
+      ensure
+        sender.close
+        server.join(5)
+        refute server.alive?, "adapter did not terminate"
+      end
+    end
+
+    after = @session.status(wait: 1)
+    assert_equal "active", after.fetch("status")
+    assert_operator after.fetch("wire_bytes"), :>, old_limits.fetch("wire_bytes")
+    assert_equal before.fetch("decoded_bytes") + 2 * bytes.bytesize, after.fetch("decoded_bytes")
+    assert_equal lease, @session.transaction(wait: 1) { |state| state.fetch("scopes").fetch("FIRST") }
+  ensure
+    [incoming, sender, receiver, outgoing].compact.each { |pipe| pipe.close unless pipe.closed? }
   end
 
   # First continuous public CLI -> import -> modern connector binary proof.
   # The client sees only protocol bytes; removing the import handoff breaks the
   # same discovery/select/read path, rather than merely checking a filename.
   def test_cli_connector_binary_journey_and_missing_handoff
+    prepare_zip_fixture
     before = Dir.glob("#{@data}/**/*").to_h { |path| [path, File.file?(path) ? File.binread(path) : nil] }
     imported = Dir.chdir(@temporary) { share("FIRST", "./completed results.zip") }.fetch("import")
     refute File.exist?("#{@data}-runs")
@@ -345,6 +258,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Same bytes reuse storage and their original public filename; changed bytes
   # create another immutable selection. Source deletion cannot affect old reads.
   def test_identity_reuse_versions_and_source_independence
+    prepare_zip_fixture
     first = share("FIRST", @source)["import"]
     manifest = tool(identity(first).merge("operation" => "select"))
     duplicate = share("FIRST", @source)["import"]
@@ -370,6 +284,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Explicit local consent cannot be widened to special files, aliases, unknown
   # tasks or unsupported ZIP containers, and errors never disclose source paths.
   def test_invalid_inputs_and_prior_shares_survive
+    prepare_zip_fixture
     first = share("FIRST", @source)["import"]
     original_scope = @session.transaction { |state| state["scopes"]["FIRST"].dup }
     share("UNKNOWN", @source, success: false)
@@ -403,22 +318,24 @@ class ImportedEvidenceTest < Minitest::Test
     assert_equal 22, share("FIRST", empty).dig("import", "bytes")
   end
 
-  # The advertised upper size is actually admitted without truncation; its last
-  # binary chunk and full digest remain exact. ZIP comments may contain magic.
+  # Exercises the exact size boundary with a scaled fixture and checks that
+  # an opaque ZIP comment may include the end-of-central-directory signature.
   def test_exact_size_ceiling_and_zip_comments
-    maximum = AgentCodingTool::ImportedEvidence::MAX_FILE
+    prepare_zip_fixture
+    maximum = 65_536
     overhead = ZipFixture.build("large.bin" => "").bytesize
     bytes = ZipFixture.build("large.bin" => "\xff\x00".b * ((maximum - overhead) / 2))
-    # The named fixture's envelope has even length, so this is exactly the bound.
     assert_equal maximum, bytes.bytesize
-    File.binwrite(@source, bytes)
-    record = share("FIRST", @source)["import"]
-    assert_equal maximum, record["bytes"]
-    assert_equal Digest::SHA256.hexdigest(bytes), record["sha256"]
-    manifest = tool(identity(record).merge("operation" => "select"))
-    evidence = tool(read_request(manifest, offset: maximum - 16_384))
-    assert_equal bytes.byteslice(-16_384, 16_384), evidence["data"].unpack1("m0")
-    assert_nil evidence["next_offset"]
+    with_limit(:MAX_FILE, maximum) do
+      File.binwrite(@source, bytes)
+      record = share("FIRST", @source).fetch("import")
+      assert_equal maximum, record.fetch("bytes")
+      assert_equal Digest::SHA256.hexdigest(bytes), record.fetch("sha256")
+      manifest = tool(identity(record).merge("operation" => "select"))
+      evidence = tool(read_request(manifest, offset: maximum - 16_384))
+      assert_equal bytes.byteslice(-16_384, 16_384), evidence.fetch("data").unpack1("m0")
+      assert_nil evidence.fetch("next_offset")
+    end
     comment = "comment PK\x05\x06 opaque bytes".b
     with_comment = @zip.byteslice(0...-2) + [comment.bytesize].pack("v") + comment
     File.binwrite(@source, with_comment)
@@ -428,6 +345,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Deterministic external filesystem faults leave no publication, preserve old
   # grants, and permit bounded retry. Crash residue is cleaned only under lock.
   def test_copy_failure_races_and_retry_recovery
+    prepare_zip_fixture
     first = share("FIRST", @source)["import"]
     scope = @session.transaction { |state| state["scopes"].dup }
     File.binwrite(@source, ZipFixture.build("new.txt" => "new bytes"))
@@ -472,6 +390,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Substituting source identity after its open, including equal-byte replacement,
   # is detected through inode/metadata checks rather than content hash alone.
   def test_replacement_race_and_readonly_input
+    prepare_zip_fixture
     original = File.method(:open)
     replacement = lambda do |path, *arguments, **options, &block|
       original.call(path, *arguments, **options) do |file|
@@ -493,6 +412,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Retained storage has finite artifact/byte limits independent of tunnel
   # budgets. Regrant/retry never replenish the admission's cumulative counters.
   def test_storage_and_remaining_transport_limits
+    prepare_zip_fixture
     first = share("FIRST", @source)["import"]
     File.binwrite(@source, ZipFixture.build("next.txt" => "next bytes"))
     with_limit(:MAX_STORAGE, @zip.bytesize) do
@@ -550,6 +470,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Remote requests cannot supply host paths or cross task/artifact identities.
   # Missing/corrupt retained bytes and registrations refuse on existing handles.
   def test_remote_boundaries_and_retained_mutations
+    prepare_zip_fixture
     first = share("FIRST", @source)["import"]
     identity = identity(first)
     manifest = tool(identity.merge("operation" => "select"))
@@ -629,6 +550,7 @@ class ImportedEvidenceTest < Minitest::Test
   # Every later chunk checks lease/generation. Revocation, expiry, stop, exhausted
   # budgets and a new zero-scope tunnel cannot revive previous selections.
   def test_revocation_expiry_stop_budget_and_tunnel_restart
+    prepare_zip_fixture
     imported = share("FIRST", @source)["import"]
     identity = identity(imported)
     manifest = tool(identity.merge("operation" => "select"))

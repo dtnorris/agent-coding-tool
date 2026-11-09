@@ -84,7 +84,6 @@ module AgentCodingTool
           "state" => "pending"
         }
       end
-      raise InvalidState, "worktrees: at least one writer required" unless entries.any? { |e| e["access"] == "write" }
       writers = entries.select { |entry| entry["access"] == "write" }
       raise InvalidState, "worktrees: writable repositories share an authority" unless
         writers.map { |entry| entry.fetch("parent") }.uniq.length == writers.length &&
@@ -141,7 +140,7 @@ module AgentCodingTool
       inventory = JSON.parse(File.read(@record_path))
       unless inventory.is_a?(Hash) && inventory["schema_version"] == SCHEMA &&
              inventory["root"] == @root && [nil, "attempt"].include?(inventory["layout"]) && inventory["entries"].is_a?(Array) &&
-             inventory["entries"].any? { |e| e["access"] == "write" }
+             !inventory["entries"].empty?
         raise InvalidState, "worktrees: invalid ownership record"
       end
       repositories = inventory.fetch("entries").to_h { |entry| [entry.fetch("name"), {}] }
@@ -247,7 +246,7 @@ module AgentCodingTool
       raise InvalidTask, "worktrees: invalid task ID" unless task_id.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       raise InvalidTask, "worktrees: invalid attempt" unless attempt.is_a?(Integer) && attempt.positive?
       repos = task.fetch("repositories")
-      raise InvalidTask, "worktrees: repository mapping mismatch" unless repos.is_a?(Hash) && repos.keys.sort == snapshot.keys.sort
+      raise InvalidTask, "worktrees: repository mapping mismatch" unless repos.is_a?(Hash) && !repos.empty? && repos.keys.sort == snapshot.keys.sort
       repos.each_key do |name|
         raise InvalidTask, "worktrees: unsafe repository key" unless name.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
       end

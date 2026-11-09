@@ -2069,6 +2069,7 @@ module AgentCodingTool
                               mark a prepared task in flight (human assertion)
           launch TASK --codex [--allow-write-collision] [--model MODEL] [--reasoning LEVEL]
                               prepare/start and run one foreground local worker
+                              all-read-only tasks require checkpoint exemption; reports use private scratch
                               verified managed overlap is automatic; manual overlap requires the flag
           checkpoint export TASK --workspace PATH --base SHA --artifact PATH [--remote NAME]
                               [--repository NAME [--focused PATH]]

@@ -38,7 +38,7 @@ if ARGV.include?('sandbox')
   exit
 end
 if ARGV == ['exec', '--help']
-  puts '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model'
+  puts '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model --skip-git-repo-check'
   exit
 end
 if ARGV == ['login', '--help']
@@ -76,6 +76,28 @@ Dir.mktmpdir('worker-fixture-') do |directory|
   File.write(File.join(root, 'worker-temp'), JSON.generate('TMPDIR' => ENV.fetch('TMPDIR'), 'directory' => directory))
 end
 File.write(File.join(ENV.fetch('TMPDIR'), 'retained.txt'), 'fixture content')
+if mode.start_with?('read-only-')
+  abort 'missing non-repository capability' unless ARGV.include?('--skip-git-repo-check')
+  abort 'wrong scratch cwd' unless Dir.pwd == ENV.fetch('TMPDIR') && !File.exist?('.git')
+  line = input.lines.find { |text| text.start_with?('Verified worktrees: ') }
+  abort 'missing pinned input handoff' unless line && mode != 'read-only-missing-input'
+  entries = JSON.parse(line.delete_prefix('Verified worktrees: ').split('. Read-only worktrees').first)
+  contents = entries.map do |entry|
+    abort 'unexpected writer' unless entry.fetch('access') == 'read_only' && entry['branch'].nil?
+    File.binread(File.join(entry.fetch('path'), 'file.txt'))
+  end
+  report = "Pinned inspection: #{contents.join(', ')}\n"
+  File.binwrite('report.txt', report)
+  puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
+  STDOUT.flush
+  if mode == 'read-only-interrupt'
+    File.write(File.join(root, 'worker-ready'), 'ready')
+    sleep 10
+    exit 75
+  end
+  File.binwrite(path, report) unless mode == 'read-only-missing-report'
+  exit(mode == 'read-only-failure' ? 7 : 0)
+end
 File.write('worker-change.txt', 'worker')
 puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
 STDOUT.flush

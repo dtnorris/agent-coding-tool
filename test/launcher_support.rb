@@ -137,7 +137,7 @@ module LauncherSupport
                  version: 'codex-cli 0.162.1', sandbox_help: 'Usage: codex sandbox [OPTIONS] [COMMAND]...')
     @fake_mode = mode
     @fake_auth = auth
-    @fake_help = help ? '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model' : '--sandbox'
+    @fake_help = help ? '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model --skip-git-repo-check' : '--sandbox'
     @fake_version, @fake_sandbox_help = version, sandbox_help
     raise 'real preflight requires default fake help/auth' if @real_git && (!help || auth != 'Logged in using ChatGPT')
     File.symlink(fake_executable, @fake) unless File.exist?(@fake)
@@ -290,7 +290,8 @@ module LauncherSupport
         record if record['schema_version'] == AgentCodingTool::Launcher::SCHEMA && record['worktrees'].is_a?(Hash)
       end
       workspaces = reports.flat_map do |record|
-        record.fetch('worktrees').fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+        writers = record.fetch('worktrees').fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }
+        writers.empty? && record['scratch_path'] == record.dig('fixture', 'path') ? [record.fetch('scratch_path')] : writers
       end
       allowed_options = [{ unsetenv_others: true }] + workspaces.map do |path|
         { chdir: path, unsetenv_others: true }

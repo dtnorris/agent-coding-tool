@@ -34,6 +34,12 @@ module AgentCodingTool
       run_dir = File.realpath(run_dir)
       expected_parent = File.join("#{@data_root}-runs", id)
       raise InvalidState, "delivery: foreign run" unless File.dirname(run_dir) == expected_parent
+      report_path = File.join(run_dir, "handoff.json")
+      raise InvalidState, "delivery: foreign handoff" if File.symlink?(report_path)
+      report = JSON.parse(File.binread(report_path))
+      if report["writable_repositories"] == []
+        raise InvalidState, "delivery: read-only runs produce reports, not implementation candidates; delivery is unavailable"
+      end
       @run_dir = run_dir
       @overlap_identity = nil
       verifier = Launcher.new(data_root: @data_root, coordinator: @coordinator, source_root: File.expand_path("../..", __dir__), transport: @transport)
@@ -151,6 +157,9 @@ module AgentCodingTool
              report["status"] == "exited" && report["exit_status"] == 0 && report["final_valid"] == true &&
              report["writable_freshness"] == "fresh_at_exit" && report["worktrees_path"] == File.join(run_dir, "worktrees.json")
         raise InvalidState, "delivery: worker exit/evidence is not eligible"
+      end
+      if report["writable_repositories"] == []
+        raise InvalidState, "delivery: read-only runs produce reports, not implementation candidates; delivery is unavailable"
       end
       verify_worker_artifacts!(report, run_dir)
       if report.fetch("writable_repositories", [report["writable_repository"]]).length > 1

@@ -94,10 +94,15 @@ module AgentCodingTool
       end
       raise Refused, "selection.missing_or_ambiguous" unless matches.length == 1
       path, raw, report = matches.first
-      binding = identity.merge("workspace" => report.fetch("workspace"), "repository" => report.fetch("writable_repository"),
-        "base_sha" => report.fetch("writable_authority").fetch("pushed_sha"),
-        "remote_url" => report.fetch("writable_authority").fetch("remote_url"),
-        "branch" => report.fetch("writable_authority").fetch("branch"))
+      if report["writable_repositories"] == []
+        binding = identity.merge("workspace" => report.fetch("workspace"), "repository" => nil,
+          "read_only_inputs" => report.fetch("preparation"))
+      else
+        binding = identity.merge("workspace" => report.fetch("workspace"), "repository" => report.fetch("writable_repository"),
+          "base_sha" => report.fetch("writable_authority").fetch("pushed_sha"),
+          "remote_url" => report.fetch("writable_authority").fetch("remote_url"),
+          "branch" => report.fetch("writable_authority").fetch("branch"))
+      end
       approvals = artifacts.to_h { |name| [name, { "status" => "missing" }] }
       run_dir = File.dirname(path)
       { "final" => "final_path", "transcript" => "jsonl_path", "stderr" => "stderr_path" }.each do |name, field|
@@ -120,7 +125,7 @@ module AgentCodingTool
         end
       end
       checkpoint_dir = checkpoint(report, binding, artifacts, approvals, shared: shared)
-      registrations(run_dir, report, binding, approvals) if shared
+      registrations(run_dir, report, binding, approvals) if shared && report["writable_repositories"] != []
       config = { "run_dir" => run_dir, "checkpoint_dir" => checkpoint_dir,
         "handoff_sha256" => Digest::SHA256.hexdigest(raw), "binding" => binding,
         "approvals" => approvals, "manager" => manager }
@@ -289,6 +294,7 @@ module AgentCodingTool
     # readers follow only published previous_record links, never filename guesses.
     # Missing history is normal; cycles, ambiguous directories or corrupt links refuse.
     def checkpoint(report, binding, artifacts, approvals, shared: false)
+      return @root if report["writable_repositories"] == []
       return @root if (artifacts & %w[checkpoint candidate validation]).empty?
       task_root = File.join(@root, "checkpoints", binding.fetch("task_id"))
       return @root unless File.exist?(task_root) || File.symlink?(task_root)

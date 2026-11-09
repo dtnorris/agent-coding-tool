@@ -22,7 +22,7 @@ context.instance_variable_set(:@memory_world, MemoryGit::Session.transport)
 context.instance_variable_set(:@real_process, true)
 context.instance_variable_set(:@fake_mode, JSON.parse(File.binread(File.join(root, 'fake-settings.json'))).fetch('mode'))
 context.instance_variable_set(:@fake_version, 'codex-cli 0.162.1')
-context.instance_variable_set(:@fake_help, '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model')
+context.instance_variable_set(:@fake_help, '--sandbox workspace-write --config --json --output-last-message --ignore-user-config --ignore-rules --model --skip-git-repo-check')
 context.instance_variable_set(:@fake_auth, 'Logged in using ChatGPT')
 context.instance_variable_set(:@fake_sandbox_help, 'Usage: codex sandbox [OPTIONS] [COMMAND]...')
 ENV['PATH'] = "#{root}:#{ENV.fetch('PATH')}"

@@ -8,6 +8,7 @@ module AgentCodingTool
     # Validates/delivers a grouped host run under the inherited reservation lock.
     # Returns per-repository PRs; refusals retain truthful partial-stage evidence.
     def deliver_multi_locked(id, run_dir, report, reservation_lock: nil)
+      raise InvalidState, "delivery: read-only runs produce reports; delivery is unavailable" if report["writable_repositories"] == []
       @reservation_lock = reservation_lock
       @run_dir = run_dir
       verify_overlap!(id)

@@ -32,14 +32,14 @@ module ChildProcesses
     "evidence_cli" => "c1c0eb6d26712c862fe2862c258837b333a6785bb3381f942cfe49f930018e9b",
     "state_reader" => "c79822d71b24b5147c081f6ac260c143e1de1d11adf55947540be7456ee31a42",
     "external_race" => "29d52f5928ee7cf892557524e177fbceb5ca2af7649642ca8d22c7ff12c78853",
-    "launcher_cli" => "0652e4128bfaaafee14965bb9281042693ee73dcc943a9c305041546642a62f1",
+    "launcher_cli" => "84d794f6acffb84ea4ed0f17a98a68c7700f42e843ea5b369df2b68cb1e00d42",
     "planning_consumer" => "10952eb6feabb2aa3f106494e494f782e4049964b3ff3e13d145b66e56fdb851",
 
     "status" => "2b3b1ffc56c1774ddaf4c11329d6da73984e588cf95ed74049d97a13bc0beeee",
     "manual_worker" => "f213498808f7953184bd1e751381a96951d294bb082ea40b1986a49cbc5462b5",
     "cold_cli" => "c0fcdc00673b283c718fd8c93aa3b27b92590afa76eecf26009d98af0b516a69",
     "process_probe" => "7cb7536f1c8e40e19a7e0ba49310df26098826a47860b1bf94de7ef74109bb15",
-    "launcher_worker" => "33c775f42c4b5f3074f98b213ed366e30c78845738dcd3330c415f367b1379ce",
+    "launcher_worker" => "7a21f29510c62f1805d0909e7a23f759ffe8bef125667142f8913c37f43ce9e7",
     "fake_codex" => "9277cbea19b674ea6057eb1b667ea973a8b74c4c87def0ed273aa4c159a1d039"
   }.freeze
 

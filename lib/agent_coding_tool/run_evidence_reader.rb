@@ -273,16 +273,26 @@ module AgentCodingTool
         return report
       end
       report = JSON.parse(bytes!(File.join(@run_dir, "handoff.json"), @run_dir, @handoff_sha256))
-      authority = { "pushed_sha" => @binding.fetch("base_sha"),
-        "remote_url" => @binding.fetch("remote_url"), "branch" => @binding.fetch("branch") }
+      if @binding.key?("read_only_inputs")
+        authority_matches = report["writable_repositories"] == [] && report["writable_authorities"] == {} &&
+          report["writable_repository"].nil? && report["writable_authority"].nil? && report["workspaces"] == {} &&
+          report["checkpoint_required"] == false && report["scratch_path"] == @binding.fetch("workspace") &&
+          report.dig("fixture", "path") == @binding.fetch("workspace") &&
+          @binding.fetch("read_only_inputs").is_a?(Hash) && !@binding.fetch("read_only_inputs").empty? &&
+          report["preparation"] == @binding.fetch("read_only_inputs")
+      else
+        authority = { "pushed_sha" => @binding.fetch("base_sha"),
+          "remote_url" => @binding.fetch("remote_url"), "branch" => @binding.fetch("branch") }
+        authority_matches = authority.all? { |key, value| report.dig("writable_authority", key) == value &&
+          report.dig("preparation", @binding.fetch("repository"), key) == value }
+      end
       refuse!("run binding mismatch") unless report.is_a?(Hash) && report["schema_version"] == "agent-coding-tool-run/v1" &&
         IDENTITIES.all? { |key| report[key] == @binding.fetch(key) } &&
         IDENTITIES.all? { |key| !@binding.fetch(key).to_s.empty? } &&
         report["workspace"] == @binding.fetch("workspace") &&
         report["writable_repository"] == @binding.fetch("repository") &&
         File.expand_path(@binding.fetch("workspace")) == @binding.fetch("workspace") &&
-        authority.all? { |key, value| report.dig("writable_authority", key) == value &&
-          report.dig("preparation", @binding.fetch("repository"), key) == value }
+        authority_matches
       report
     end
 

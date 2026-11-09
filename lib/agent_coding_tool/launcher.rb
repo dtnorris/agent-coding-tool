@@ -505,9 +505,9 @@ module AgentCodingTool
         next if other_id == id
         other_state = store.load(other_id)
         next unless other_state.is_a?(Hash) && other_state["snapshot"].is_a?(Hash)
+        next unless other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete"
         shared = shared_writers(other, other_state.fetch("snapshot"), bases)
         next if shared.empty?
-        next unless other_state["started_at"] || other_state.dig("result", "outcome") == "candidate_complete"
 
         if other_state["started_at"] && !other_state["result"] &&
            all_reports.none? { |report| report["task_id"] == other_id } &&
@@ -561,9 +561,15 @@ module AgentCodingTool
       verified.sort_by { |row| row.fetch("task_id") }
     end
 
+    # Returns writer names sharing the supplied prepared authorities. Callers
+    # consider only reservations; a missing writer snapshot raises InvalidState
+    # identifying the task and repository.
     def shared_writers(task, snapshot, bases)
       task.fetch("repositories").filter_map do |name, spec|
         next unless spec.fetch("access") == "write"
+        unless snapshot.key?(name)
+          raise InvalidState, "launch: #{task.fetch('id')}/#{name}: missing prepared writer evidence"
+        end
         repo = snapshot.fetch(name)
         name if bases.any? { |base| repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
       end

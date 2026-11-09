@@ -110,9 +110,9 @@ module AgentCodingTool
 
     # Grants/revokes exactly one registered task in the ready current tunnel.
     # Returns promptly; validates duration before any mutation in the caller.
-    def task(id, minutes:, revoke: false)
+    def task(id, minutes:, revoke: false, zip: nil)
       settings!
-      active.share_task(id, seconds: minutes * 60, revoke: revoke)
+      active.share_task(id, seconds: minutes * 60, revoke: revoke, zip: zip)
     end
 
     # Grants/revokes a source repository independently of registered tasks.

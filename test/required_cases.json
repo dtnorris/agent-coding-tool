@@ -411,7 +411,8 @@
       "RunEvidenceTest#test_native_share_continuous_public_journey",
       "RunEvidenceTest#test_shared_command_receipt_survives_missing_final_without_claiming_acceptance",
       "RunEvidenceTest#test_shared_discovery_refresh_pagination_and_exact_invocation_binding",
-      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
+      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey",
+      "RunEvidenceTest#test_native_imported_zip_continuous_public_journey"
     ],
     "test/incidental_metadata_test.rb": [
       "IncidentalMetadataTest#test_only_exact_regular_metadata_is_incidental",
@@ -547,6 +548,17 @@
       "StatusReadViewTest#test_replacement_and_absence_are_scoped_to_one_invocation",
       "StatusReadViewTest#test_malformed_reads_and_writer_store_remain_independent",
       "StatusReadViewTest#test_authority_and_remote_movement_are_not_persistently_cached"
+    ],
+    "test/imported_evidence_test.rb": [
+      "ImportedEvidenceTest#test_cli_connector_binary_journey_and_missing_handoff",
+      "ImportedEvidenceTest#test_identity_reuse_versions_and_source_independence",
+      "ImportedEvidenceTest#test_invalid_inputs_and_prior_shares_survive",
+      "ImportedEvidenceTest#test_exact_size_ceiling_and_zip_comments",
+      "ImportedEvidenceTest#test_copy_failure_races_and_retry_recovery",
+      "ImportedEvidenceTest#test_replacement_race_and_readonly_input",
+      "ImportedEvidenceTest#test_storage_and_remaining_transport_limits",
+      "ImportedEvidenceTest#test_remote_boundaries_and_retained_mutations",
+      "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart"
     ]
   },
   "integration": {
@@ -813,7 +825,8 @@
       "RunEvidenceTest#test_native_tunnel_lifecycle_and_exclusive_ownership",
       "RunEvidenceTest#test_native_tunnel_startup_failures_are_safe_and_nonzero",
       "RunEvidenceTest#test_native_share_continuous_public_journey",
-      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey"
+      "RunEvidenceTest#test_native_source_and_task_share_continuous_public_journey",
+      "RunEvidenceTest#test_native_imported_zip_continuous_public_journey"
     ],
     "test/bootstrap_test.rb": [
       "BootstrapTest#test_frozen_child_environment_revalidates_its_source",

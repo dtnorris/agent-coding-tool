@@ -161,7 +161,8 @@ module AgentCodingTool
       require_relative "share_controller"
       action = argv.shift
       if action.nil? || %w[help --help].include?(action)
-        @out.puts "share tunnel [--min N] (default 60); share TASK [--min N] (default 30); maximum 60 minutes"
+        @out.puts "share tunnel [--min N] (default 60); share TASK [PATH_TO_ZIP] [--min N] (default 30); maximum 60 minutes"
+        @out.puts 'Example: act share TASK "./completed results.zip"; ZIP maximum 4 MiB; externally supplied evidence, not verified execution.'
         @out.puts "share status; share revoke TASK; share stop. Delivered bytes cannot be recalled."
         @out.puts "share source grant ID --code-root PATH --root REPOSITORY [--min N]; share source revoke ID"
         @out.puts "share setup --env-file PATH --client PATH --runtime-dir PATH --account ACCOUNT --workspace WORKSPACE --endpoint tunnel_ID/main"
@@ -180,7 +181,8 @@ module AgentCodingTool
         raise RunEvidenceReader::Refused, "share.fields" unless argv.empty? && options.keys.sort == ShareController::SETTINGS.sort
       else
         raise RunEvidenceReader::Refused, "share.fields" unless (options.keys - ["min"]).empty? &&
-          (!%w[status stop revoke].include?(action) || options.empty?) && argv.length == (action == "revoke" ? 1 : 0)
+          (!%w[status stop revoke].include?(action) || options.empty?) &&
+          (action == "revoke" ? argv.length == 1 : %w[status stop tunnel].include?(action) ? argv.empty? : argv.length <= 1)
       end
       controller = ShareController.new(@data_root, out: @out, err: @err)
       result = case action
@@ -188,11 +190,16 @@ module AgentCodingTool
                when "tunnel" then return controller.tunnel(minutes.to_i)
                when "status", "stop" then controller.control(action)
                when "revoke" then controller.task(argv.first, minutes: 30, revoke: true)
-               else controller.task(action, minutes: minutes.to_i)
+               else argv.empty? ? controller.task(action, minutes: minutes.to_i) : controller.task(action, minutes: minutes.to_i, zip: argv.first)
                end
       @out.puts JSON.generate(result)
       0
-    rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError
+    rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError => error
+      case error.message
+      when "import.size" then @err.puts "ERROR: ZIP exceeds the supported 4 MiB limit; no import shared."
+      when "import.storage_limit" then @err.puts "ERROR: ZIP admission storage exhausted (64 artifacts / 64 MiB); no import shared."
+      when "import.admission_budget" then @err.puts "ERROR: Insufficient remaining tunnel request/wire/decoded budget for ZIP retrieval; no import shared."
+      end
       @err.puts "ERROR: share refused; use act share help, act share setup for missing facts, or act share tunnel for a new ready tunnel; inspect act share status before retrying."
       2
     end
@@ -2002,7 +2009,7 @@ module AgentCodingTool
         Commands:
           implementation             resolved mode and verified package source identities
           share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)
-          share TASK [--min MINUTES]    grant/renew task visibility, default 30 (maximum 60)
+          share TASK [PATH_TO_ZIP] [--min MINUTES] grant/renew task visibility; optional ZIP up to 4 MiB
           share {status|stop}; share revoke TASK; share help
           share source grant ID --code-root PATH --root REPOSITORY [--min MINUTES]
           share source revoke ID      revoke live source independently of task evidence

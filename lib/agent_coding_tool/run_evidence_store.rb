@@ -2,6 +2,7 @@
 
 require_relative "run_evidence_reader"
 require_relative "external_followup"
+require_relative "imported_evidence"
 
 module AgentCodingTool
   # Resolves exact managed run identities from existing ACT records. This class
@@ -66,6 +67,10 @@ module AgentCodingTool
     # immutable file approvals. Returns reader constructor arguments. Ambiguity,
     # missing provenance, unsafe paths or mismatched source bytes refuse.
     def select(identity, artifacts:, manager:, shared: false)
+      if identity.key?("artifact")
+        raise Refused, "selection.source" unless shared
+        return ImportedEvidence.new(@data).select(identity, manager: manager)
+      end
       if identity["source"] == "external_codex_cli"
         raise Refused, "selection.source" unless shared
         task_root = File.join(@root, identity.fetch("task_id"))
@@ -158,7 +163,7 @@ module AgentCodingTool
       context = self.class.task_context(@data, task)
       task_root = File.join(@root, task)
       entries = !File.exist?(task_root) ? [] : children(task_root)
-      external = ExternalFollowup.new(@data).discover(task)
+      external = ExternalFollowup.new(@data).discover(task) + ImportedEvidence.new(@data).discover(task)
       total = entries.length + external.length
       raise Refused, "selection.offset" if offset > total
       runs = entries.map do |entry|

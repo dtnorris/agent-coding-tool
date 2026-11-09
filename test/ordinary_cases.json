@@ -411,5 +411,16 @@
     "ManagerAdapterTest#test_captured_role_failure_through_public_session": [],
     "ManagerAdapterTest#test_progress_final_and_adversarial_response_contracts": [],
     "ManagerAdapterTest#test_consolidated_journey_failure_report": []
+  },
+  "test/imported_evidence_test.rb": {
+    "ImportedEvidenceTest#test_cli_connector_binary_journey_and_missing_handoff": [],
+    "ImportedEvidenceTest#test_identity_reuse_versions_and_source_independence": [],
+    "ImportedEvidenceTest#test_invalid_inputs_and_prior_shares_survive": [],
+    "ImportedEvidenceTest#test_exact_size_ceiling_and_zip_comments": [],
+    "ImportedEvidenceTest#test_copy_failure_races_and_retry_recovery": [],
+    "ImportedEvidenceTest#test_replacement_race_and_readonly_input": [],
+    "ImportedEvidenceTest#test_storage_and_remaining_transport_limits": [],
+    "ImportedEvidenceTest#test_remote_boundaries_and_retained_mutations": [],
+    "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart": []
   }
 }

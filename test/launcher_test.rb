@@ -369,7 +369,7 @@ class LauncherTest < Minitest::Test
     [ {}, { 'repo' => { 'access' => 'read_only', 'path' => nil } } ].each do |repos|
       fixture do
         write_task(@data, id: 'T', repositories: repos)
-        assert_preflight_failure(/non-empty mapping|requires a writable repository/)
+        assert_preflight_failure(/non-empty mapping|read-only launch requires an existing valid checkpoint exemption/)
       end
     end
     fixture do

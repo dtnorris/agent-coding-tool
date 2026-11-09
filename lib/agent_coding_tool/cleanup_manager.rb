@@ -370,8 +370,14 @@ module AgentCodingTool
   end
 
   class CleanupLiveness
+    # Returns clear/active/unknown from terminal process and open-file checks.
+    # Read-only interrupted reports may be reviewed without implementation
+    # delivery; writer interruption retains its existing refusal. Tool failures
+    # return unknown and never authorize removal.
     def check(report, inventory)
-      return :unknown unless report["status"] == "exited" && report["ended_at"] && report["child_pid"].is_a?(Integer)
+      terminal = report["status"] == "exited" ||
+        (report["writable_repositories"] == [] && report["status"] == "interrupted")
+      return :unknown unless terminal && report["ended_at"] && report["child_pid"].is_a?(Integer)
       begin
         Process.kill(0, -report.fetch("child_pid"))
         return :active

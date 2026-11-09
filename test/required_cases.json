@@ -563,6 +563,15 @@
       "ImportedEvidenceTest#test_remote_boundaries_and_retained_mutations",
       "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart",
       "ImportedEvidenceTest#test_large_framed_zip_journeys_and_linear_retained_work"
+    ],
+    "test/launcher_read_only_test.rb": [
+      "LauncherReadOnlyTest#test_report_journey_has_no_writer_authority",
+      "LauncherReadOnlyTest#test_broken_handoffs_do_not_establish_a_report_journey",
+      "LauncherReadOnlyTest#test_required_checkpoints_and_missing_capability_refuse_before_worker",
+      "LauncherReadOnlyTest#test_failed_probe_and_replaced_scratch_never_start_worker",
+      "LauncherReadOnlyTest#test_read_only_run_never_delivers_even_with_a_contract",
+      "LauncherReadOnlyTest#test_failure_retry_and_ownership_checked_cleanup_retain_reports",
+      "LauncherReadOnlyTest#test_interrupted_read_only_attempt_can_be_reviewed_and_cleaned"
     ]
   },
   "integration": {
@@ -874,6 +883,15 @@
       "StatusReadViewTest#test_replacement_and_absence_are_scoped_to_one_invocation",
       "StatusReadViewTest#test_malformed_reads_and_writer_store_remain_independent",
       "StatusReadViewTest#test_authority_and_remote_movement_are_not_persistently_cached"
+    ],
+    "test/launcher_read_only_test.rb": [
+      "LauncherReadOnlyTest#test_report_journey_has_no_writer_authority",
+      "LauncherReadOnlyTest#test_broken_handoffs_do_not_establish_a_report_journey",
+      "LauncherReadOnlyTest#test_required_checkpoints_and_missing_capability_refuse_before_worker",
+      "LauncherReadOnlyTest#test_failed_probe_and_replaced_scratch_never_start_worker",
+      "LauncherReadOnlyTest#test_read_only_run_never_delivers_even_with_a_contract",
+      "LauncherReadOnlyTest#test_failure_retry_and_ownership_checked_cleanup_retain_reports",
+      "LauncherReadOnlyTest#test_interrupted_read_only_attempt_can_be_reviewed_and_cleaned"
     ]
   }
 }

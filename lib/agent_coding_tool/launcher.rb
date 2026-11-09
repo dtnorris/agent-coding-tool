@@ -148,7 +148,8 @@ module AgentCodingTool
       raise InvalidState, "#{id}: ICEBOX; use act unicebox #{id} before continuing" if state.key?("icebox")
       prior_runs!(id, state)
       external_activity.assert_clear!(id)
-      preflight_codex!(model, reasoning)
+      repository_read_only = task.fetch("repositories").values.all? { |spec| spec.fetch("access") == "read_only" }
+      preflight_codex!(model, reasoning, repository_read_only: repository_read_only)
       raise InvalidState, "#{id}: already in flight; operator judgment required" if state["started_at"]
       raise InvalidState, "#{id}: recorded outcome; explicit prepare --retry required" if state["result"]
       if state["snapshot"]
@@ -195,7 +196,7 @@ module AgentCodingTool
         "worktree_creation" => "not_started", "workspace" => nil,
         "worktrees_path" => File.join(run_dir, "worktrees.json"), "worktrees" => nil,
         "writable_repository" => names.first,
-        "writable_authority" => bases.first.slice("remote_url", "branch", "pushed_sha"),
+        "writable_authority" => bases.first&.slice("remote_url", "branch", "pushed_sha"),
         "writable_repositories" => names,
         "writable_authorities" => names.to_h { |name| [name, state.fetch("snapshot").fetch(name).slice("remote_url", "branch", "pushed_sha")] },
         "status" => "preflight", "session_id" => nil, "session_transcript_path" => nil,
@@ -221,11 +222,16 @@ module AgentCodingTool
         inventory = manager.create(task_id: id, attempt: attempt, task: task, snapshot: state.fetch("snapshot"))
         @report["worktrees"] = inventory
         workspaces = inventory.fetch("entries").select { |entry| entry.fetch("access") == "write" }.to_h { |entry| [entry.fetch("name"), entry.fetch("path")] }
-        workspace = workspaces.fetch(names.first)
+        workspace = workspaces[names.first]
         @report["workspace"] = workspace
         @report["workspaces"] = workspaces
         save_report
         names.each { |name| verify_checkout!(workspaces.fetch(name), state.fetch("snapshot").fetch(name)) }
+        if repository_read_only
+          inventory.fetch("entries").each do |entry|
+            verify_checkout!(entry.fetch("path"), state.fetch("snapshot").fetch(entry.fetch("name")), writable: false)
+          end
+        end
         heads = checked_status!(id)
         @report["launch_checked_at"] = Time.now.utc.iso8601
         @report["launch_heads"] = heads
@@ -241,6 +247,13 @@ module AgentCodingTool
         @parallel_roots = verified_conflicts.flat_map { |row| row.fetch("all_worktrees") } +
           AttemptRecovery.new(data_root: @data_root, transport: @transport).protected_paths(id, before_attempt: attempt)
         provision_fixture!(inventory)
+        if repository_read_only
+          workspace = @report.fetch("fixture").fetch("path")
+          verify_worker_configuration!(workspace)
+          @report["workspace"] = workspace
+          @report["scratch_path"] = workspace
+          save_report
+        end
         sandbox_probe!(inventory, workspace, run_dir)
         heads = checked_status!(id)
         changed_write!(task, state, heads)
@@ -293,7 +306,7 @@ module AgentCodingTool
           @err.puts "PARALLEL DEVELOPMENT: verified ACT-managed overlap at launch (#{@report['collision_authorization']['admission_basis']}); integration and publication remain separate."
         end
         result = execute(command, lock)
-        if result == 0 && @report["status"] == "exited"
+        if !repository_read_only && result == 0 && @report["status"] == "exited"
           delivery = DeliveryManager.new(data_root: @data_root, coordinator: @coordinator, transport: @transport)
           if manual_conflicts.any?
             @err.puts "DELIVERY DEFERRED: unverified manual overlap; managed delivery disabled for this attempt; preserve candidate for operator review"
@@ -325,7 +338,9 @@ module AgentCodingTool
     def validate_task!(id, task)
       raise InvalidTask, "#{id}: task identity mismatch" unless task.fetch("id") == id
       writes = task.fetch("repositories").count { |_name, spec| spec.fetch("access") == "write" }
-      raise InvalidTask, "#{id}: launch requires a writable repository" unless writes.positive?
+      if writes.zero? && CheckpointPolicy.required?(task)
+        raise InvalidTask, "#{id}: read-only launch requires an existing valid checkpoint exemption (inspection, planning or no_code); implementation checkpoints require a writable repository"
+      end
       %w[depends_on constraints acceptance].each do |key|
         raise InvalidTask, "#{id}: #{key} must contain strings" unless task.fetch(key, []).all? { |value| value.is_a?(String) }
       end
@@ -577,7 +592,7 @@ module AgentCodingTool
 
     def report_writes_overlap?(report, bases)
       names = report.fetch("writable_repositories", [report["writable_repository"]]).compact
-      names = report.fetch("preparation").keys if names.empty?
+      names = report.fetch("preparation").keys if names.empty? && !report.key?("writable_repositories")
       names.any? do |name|
         repo = report.fetch("preparation").fetch(name)
         bases.any? { |base| repo.values_at("remote_url", "branch") == base.values_at("remote_url", "branch") }
@@ -730,7 +745,7 @@ module AgentCodingTool
       raise InvalidState, "launch: #{report['task_id']} worker liveness is unknown; inspect before retrying"
     end
 
-    def preflight_codex!(model, reasoning)
+    def preflight_codex!(model, reasoning, repository_read_only: false)
       raise InvalidTask, "launch: invalid explicit model" if model && !model.match?(/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/)
       raise InvalidTask, "launch: unsupported reasoning" if reasoning && !REASONING.include?(reasoning)
       candidate = if @codex.include?(File::SEPARATOR)
@@ -750,6 +765,9 @@ module AgentCodingTool
         raise Error, "launch: installed Codex lacks required safe exec flags"
       end
       @help_digest = Digest::SHA256.hexdigest(help)
+      if repository_read_only && !help.include?("--skip-git-repo-check")
+        raise Error, "launch: installed Codex lacks --skip-git-repo-check for private scratch execution"
+      end
       login_text, _err, login_help = Open3.capture3(worker_env, @codex, "login", "--help", unsetenv_others: true)
       raise Error, "launch: unsupported Codex login command" unless login_help.success? && login_text.include?("status")
       stdout, stderr, status = Open3.capture3(worker_env, @codex, "login", "status", unsetenv_others: true)
@@ -848,14 +866,25 @@ module AgentCodingTool
       end
     end
 
+    # Returns identical filesystem/approval/network overrides for worker and
+    # physical probe. Extra roots exclude the effective cwd, authorized by Codex.
+    def sandbox_configuration(extra_roots:)
+      ["-c", "approval_policy=never",
+       "-c", "sandbox_workspace_write.network_access=false",
+       "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(extra_roots + [@report.fetch('fixture').fetch('path')])}",
+       "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true"]
+    end
+
+    # Builds the safe installed Codex argv for the verified execution cwd. Returns
+    # argv only; launch preflight must already have checked required capabilities.
     def codex_command(workspace, model, reasoning, extra_roots: [])
       command = [@codex, "exec", "--ignore-user-config", "--ignore-rules", "--sandbox", "workspace-write",
-                 "-c", "approval_policy=never", "-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"',
-                 "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(extra_roots + [@report.fetch('fixture').fetch('path')])}",
-                 "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                 *sandbox_configuration(extra_roots: extra_roots),
+                 "-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"',
                  "-c", "features.multi_agent=false", "--json", "--output-last-message", @report.fetch("final_path")]
       command += ["--model", model] if model
       command += ["-c", "model_reasoning_effort=#{reasoning}"] if reasoning
+      command << "--skip-git-repo-check" if @report["writable_repositories"] == []
       command << "-"
     end
 
@@ -866,6 +895,7 @@ module AgentCodingTool
         "Verified worktrees: #{JSON.generate(@report.fetch('worktrees').fetch('entries').map { |entry| entry.slice('name', 'path', 'access', 'branch', 'base_sha', 'remote_url') })}. Read-only worktrees and shared Git administration are outside the writable sandbox.\n" \
         "Concurrent ACT worktrees are outside this worker's writable sandbox: #{JSON.generate(@parallel_roots || [])}. Collision permission grants no integration authority.\n" \
         "Temporary fixtures: #{JSON.generate(@report.fetch('fixture').fetch('path'))} (TMPDIR). Only this attempt's fixture directory is writable; it contains no private ACT evidence. Contents are retained for operator review.\n" \
+        "#{workspaces.empty? ? "Repository-read-only execution: cwd and report scratch are #{JSON.generate(@report.fetch('scratch_path'))}. Write reports and temporary analysis only here. Include the complete report in the final response for existing final/transcript evidence inspection, and identify retained report paths and hashes. No repository is writable; do not create implementation patches, checkpoints or delivery artifacts.\n" : ''}" \
         "#{notice}" \
         "Host verified remote_url/branch using git ls-remote before launch: #{JSON.generate(heads)}. This is host evidence, not a CLI refresh.\n" \
         "Worker-only tools, including connected GitHub integration, are unverified before startup. Inspect the tools actually available in this worker; report absent, observed-present or unverified with the observation used. Availability grants no permission. Shell network is disabled; approvals are never allowed. Do not escalate or enable network.\n" \
@@ -874,7 +904,7 @@ module AgentCodingTool
         "#{candidate_instructions(workspaces)}" \
         "After valid admission, external local/remote main movement or unavailable final remote freshness alone permits continued authorized implementation, diagnosis, local checks and candidate export on the original prepared baseline in this verified isolated workspace. Keep read-only inputs pinned. Record original base, observed refs or unknown freshness/lookup limitation, candidate SHA-256 and pending integration; do not claim refreshed GitHub refs. No restart, retry or re-preparation is required solely for external drift.\n" \
         "Unexpected worker HEAD, index, source, origin, ownership or bound-input changes require inspection and pausing affected unsafe operations; expected authored edits are normal. Missing required reads/prerequisites and explicit task-specific stops block dependent actions: report the exact action and continue independent authorized work. Verify live mutable dependencies where used. Host checkpoint writes remain operator-owned. Reconcile and revalidate against the actual target before authorized integration/publication; retain all admission, sandbox, liveness, checkpoint integrity and delivery gates. Do not silently fetch/rebase/reset/merge or claim current-source eligibility, acceptance or publication.\n" \
-        "Run one foreground worker only. Do not delegate, commit, stage, push, publish, or change ACT lifecycle/task data. Return a local patch and review handoff.\n" \
+        "Run one foreground worker only. Do not delegate, commit, stage, push, publish, or change ACT lifecycle/task data. Return #{workspaces.empty? ? 'the report and evidence locations' : 'a local patch and review handoff'}.\n" \
         "--- END ACT LOCAL CLI EXECUTION ENVELOPE ---\n"
     end
 
@@ -911,13 +941,24 @@ module AgentCodingTool
       inventory.fetch("entries").each do |entry|
         targets << [File.join(entry.fetch("path"), ".act-probe-#{SecureRandom.hex(6)}"), entry.fetch("access") == "write"]
         targets << [File.join(entry.fetch("parent"), ".act-probe-#{SecureRandom.hex(6)}"), false]
-        if @manual_conflicts&.any?
+        if @manual_conflicts&.any? || @report["writable_repositories"] == []
           admin = git!("rev-parse", "--absolute-git-dir", chdir: entry.fetch("path"))
           targets << [File.join(admin, "act-probe-#{SecureRandom.hex(6)}"), false]
         end
       end
       (@parallel_roots || []).each do |path|
         targets << [File.join(path, ".act-probe-#{SecureRandom.hex(6)}"), false]
+      end
+      if @report["writable_repositories"] == []
+        targets << [File.join(File.dirname("#{@data_root}-fixtures"), ".act-probe-#{SecureRandom.hex(6)}"), false]
+        reports.each do |report|
+          path = report.dig("fixture", "path")
+          next if !path || path == workspace || !File.directory?(path)
+          unless fixture_identity!(path) == report.fetch("fixture").slice("device", "inode", "uid")
+            raise InvalidState, "launch: retained sibling scratch identity changed; inspect before launch"
+          end
+          targets << [File.join(path, ".act-probe-#{SecureRandom.hex(6)}"), false]
+        end
       end
       inventory.fetch("entries").map { |entry| entry.fetch("parent") }.uniq.each do |parent|
         admin = git!("rev-parse", "--path-format=absolute", "--git-common-dir", chdir: parent)
@@ -931,17 +972,14 @@ module AgentCodingTool
         end
         # `sandbox` has no --ignore-user-config; a fresh private CODEX_HOME
         # prevents operator config from changing the probe's permissions.
+        probe_command = [@codex, "-c", 'sandbox_mode="workspace-write"',
+          *sandbox_configuration(extra_roots: inventory.fetch("entries").select { |entry| entry["access"] == "write" }.map { |entry| entry.fetch("path") }.drop(1)),
+          "sandbox", "--", "/bin/sh", "-c",
+          'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\\n"; else printf "0\\n"; fi; done',
+          "act-probe", *targets.map(&:first)]
         stdout, result = Dir.mktmpdir("act-sandbox-config-") do |isolated_home|
           output, _stderr, status = Open3.capture3(
-            worker_env(fixture: true).merge("CODEX_HOME" => isolated_home), @codex,
-            "-c", 'sandbox_mode="workspace-write"',
-            "-c", "sandbox_workspace_write.network_access=false",
-            "-c", "sandbox_workspace_write.writable_roots=#{JSON.generate(inventory.fetch('entries').select { |entry| entry['access'] == 'write' }.map { |entry| entry.fetch('path') }.drop(1) + [@report.fetch('fixture').fetch('path')])}",
-            "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-            "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
-            "sandbox", "--",
-            "/bin/sh", "-c", 'for path; do if printf breach > "$path" 2>/dev/null; then printf "1\\n"; else printf "0\\n"; fi; done',
-            "act-probe", *targets.map(&:first),
+            worker_env(fixture: true).merge("CODEX_HOME" => isolated_home), *probe_command,
             chdir: workspace, unsetenv_others: true
           )
           [output, status]
@@ -958,6 +996,7 @@ module AgentCodingTool
         created.each { |path| File.unlink(path) if File.file?(path) && !File.symlink?(path) }
       end
       @report["sandbox_probe"] = { "platform" => platform, "checked_at" => Time.now.utc.iso8601,
+                                   "cwd" => workspace, "argv" => probe_command,
                                    "protected_paths" => targets.count { |_path, allowed| !allowed } }
       save_report
     end
@@ -968,14 +1007,24 @@ module AgentCodingTool
       args.include?("-z") ? stdout : stdout.strip
     end
 
-    def verify_checkout!(workspace, base)
+    # Checks a pinned execution input and expected branch/detached access.
+    # Returns nil; changed identity, dirtiness or project configuration raises.
+    def verify_checkout!(workspace, base, writable: true)
       unless git!("remote", "get-url", base.fetch("remote"), chdir: workspace) == base.fetch("remote_url") &&
              git!("rev-parse", "HEAD", chdir: workspace) == base.fetch("pushed_sha") &&
              IncidentalMetadata.git_status(workspace) { |*args| git!(*args, chdir: workspace) }.empty?
         raise InvalidState, "launch: unsafe checkout identity/state"
       end
       _stdout, _stderr, status = @transport.call(["git", "symbolic-ref", "-q", "HEAD"], cwd: workspace)
-      raise InvalidState, "launch: workspace must have a dedicated feature branch" unless status.success?
+      unless status.exitstatus == (writable ? 0 : 1)
+        raise InvalidState, "launch: workspace must have #{writable ? 'a dedicated feature branch' : 'a detached read-only HEAD'}"
+      end
+      verify_worker_configuration!(workspace)
+    end
+
+    # Excludes project configuration and submodules from an execution/input root.
+    # Accepts a verified real directory; unsafe inherited configuration raises.
+    def verify_worker_configuration!(workspace)
       directory = workspace
       loop do
         # HOME/.codex is the normal authentication store, not project configuration.
@@ -1144,6 +1193,7 @@ module AgentCodingTool
     # claims constitute checkpoint adoption, acceptance or publication authority.
     # Registration failure cannot replace the worker's real process outcome.
     def register_worker_evidence
+      return if @report["writable_repositories"] == []
       @report["worker_evidence"] = { "status" => "missing" }
       return unless @report["session_id"] && @report["fixture"]
       path = File.join(@report.fetch("fixture").fetch("path"), "#{@report.fetch('task_id')}.patch.export.json")

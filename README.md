@@ -1350,7 +1350,13 @@ contracts; `publish` remains ACTD-only.
 Do not use manual prepare/reset/start to change a reservation while its worker
 may still be running.
 
-Launch requires at least one writable repository on authoritative `main`. SSH/HTTPS
+Launch requires a nonempty repository map on authoritative `main`. Tasks with
+only `read_only` repositories can launch when their existing checkpoint policy
+validly exempts implementation evidence (`inspection`, `planning` or `no_code`,
+with a reason). Launch infers this from the access map; there is no new mode flag.
+A zero-writer task with required/default checkpoints refuses before worker start;
+launch never changes the policy or task access. Repository-free tasks remain
+unsupported. SSH/HTTPS
 GitHub remotes and absolute local remotes (for offline fixtures) are supported;
 other remote/provider/branch forms fail closed. The ordinary checkout supplies
 repository identity according to `repo_root`; its local HEAD and dirtiness
@@ -1359,6 +1365,9 @@ remain observations. Launch creates native Git worktrees under
 ACTD `config.yml` can set a dedicated `worktree_root`. Each writer gets its own
 branch `act/TASK/attempt-N` in its separate repository at the prepared pushed SHA; readers are pinned
 detached at their prepared SHAs. Missing local commit objects fail closed.
+An all-read-only run creates only detached inputs, with no task feature branch.
+Host preparation, reservation, private evidence and native Git worktree
+bookkeeping still perform host-owned writes; these grant no worker write access.
 The ordinary checkout is never reset, switched, stashed or cleaned. Occupied
 paths and conflicting branches require operator inspection. Project or ancestor
 `.codex` project configuration (excluding the normal home authentication store)
@@ -1400,7 +1409,7 @@ existing baseline reconciliation, private validation contract, exact candidate
 evidence, checkpoint and publication requirements.
 
 Install Codex and authenticate locally with `codex login` using a ChatGPT
-account. Launch accepts the verified Codex CLI 0.162.1 sandbox interface, checks
+account. Launch accepts the Codex CLI 0.162.1 and 0.166.0 sandbox interfaces, checks
 installed `exec`/`login` help and requires the recognized
 ChatGPT login status. It strips API-key and other unneeded environment variables,
 ignores user configuration and execpolicy rules, fixes provider/login to
@@ -1420,6 +1429,36 @@ The private handoff records the fixture path and directory identities. Fixture
 contents survive success, failure, interruption and retry for operator review;
 each invocation creates a fresh root, and existing worktree cleanup does not
 delete fixtures. Do not place private evidence in the writable fixture directory.
+For all-read-only tasks this same verified fixture is the worker's cwd and
+report scratch, outside every repository input and host evidence directory.
+The envelope and `handoff.json` identify `scratch_path` (also the execution
+`workspace`); `workspaces` and writer authority maps are empty, and singular
+writer fields are null. Codex must advertise `--skip-git-repo-check`; ACT uses
+that capability without initializing a dummy repository. Repository inputs
+remain non-writable while scratch permits reports, TMPDIR files and disposable
+analysis copies. Cwd, writable roots and filesystem/approval/network overrides
+are shared by the physical preflight probe and actual worker.
+
+The worker must include its report in the final response and identify retained
+scratch file paths/hashes. Find the exact attempt with `act worktrees TASK` and
+its printed run-evidence path, then inspect `handoff.json`, `final.txt` and the
+retained scratch files. Existing scoped evidence/share inspection exposes the
+final response, transcript and honest worker outcome, including empty writer
+authority; arbitrary scratch paths are not an additional remote read surface.
+Reports remain worker claims for operator review. A successful exit leaves
+human lifecycle review pending and never delivers an implementation, even if a
+private delivery contract exists. Explicit `act deliver` refuses without
+publication; no checkpoint, patch, commit or PR is manufactured.
+
+Same-task admission, liveness and ownership checks still apply. For failed or
+interrupted work, record a non-complete outcome, inspect `close-attempt --dry-run`,
+explicitly close the attempt and use `prepare --retry` before relaunch. Prior
+reports/scratch survive; the new attempt gets a distinct scratch root. Cleanup
+still requires explicit exempt-task completion, verified native ownership,
+clean inputs and clear process use, and retains reports and private run evidence.
+An interrupted read-only attempt may be cleaned after that review; writer-run
+interruption keeps its existing delivery/recovery requirements.
+
 Before reserving ACT state, a no-inference Codex sandbox
 probe uses flat `codex sandbox -- COMMAND` with an explicit
 `sandbox_mode="workspace-write"` override. It checks writable access in every writer
@@ -1427,6 +1466,20 @@ and the fixture child, and denied writes to the fixture container, ACTD, ordinar
 checkouts, private evidence, each reader and shared Git administration.
 Other CLI versions, an unsupported probe or a failed boundary check
 blocks worker handoff. The operator's installed Mac CLI must pass this probe.
+The read-only probe also denies per-worktree Git administration, scratch parents
+and retained sibling scratch. Focused offline proof with native disposable Git
+and a fake Codex boundary is `bundle exec ruby -Ilib
+test/integration/manual_read_only_launch.rb`; it includes public retry/cleanup
+and needs host boot/process observations for those recovery checks. This does
+not establish physical isolation. After host checkpoint recording, run
+`ACT_NATIVE_CODEX=/absolute/path/to/codex bundle exec ruby -Ilib
+test/integration/manual_read_only_sandbox.rb --name test_native_read_only_boundary`
+on the supported host for the no-inference physical gate. A restricted worker
+may be unable to observe boot identity or nest the native sandbox; preserve the
+refusal and run the gate on the host rather than weakening it. Live acceptance
+separately requires David's approval for one short normal `act launch TASK
+--codex --reasoning high` using an approved exempt synthetic inspection task,
+with report bytes/hash, argv, exit and source-integrity evidence retained.
 No API-key billing, cloud provisioning,
 profile, arbitrary provider, sandbox escalation or approval override is offered.
 The CLI's built-in default model is used unless `--model` supplies an explicit

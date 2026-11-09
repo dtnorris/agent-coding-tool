@@ -2192,7 +2192,15 @@ be shared without restarting the tunnel or refreshing the tool catalog.
 from another terminal; Ctrl-C also stops the foreground tunnel. Scope edits
 serialize with reads. Effective task expiry is the earlier of its requested
 deadline and tunnel expiry; renewal changes neither tunnel lifetime nor its
-8192-request, 128 MiB wire and 64 MiB decoded cumulative budgets. Reconnects and
+8192-request cumulative budget. New ordinary task-sharing tunnels use a v3
+grant with only `seconds` and `requests` limits. Wire and decoded byte counters
+are telemetry, including non-ZIP evidence and live source; they impose no
+independent cumulative byte cap. Status reports `byte_policy: telemetry` and
+those two limits. Existing sessions and explicitly issued v1/v2 grants keep
+their original byte caps (`byte_policy: capped`); v2 retains its 160 MiB wire /
+100 MiB decoded totals and 128 MiB wire / 64 MiB decoded non-ZIP subcaps.
+V1/v2 grants missing their byte limits refuse validation, as do v3 grants with
+byte-limit fields. No existing admission is upgraded. Reconnects and
 adapter restarts replenish nothing. Revocation/expiry prevents subsequent
 chunk release, including existing handles. Previously delivered bytes **cannot
 be recalled**. A new tunnel has a fresh identity and starts with no task shares;
@@ -2228,17 +2236,45 @@ evidence retain their separate provenance. Local source directories and paths
 are not stored in the import manifest, discovery, activity or remote responses.
 Only the selected basename is public. Refusals do not echo the local pathname.
 
-Imports are limited to **4 MiB per ZIP**, **64 immutable artifacts** and
-**64 MiB of retained ZIP bytes per data root**, plus bounded metadata and one
-staging copy within that allowance. These storage limits span tasks and tunnel
-sessions. Admission also requires room in the current nonrenewable tunnel
-budgets: ZIP size in decoded bytes, `2 * ZIP size + 128 KiB` of wire headroom and
-`ceil(ZIP size / 16 KiB) + 4` requests with one request left over. This is a
-conservative retrieval preflight, not reserved exclusive capacity; concurrent
-reads, retries, refusals and other evidence still consume the same budgets.
-Unsupported size, exhausted storage or insufficient headroom refuses before
-successful sharing. Reads remain at most 16 KiB, base64-encoded inside 64 KiB MCP
-frames; request and response encoding costs count toward cumulative wire usage.
+Imports are limited to **100 MiB (104857600 bytes) per ZIP**, **64 immutable
+artifacts** and **128 MiB of retained ZIP bytes per data root**, plus bounded
+metadata and one private staging copy up to 100 MiB (228 MiB maximum ZIP disk
+space including staging). Admission holds at most one 100 MiB source buffer;
+selection hashes in 32 KiB blocks and reads retain at most one 32 KiB range.
+These storage limits span tasks and tunnel
+sessions. Admission also requires room in the current nonrenewable tunnel's
+request budget: `chunks + controls` requests with one request left over, where
+`chunks = ceil(ZIP size / 32768)` and `controls` is the task inventory's discovery
+page count (including room for the new ZIP), plus initialize/catalog/select.
+A fresh task needs four control frames; an exact 100 MiB ZIP needs 3200 data
+requests. A small review read followed by two complete 100 MiB retrievals fits
+within 8192 requests. Previously issued capped v2 grants additionally retain
+their decoded-size and conservative wire preflight, including the non-ZIP subcap.
+All prior requests count. The default task lease remains 30 minutes within a
+maximum 60-minute tunnel; no live timing guarantee is inferred from local tests.
+Preflight is not reserved exclusive capacity: concurrent reads, retries and
+refusals consume the same request budget. Unsupported size, exhausted storage
+or insufficient request headroom refuses before successful sharing.
+
+ZIP reads remain at most 32 KiB; other evidence keeps its 16 KiB chunk limit.
+Responses remain base64-encoded inside 65536-byte MCP frames. A full ZIP chunk
+uses 43692 base64 bytes, plus escaped JSON/RPC metadata and newline, all within
+the same frame limit. Accounting includes incoming and outgoing wire bytes,
+including protocol overhead and refused input; decoded data is counted before
+release (live source also counts its metadata). Reservations are not refunded.
+
+Transfer remains finite without byte quotas: each of at most 8192 admitted
+attempts can consume one 65536-byte input frame, emit at most one 65536-byte
+response, and prefetch a bounded pending input buffer while writing. Allowing
+an extra full pending buffer plus one 4096-byte read per attempt, including
+reconnects, partial frames and overflow refusals, gives a conservative combined
+protocol wire bound of `8192 * (3 * 65536 + 4096) = 1644167168` bytes (1568 MiB).
+This deliberately overcounts prefetched bytes later consumed as frames. Decoded
+accounting cannot exceed response wire size, so 512 MiB is a conservative total
+bound; ZIP payload alone is at most `8192 * 32768 = 268435456` bytes (256 MiB),
+before control requests. These are consequences of request/frame limits, not new
+byte-cap enforcement. Lifetime, lease, activity-log capacity, storage and
+per-artifact controls can stop transfers sooner.
 Regranting and reimporting reset none of these admission counters.
 
 Same-task identical bytes reuse the original immutable copy, identity and
@@ -2269,12 +2305,27 @@ fabricates no attempt/invocation/session fields. Task-scoped
 inventory with their source label, filename, byte size and SHA-256. Select with
 `{"operation":"select","task_id":"TASK","artifact":"zip-HEX"}`.
 Use those two identities and the returned `handle`/`revision` for `manifest` or
-`read`; keep `artifact: "zip-HEX"`, set `offset: 0`, `length: 16384`, base64-decode
+`read`; keep `artifact: "zip-HEX"`, set `offset: 0`, `length: 32768`, base64-decode
 `data`, and repeat from `next_offset` until null. Verify each `chunk_sha256`,
 the reconstructed byte count and whole `sha256` against the host's printed
 import result before inspection. Remote callers cannot submit a host path or
 change grants. Every released chunk rechecks task lease/generation and tunnel
 admission; missing or changed retained bytes refuse, including on old handles.
+Selection streams and verifies the entire retained digest once, then pins the
+private file's device, inode, owner, mode, link count, size, mtime and ctime.
+Each range read checks that identity before and after reading, and each wire
+release rechecks it. This relies on the owned local filesystem's ctime semantics;
+even equal-byte replacement or restoring mtime invalidates an old selection.
+Fresh selections rehash; cached selections never silently adopt changed files.
+
+Collect chunks mechanically into an exclusive private receiving file, outside
+model context. Do not print base64 or relay it by hand. Check each chunk's hash,
+offset and next offset, enforce the announced size and 100 MiB cap while writing,
+then verify the full size/SHA-256 before opening approved members. The installed
+client must first qualify lossless 32 KiB responses (locally about 45 KiB framed);
+the offline adapter frame proof does not establish client output limits. If only
+16 KiB responses are qualified, retain that size and separately assess request,
+request and lease headroom; the admission preflight assumes the 32 KiB workflow.
 
 Treat archive entries as untrusted on the receiving side. Prefer bounded
 in-memory inspection of specific members. Limit entry count, total and per-entry
@@ -2283,8 +2334,10 @@ links. If extraction is necessary, use a fresh disposable root and enforce
 containment before writing each member. Never execute retrieved content. A
 filename, discovery result or manifest alone does not establish successful
 retrieval. Actual Mac-to-manager acceptance requires the installed connector to
-reconstruct and inspect the approved real completed bundle, with host/retrieved
-size and digests recorded; offline adapter checks cannot establish that gate.
+reconstruct and inspect a generated exact 100 MiB ZIP, with host/retrieved size,
+digests, elapsed time and budget usage recorded within one live task lease.
+An approved real completed bundle is a separate check; offline adapter checks
+and the small live control cannot establish the live size gate.
 
 To preserve one separately launched headless Codex CLI follow-up for the same
 task, run the explicit host capture command after sharing the task:
@@ -2334,7 +2387,8 @@ checks the managed session and full-source digest. Each read scans and hashes
 the entire selected source before releasing its chunk, using bounded memory;
 changes anywhere in the source refuse the old selection. This trades extra
 local I/O for immutable reads without keeping transcript bodies in admission
-state. The existing cumulative request/wire/decoded budgets still apply.
+state. Cumulative request limits still apply; byte totals are telemetry on new
+v3 tunnels and remain capped on existing v1/v2 admissions.
 Transcripts beyond either scan/record limit are explicitly `missing` with a
 limit reason in the manifest; other approved artifacts remain available.
 Other file limits and fixed v1 approvals are unchanged.
@@ -2442,8 +2496,9 @@ Revoking a task leaves source grants intact; revoking a source leaves task share
 intact. Stop, expiry and restart end both classes of authorization. Delivered
 bytes cannot be recalled. Grant edits and every nonblocking wire fragment use
 the existing session lock, so revocation/expiry applies to subsequent chunks of
-an already started read. Source output consumes wire and decoded budgets;
-reconnects/regrants never replenish them.
+an already started read. Source output contributes to wire and decoded
+telemetry on v3 tunnels and to the original byte caps on v1/v2 admissions.
+Reconnects/regrants never replenish requests or extend tunnel life.
 
 The separate `read_source` adapter tool accepts these JSON arguments:
 

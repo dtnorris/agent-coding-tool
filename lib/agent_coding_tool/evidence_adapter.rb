@@ -131,7 +131,7 @@ module AgentCodingTool
         { "supportedVersions" => [MODERN, *LEGACY], "capabilities" => { "tools" => {} } }
       when "tools/list"
         raise ArgumentError unless params.empty? || params == { "cursor" => nil }
-        { "tools" => [{ "name" => TOOL, "description" => "Discover/select/read approved exact ACT runs or externally supplied ZIP evidence. For ZIPs use task_id and artifact (the discovered artifact_id) for select/manifest/read, plus handle/revision and offset/length up to 16384 for reads; base64-decode data. No execution authority.",
+        { "tools" => [{ "name" => TOOL, "description" => "Discover/select/read approved exact ACT runs or externally supplied ZIP evidence. For ZIPs use task_id and artifact (the discovered artifact_id) for select/manifest/read, plus handle/revision and offset/length up to 32768 for ZIP reads (other evidence: 16384); base64-decode data. No execution authority.",
           "inputSchema" => self.class.schema,
           "annotations" => { "readOnlyHint" => true, "destructiveHint" => false, "openWorldHint" => false } },
           { "name" => SOURCE_TOOL, "description" => "Discover/list/search/read explicitly approved live tracked source. Source is not accepted or tested run evidence. No grants or execution.",
@@ -237,7 +237,8 @@ module AgentCodingTool
         decoded = evidence.fetch("data", "").unpack1("m0").bytesize
         decoded += JSON.generate(evidence.reject { |key, _value| key == "data" }).bytesize if evidence["kind"] == "live_source"
       end
-      @session.charge(wire: bytes.bytesize, decoded: decoded, wait: LOCK_WAIT)
+      @session.charge(wire: bytes.bytesize, decoded: decoded, wait: LOCK_WAIT,
+        zip: @evidence && @evidence["evidence_source"] == ImportedEvidence::SOURCE)
       delivered = false
       until bytes.empty?
         ready(output, writing: true)

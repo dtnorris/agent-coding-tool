@@ -459,7 +459,9 @@
       "TaskSharingTest#test_existing_handles_revoke_expiry_stop_and_reopen",
       "TaskSharingTest#test_concurrent_scope_edits_and_safe_activity_lines",
       "TaskSharingTest#test_setup_binding_and_failed_startup_recovery",
-      "TaskSharingTest#test_context_refuses_symlinks_and_foreign_file_ownership"
+      "TaskSharingTest#test_context_refuses_symlinks_and_foreign_file_ownership",
+      "TaskSharingTest#test_v3_reconnect_regrant_and_request_exhaustion",
+      "TaskSharingTest#test_versioned_grants_require_their_exact_limit_fields"
     ],
     "test/lifecycle_force_test.rb": [
       "LifecycleForceTest#test_public_metadata_overrides_preserve_bytes_and_report_all_policy_facts",
@@ -488,7 +490,8 @@
       "SourceBrowsingTest#test_git_transport_bounds_bytes_deadline_and_query_authority",
       "SourceBrowsingTest#test_audience_binding_and_remote_grant_fields_refuse",
       "SourceBrowsingTest#test_adapter_stream_accounts_source_bytes_and_denies_next_chunk",
-      "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation"
+      "SourceBrowsingTest#test_public_source_consent_arguments_precede_mutation",
+      "SourceBrowsingTest#test_v3_source_frames_beyond_legacy_byte_caps"
     ],
     "test/bootstrap_test.rb": [
       "BootstrapTest#test_frozen_child_environment_revalidates_its_source",
@@ -558,7 +561,8 @@
       "ImportedEvidenceTest#test_replacement_race_and_readonly_input",
       "ImportedEvidenceTest#test_storage_and_remaining_transport_limits",
       "ImportedEvidenceTest#test_remote_boundaries_and_retained_mutations",
-      "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart"
+      "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart",
+      "ImportedEvidenceTest#test_large_framed_zip_journeys_and_linear_retained_work"
     ]
   },
   "integration": {
@@ -720,6 +724,9 @@
     ]
   },
   "native_default": {
+    "test/imported_evidence_test.rb": [
+      "ImportedEvidenceTest#test_large_framed_zip_journeys_and_linear_retained_work"
+    ],
     "test/launcher_fixture_test.rb": [
       "LauncherFixtureTest#test_scoped_fixture_environment_permissions_and_retention",
       "LauncherFixtureTest#test_foreign_container_refuses_without_repair",

@@ -59,9 +59,9 @@ module AgentCodingTool
         token = SecureRandom.hex(16)
         path = File.join(@root, "session-#{token}")
         grant_path = File.join(@root, "grant-#{token}.json")
-        grant = { "schema" => "agent-coding-tool-task-sharing/v2", "approved" => true,
+        grant = { "schema" => "agent-coding-tool-task-sharing/v3", "approved" => true,
           "session_path" => path, "data_root" => @data, "tasks" => [], "artifacts" => RunEvidenceReader::ARTIFACTS,
-          "transport" => audience(settings), "limits" => EvidenceSession::LIMITS.merge("seconds" => minutes * 60) }
+          "transport" => audience(settings), "limits" => EvidenceSession::CURRENT_SHARING_LIMITS.merge("seconds" => minutes * 60) }
         write_once(grant_path, grant)
         # A reserved starting identity is intentionally fail-closed if startup
         # dies before admission. No second tunnel silently assumes ownership.

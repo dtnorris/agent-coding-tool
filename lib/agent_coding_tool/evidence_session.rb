@@ -16,6 +16,12 @@ module AgentCodingTool
     Refused = RunEvidenceReader::Refused
     LIMITS = { "seconds" => 3600, "requests" => 8192,
       "wire_bytes" => 128 * 1024 * 1024, "decoded_bytes" => 64 * 1024 * 1024 }.freeze
+    # Explicit v2 grants retain their total and non-ZIP byte caps.
+    SHARING_LIMITS = LIMITS.merge("wire_bytes" => 160 * 1024 * 1024,
+      "decoded_bytes" => 100 * 1024 * 1024).freeze
+    # New ordinary tunnels bound transfers by requests, frames and lifetime.
+    # Byte counters remain telemetry; absence is specific to the v3 schema.
+    CURRENT_SHARING_LIMITS = LIMITS.slice("seconds", "requests").freeze
     TUNNEL_RESULT = { "stage" => %w[delivery readiness lifecycle activity],
       "reason" => %w[client_start_failed deadline failed stopped expired exhausted interrupted controller_lost lost activity_failed],
       "local_cleanup" => %w[not_started unknown blocked owned_groups_signaled_and_reaped owned_groups_terminal_and_reaped],
@@ -30,12 +36,17 @@ module AgentCodingTool
       grant = RunEvidenceStore.parse(RunEvidenceStore.bytes(grant_path, root: File.dirname(grant_path), private: true))
       raise Refused, "grant.fields" unless grant.is_a?(Hash) &&
         grant.keys.sort == %w[schema approved session_path data_root tasks artifacts transport limits].sort &&
-        %w[agent-coding-tool-evidence-grant/v1 agent-coding-tool-task-sharing/v2].include?(grant["schema"]) && grant["approved"] == true
+        %w[agent-coding-tool-evidence-grant/v1 agent-coding-tool-task-sharing/v2 agent-coding-tool-task-sharing/v3].include?(grant["schema"]) && grant["approved"] == true
       limits = grant["limits"]
-      raise Refused, "grant.limits" unless limits.is_a?(Hash) && limits.keys.sort == LIMITS.keys.sort &&
-        LIMITS.all? { |name, maximum| limits[name].is_a?(Integer) && limits[name].between?(1, maximum) }
+      maxima = case grant["schema"]
+      when "agent-coding-tool-task-sharing/v3" then CURRENT_SHARING_LIMITS
+      when "agent-coding-tool-task-sharing/v2" then SHARING_LIMITS
+      else LIMITS
+      end
+      raise Refused, "grant.limits" unless limits.is_a?(Hash) && limits.keys.sort == maxima.keys.sort &&
+        maxima.all? { |name, maximum| limits[name].is_a?(Integer) && limits[name].between?(1, maximum) }
       tasks, artifacts, boundary = grant.values_at("tasks", "artifacts", "transport")
-      sharing = grant["schema"] == "agent-coding-tool-task-sharing/v2"
+      sharing = %w[agent-coding-tool-task-sharing/v2 agent-coding-tool-task-sharing/v3].include?(grant["schema"])
       raise Refused, "grant.scope" unless tasks.is_a?(Array) && tasks.length.between?(sharing ? 0 : 1, 16) && (!sharing || tasks.empty?) && tasks.uniq == tasks &&
         tasks.all? { |task| task.is_a?(String) && task.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/) } &&
         artifacts.is_a?(Array) && !artifacts.empty? && artifacts.uniq == artifacts &&
@@ -124,7 +135,7 @@ module AgentCodingTool
       return "stopped" if state.fetch("stopped")
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - state.fetch("monotonic_start")
       return "expired" if elapsed.negative? || elapsed >= state.dig("grant", "limits", "seconds") || Time.now.to_f >= state.fetch("expires_at")
-      return "exhausted" if %w[requests wire_bytes decoded_bytes].any? { |name| state.fetch(name) >= state.dig("grant", "limits", name) }
+      return "exhausted" if state.dig("grant", "limits").any? { |name, limit| name != "seconds" && state.fetch(name) >= limit }
       "active"
     end
 
@@ -139,6 +150,7 @@ module AgentCodingTool
     def status_for(state)
       result = state.slice("grant_sha256", "admitted_at", "expires_at", "requests", "wire_bytes", "decoded_bytes").merge(
         "status" => reason(state), "limits" => state.dig("grant", "limits"),
+        "byte_policy" => state.dig("grant", "limits").key?("wire_bytes") ? "capped" : "telemetry",
         "selected_runs" => state.fetch("selections").values.map { |config| config.fetch("config", config).fetch("binding") })
       result["tunnel"] = tunnel_result if File.exist?(File.join(@path, "tunnel-result.json")) || File.symlink?(File.join(@path, "tunnel-result.json"))
       result["activity_failure"] = true if state["activity_failure"]
@@ -180,19 +192,28 @@ module AgentCodingTool
     end
 
     # Charges exact incoming/outgoing wire and decoded bytes before release.
-    # Invalid amounts or cumulative overruns raise without releasing a response.
+    # Invalid amounts or explicit legacy byte-cap overruns refuse release.
+    # V3 accounts all bytes without cumulative byte enforcement.
     # Optional wait never replays charges or extends the original admission.
-    def charge(wire:, decoded: 0, wait: 0)
+    def charge(wire:, decoded: 0, wait: 0, zip: false)
       transaction(wait: wait) do |state|
         # The last admitted frame may finish at the request limit.
         current = reason(state)
         raise Refused, "lifecycle.#{current}" if %w[stopped expired].include?(current)
         { "wire_bytes" => wire, "decoded_bytes" => decoded }.each do |name, amount|
+          limit = state.dig("grant", "limits", name)
           raise Refused, "lifecycle.budget" unless amount.is_a?(Integer) && amount >= 0 &&
-            state.fetch(name) + amount <= state.dig("grant", "limits", name)
+            (!limit || state.fetch(name) + amount <= limit)
+          raise Refused, "lifecycle.budget" if limit && !zip &&
+            state.fetch(name) - state.fetch("zip_#{name}", 0) + amount > LIMITS.fetch(name)
         end
+        raise Refused, "lifecycle.budget" if zip && !sharing?(state)
         state["wire_bytes"] += wire
         state["decoded_bytes"] += decoded
+        if zip
+          state["zip_wire_bytes"] = state.fetch("zip_wire_bytes", 0) + wire
+          state["zip_decoded_bytes"] = state.fetch("zip_decoded_bytes", 0) + decoded
+        end
       end
     end
 

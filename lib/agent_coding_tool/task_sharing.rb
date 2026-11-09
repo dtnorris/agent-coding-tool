@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
 module AgentCodingTool
-  # Version-two task leases layered on the existing finite admission ledger.
+  # Task leases layered on the existing finite admission ledger.
   # All scope edits, selections and wire releases use its one cross-process lock.
   module TaskSharing
     Refused = RunEvidenceReader::Refused
-    # Returns whether a ledger opts into mutable task scopes; v1 is unchanged.
+    # Returns whether a v2/v3 ledger opts into mutable scopes; v1 is unchanged.
     def sharing?(state)
-      state.dig("grant", "schema") == "agent-coding-tool-task-sharing/v2"
+      %w[agent-coding-tool-task-sharing/v2 agent-coding-tool-task-sharing/v3].include?(state.dig("grant", "schema"))
     end
 
     # Marks client readiness inside its existing owner; grants cannot race ahead
@@ -33,12 +33,21 @@ module AgentCodingTool
         imported = if zip
           raise Refused, "import.revoke" if revoke
           ImportedEvidence.new(state.dig("grant", "data_root")).admit(task, zip) do |record|
-            chunks = (record.fetch("bytes") + RunEvidenceReader::MAX_CHUNK - 1) / RunEvidenceReader::MAX_CHUNK
+            chunks = (record.fetch("bytes") + ImportedEvidence::MAX_CHUNK - 1) / ImportedEvidence::MAX_CHUNK
             remaining = state.fetch("grant").fetch("limits")
-            raise Refused, "import.admission_budget" unless reason(state) == "active" &&
-              state["requests"] + chunks + 4 < remaining["requests"] &&
-              state["decoded_bytes"] + record["bytes"] <= remaining["decoded_bytes"] &&
-              state["wire_bytes"] + record["bytes"] * 2 + 131_072 <= remaining["wire_bytes"]
+            # Paged discovery plus initialization/catalog/selection and 8 KiB
+            # per chunk cover minimal RPC requests and escaped response metadata
+            # in addition to independently padded base64. Prior usage counts.
+            controls = zip_control_frames(state.dig("grant", "data_root"), task)
+            raise Refused, "import.admission_requests" unless reason(state) == "active" && state["requests"] + chunks + controls < remaining["requests"]
+            # Only explicitly capped v2 grants need byte preflight. V3 retains
+            # request headroom and accounting without any byte subcap.
+            if remaining.key?("decoded_bytes")
+              wire = chunks * (((ImportedEvidence::MAX_CHUNK + 2) / 3) * 4 + 8192) + controls * 65_536
+              raise Refused, "import.admission_decoded" unless state["decoded_bytes"] + record["bytes"] <= remaining["decoded_bytes"]
+              raise Refused, "import.admission_wire" unless state["wire_bytes"] + wire <= remaining["wire_bytes"] &&
+                state["wire_bytes"] - state.fetch("zip_wire_bytes", 0) + chunks * 8192 + controls * 65_536 <= EvidenceSession::LIMITS["wire_bytes"]
+            end
           end
         end
         old = scopes[task]
@@ -59,6 +68,21 @@ module AgentCodingTool
         result["import"] = imported if imported
         result
       end
+    end
+
+    # Counts bounded task discovery pages, allowing one not-yet-published ZIP,
+    # plus initialize/catalog/select. Existing discovery limits still refuse
+    # unreachable inventories. Reads registration metadata only, never ZIPs;
+    # returns a conservative control-frame count or propagates Refused.
+    def zip_control_frames(data, task)
+      store, offset, count = RunEvidenceStore.new(data), 0, 0
+      loop do
+        page = store.discover(task, offset: offset)
+        count += page.fetch("runs").length
+        break unless page["next_offset"]
+        offset = page.fetch("next_offset")
+      end
+      (count + 1 + 15) / 16 + 3
     end
 
     # Validates a live scope and optionally an exact selection generation.
@@ -137,6 +161,12 @@ module AgentCodingTool
             selection = state.fetch("selections")[request["handle"]]
             raise Refused, "selection.handle" unless selection
             task_scope!(state, request["task_id"], selection.fetch("generation"))
+            config = selection.fetch("config")
+            if config.dig("binding", "source") == ImportedEvidence::SOURCE
+              spec = config.fetch("approvals").fetch(config.dig("binding", "artifact"))
+              ImportedEvidence.retained(spec.fetch("path"), root: config.fetch("run_dir"),
+                size: spec.fetch("bytes"), identity: spec.fetch("retained_identity"))
+            end
           end
         end
         yield

@@ -345,4 +345,45 @@ class SourceBrowsingTest < Minitest::Test
     assert_equal ["alpha", { code_root: @code, root: @root, minutes: 30, revoke: false }], calls.first
     assert calls.last.last[:revoke]
   end
+  # Ordinary v3 source output works beyond former total and non-ZIP byte caps;
+  # production framing still charges exact input/output and source metadata.
+  def test_v3_source_frames_beyond_legacy_byte_caps
+    grant = JSON.parse(File.binread(File.join(@temporary, "grant.json")))
+    @path = File.join(@temporary, "v3-session")
+    grant.merge!("schema" => "agent-coding-tool-task-sharing/v3", "session_path" => @path,
+      "limits" => AgentCodingTool::EvidenceSession::CURRENT_SHARING_LIMITS)
+    grant_path = File.join(@temporary, "v3-grant.json")
+    File.write(grant_path, JSON.generate(grant), perm: 0o600)
+    AgentCodingTool::EvidenceSession.start(@path, grant_path)
+    @session = AgentCodingTool::EvidenceSession.new(@path)
+    @session.sharing_ready
+    approve
+    @session.charge(wire: 167772161, decoded: 104857601)
+    before = @session.status
+    incoming, sender = IO.pipe
+    receiver, outgoing = IO.pipe
+    server = Thread.new { AgentCodingTool::EvidenceAdapter.new(@session, err: StringIO.new).serve(incoming, outgoing) }
+    frame = JSON.generate("jsonrpc" => "2.0", "id" => 1, "method" => "tools/call",
+      "params" => { "name" => "read_source", "arguments" => request(length: 64) }) + "\n"
+    sender.write(frame)
+    assert IO.select([receiver], nil, nil, 2)
+    received = receiver.gets
+    result = JSON.parse(received).fetch("result")
+    refute result.fetch("isError")
+    evidence = JSON.parse(result.dig("content", 0, "text"))
+    assert_equal File.binread(File.join(@root, "lib/main.rb"), 64), evidence.fetch("data").unpack1("m0")
+    sender.close
+    assert server.join(2)
+    after = @session.status
+    assert_equal frame.bytesize + received.bytesize, after["wire_bytes"] - before["wire_bytes"]
+    assert_equal 64 + JSON.generate(evidence.reject { |key, _| key == "data" }).bytesize,
+      after["decoded_bytes"] - before["decoded_bytes"]
+    assert_equal "active", after["status"]
+    assert_equal "telemetry", after["byte_policy"]
+  ensure
+    sender&.close unless sender&.closed?
+    server&.join(2)
+    [incoming, receiver, outgoing].compact.each { |io| io.close unless io.closed? }
+  end
+
 end

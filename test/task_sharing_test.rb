@@ -17,11 +17,11 @@ class TaskSharingTest < Minitest::Test
       File.write(File.join(@data, "tasks", "#{task}.yml"), YAML.dump("id" => task, "title" => task, "goal" => "fixture"))
     end
     @path = File.join(@temporary, "session")
-    grant = { "schema" => "agent-coding-tool-task-sharing/v2", "approved" => true,
+    grant = { "schema" => "agent-coding-tool-task-sharing/v3", "approved" => true,
       "session_path" => @path, "data_root" => @data, "tasks" => [], "artifacts" => AgentCodingTool::RunEvidenceReader::ARTIFACTS,
       "transport" => { "account" => "fixture", "workspace" => "personal", "endpoint" => "tunnel_fixture/main",
         "audience" => "whole-workspace", "manager" => "task-sharing-v2" },
-      "limits" => AgentCodingTool::EvidenceSession::LIMITS }
+      "limits" => AgentCodingTool::EvidenceSession::CURRENT_SHARING_LIMITS }
     grant_path = File.join(@temporary, "grant.json")
     File.write(grant_path, JSON.generate(grant), perm: 0o600)
     AgentCodingTool::EvidenceSession.start(@path, grant_path)
@@ -54,6 +54,8 @@ class TaskSharingTest < Minitest::Test
     assert_equal 0, AgentCodingTool::CLI.run(["help"], data_root: @data, out: out, err: err)
     assert_includes out.string, "evidence register --task TASK"
     assert_includes out.string, "--repository NAME [--focused PATH]"
+    assert_equal 0, AgentCodingTool::CLI.run(%w[share help], data_root: @data, out: out, err: err)
+    assert_includes out.string, "no cumulative byte caps"
     refute File.exist?("#{@data}-sharing")
   end
 
@@ -166,6 +168,9 @@ class TaskSharingTest < Minitest::Test
         assert_raises(AgentCodingTool::TunnelCredential::Refused) { controller.tunnel(30) }
         pointer = JSON.parse(File.binread(File.join(root, "active.json")))
         refute File.exist?(pointer["session"])
+        issued = JSON.parse(File.binread(Dir.glob(File.join(root, "grant-*.json")).max_by { |path| File.mtime(path) }))
+        assert_equal "agent-coding-tool-task-sharing/v3", issued["schema"]
+        assert_equal({ "seconds" => 1800, "requests" => 8192 }, issued["limits"])
         refute_equal first, pointer["session"] if first
         first = pointer["session"]
         assert_equal "stopped_before_admission", controller.control("stop")["status"]
@@ -207,4 +212,76 @@ class TaskSharingTest < Minitest::Test
     end
     assert_equal original, File.binread(path)
   end
+  # Reconnects and task regrants retain the original counters/deadline. The last
+  # admitted request may finish; another connection cannot release another frame.
+  def test_v3_reconnect_regrant_and_request_exhaustion
+    @session.sharing_ready
+    @session.share_task("FIRST", seconds: 1800)
+    @session.charge(wire: 167772161, decoded: 104857601)
+    before = @session.status
+    assert_equal "telemetry", before["byte_policy"]
+    incoming = sender = receiver = outgoing = server = nil
+    3.times do |connection|
+      @session.transaction { |state| state["requests"] = 8191 } if connection == 2
+      incoming, sender = IO.pipe
+      receiver, outgoing = IO.pipe
+      adapter = AgentCodingTool::EvidenceAdapter.new(AgentCodingTool::EvidenceSession.new(@path), err: StringIO.new)
+      server = Thread.new { adapter.serve(incoming, outgoing) }
+      sender.write(JSON.generate("jsonrpc" => "2.0", "id" => 1, "method" => "tools/call",
+        "params" => { "name" => "read_run_evidence", "arguments" => { "operation" => "discover", "task_id" => "FIRST" },
+          "_meta" => { "protocolVersion" => "2026-07-28", "clientCapabilities" => {} } }) + "\n")
+      assert IO.select([receiver], nil, nil, 2)
+      refute JSON.parse(receiver.gets).fetch("result").fetch("isError")
+      sender.close
+      assert server.join(2)
+      outgoing.close
+      assert_empty receiver.read
+      [incoming, receiver].each(&:close)
+      current = @session.status
+      assert_equal before["expires_at"], current["expires_at"]
+      assert_equal before["admitted_at"], current["admitted_at"]
+      if connection < 2
+        assert_equal (connection + 1) * 2, current["requests"] # frame plus nonrefundable EOF attempt
+        @session.share_task("FIRST", seconds: 3600)
+        assert_equal current, @session.status
+      end
+    end
+    assert_equal 8192, @session.status["requests"]
+    assert_equal "exhausted", @session.status["status"]
+    reopened = AgentCodingTool::EvidenceSession.new(@path)
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { reopened.admit }
+    assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { reopened.share_task("FIRST", seconds: 3600) }
+    clock = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3601
+    Process.stub(:clock_gettime, ->(*) { clock }) do
+      assert_equal "expired", reopened.status["status"]
+      assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { reopened.release(nil) { flunk "expired release" } }
+    end
+  ensure
+    sender&.close unless sender&.closed?
+    server&.join(2)
+    [incoming, receiver, outgoing].compact.each { |io| io.close unless io.closed? }
+  end
+
+  # Schema versions distinguish capped legacy grants from telemetry-only v3;
+  # missing legacy limits and invented v3 byte quotas fail before admission.
+  def test_versioned_grants_require_their_exact_limit_fields
+    original = JSON.parse(File.binread(File.join(@temporary, "grant.json")))
+    invalid = [
+      original.merge("schema" => "agent-coding-tool-task-sharing/v2"),
+      original.merge("schema" => "agent-coding-tool-evidence-grant/v1"),
+      original.merge("limits" => AgentCodingTool::EvidenceSession::SHARING_LIMITS),
+      original.merge("limits" => { "seconds" => 3600, "requests" => 8193 }),
+      original.merge("limits" => { "seconds" => 3601, "requests" => 8192 })
+    ]
+    invalid.each_with_index do |grant, number|
+      path = File.join(@temporary, "invalid-#{number}")
+      grant = grant.merge("session_path" => path)
+      input = File.join(@temporary, "invalid-#{number}.json")
+      File.write(input, JSON.generate(grant), perm: 0o600)
+      error = assert_raises(AgentCodingTool::RunEvidenceReader::Refused) { AgentCodingTool::EvidenceSession.start(path, input) }
+      assert_equal "grant.limits", error.message
+      refute File.exist?(path)
+    end
+  end
+
 end

@@ -562,7 +562,7 @@
       "ImportedEvidenceTest#test_storage_and_remaining_transport_limits",
       "ImportedEvidenceTest#test_remote_boundaries_and_retained_mutations",
       "ImportedEvidenceTest#test_revocation_expiry_stop_budget_and_tunnel_restart",
-      "ImportedEvidenceTest#test_large_framed_zip_journeys_and_linear_retained_work"
+      "ImportedEvidenceTest#test_framed_import_can_be_read_twice_past_old_byte_caps"
     ],
     "test/launcher_read_only_test.rb": [
       "LauncherReadOnlyTest#test_report_journey_has_no_writer_authority",
@@ -734,7 +734,7 @@
   },
   "native_default": {
     "test/imported_evidence_test.rb": [
-      "ImportedEvidenceTest#test_large_framed_zip_journeys_and_linear_retained_work"
+      "ImportedEvidenceTest#test_framed_import_can_be_read_twice_past_old_byte_caps"
     ],
     "test/launcher_fixture_test.rb": [
       "LauncherFixtureTest#test_scoped_fixture_environment_permissions_and_retention",

@@ -7,9 +7,10 @@ module AgentCodingTool
     Refused = RunEvidenceReader::Refused
     SOURCE = "externally_supplied_zip"
     SCHEMA = "agent-coding-tool-imported-evidence/v1"
-    MAX_FILE = RunEvidenceReader::MAX_FILE
+    MAX_FILE = 100 * 1024 * 1024
+    MAX_CHUNK = 32 * 1024
     MAX_ARTIFACTS = 64
-    MAX_STORAGE = 64 * 1024 * 1024
+    MAX_STORAGE = 128 * 1024 * 1024
 
     # Binds one canonical data root without creating storage. Unsafe roots refuse.
     def initialize(data)
@@ -48,8 +49,6 @@ module AgentCodingTool
           check_source(source, original, path)
           if existing
             select({ "task_id" => task, "artifact" => id }, manager: "local-import")
-            retained = RunEvidenceStore.bytes(File.join(@root, id, "bundle"), root: @root, private: true)
-            raise Refused, "import.retained_changed" unless retained == bytes
             yield existing
             return existing.merge("reused" => true)
           end
@@ -94,12 +93,63 @@ module AgentCodingTool
       raw = RunEvidenceStore.bytes(File.join(directory, "registration.json"), root: @root, private: true)
       record = RunEvidenceStore.parse(raw)
       self.class.validate_record(record, identity)
-      bytes = RunEvidenceStore.bytes(File.join(directory, "bundle"), root: @root, private: true)
-      raise Refused, "import.retained_changed" unless bytes.bytesize == record["bytes"] && Digest::SHA256.hexdigest(bytes) == record["sha256"]
+      retained = self.class.retained(File.join(directory, "bundle"), root: directory,
+        size: record.fetch("bytes"), digest: record.fetch("sha256"))
       { "run_dir" => directory, "checkpoint_dir" => directory, "handoff_sha256" => Digest::SHA256.hexdigest(raw),
         "binding" => identity.merge("source" => SOURCE), "manager" => manager, "paged" => true,
         "approvals" => { id => record.slice("filename", "bytes", "sha256").merge("status" => "complete",
-          "path" => File.join(directory, "bundle")) } }
+          "path" => File.join(directory, "bundle"), "retained_identity" => retained.fetch("identity")) } }
+    end
+
+    # Checks a private retained ZIP and returns its filesystem identity and a
+    # bounded range. Selection streams the full SHA-256 once; subsequent reads
+    # require that exact device/inode/size/mode/link/time identity before AND
+    # after the range read. Even equal-byte replacements or restored mtimes
+    # refuse because inode/ctime differ. No filesystem identity is client input.
+    # Missing, unsafe or changed files raise Refused without releasing bytes.
+    def self.retained(path, root:, size:, digest: nil, identity: nil, offset: 0, length: 0)
+      raise Refused, "import.path" unless path == File.join(root, "bundle") &&
+        File.expand_path(path) == path && File.realpath(root) == root
+      cursor = path
+      loop do
+        raise Refused, "import.symlink" if File.symlink?(cursor)
+        break if cursor == File.dirname(cursor)
+        cursor = File.dirname(cursor)
+      end
+      [root, File.dirname(root)].each do |directory_path|
+        directory = File.stat(directory_path)
+        raise Refused, "import.directory" unless directory.directory? && directory.uid == Process.uid && (directory.mode & 0o077).zero?
+      end
+      File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW) do |file|
+        original = retained_identity(file.stat)
+        raise Refused, "import.retained_changed" unless file.stat.file? && file.stat.uid == Process.uid &&
+          file.stat.nlink == 1 && (file.stat.mode & 0o077).zero? && size.between?(22, MAX_FILE) &&
+          file.stat.size == size && (!identity || original == identity)
+        if digest && !identity
+          hash = Digest::SHA256.new
+          total = 0
+          while (part = file.binmode.read(MAX_CHUNK))
+            total += part.bytesize
+            raise Refused, "import.retained_changed" if total > size
+            hash.update(part)
+          end
+          raise Refused, "import.retained_changed" unless total == size && hash.hexdigest == digest
+        end
+        file.seek(offset)
+        data = length.zero? ? "".b : file.binmode.read(length) || "".b
+        raise Refused, "import.retained_changed" unless retained_identity(file.stat) == original &&
+          retained_identity(File.lstat(path)) == original && File.realpath(path) == path
+        { "identity" => original, "data" => data }
+      end
+    rescue SystemCallError, IOError, ArgumentError
+      raise Refused, "import.unavailable", cause: nil
+    end
+
+    # Returns JSON-stable, nanosecond-precise identity for trusted private files.
+    # ctime prevents undetected in-place changes followed by restoring mtime.
+    def self.retained_identity(stat)
+      %i[dev ino uid mode nlink size].map { |field| stat.public_send(field) } +
+        [stat.mtime.to_r.to_s, stat.ctime.to_r.to_s]
     end
 
     # Verifies closed metadata without inventing managed-run provenance. Returns
@@ -151,7 +201,18 @@ module AgentCodingTool
       secure_directory(staging)
       entries = Dir.children(staging)
       raise Refused, "import.recovery" unless (entries - %w[bundle registration.json]).empty?
-      entries.each { |name| RunEvidenceStore.bytes(File.join(staging, name), root: @root, private: true) }
+      entries.each do |name|
+        if name == "bundle"
+          # Interrupted copies may be short, including empty, but never large
+          # or unsafe. Recovery validates metadata without retaining ZIP bytes.
+          path = File.join(staging, name)
+          stat = File.lstat(path)
+          raise Refused, "import.recovery" unless stat.file? && stat.uid == Process.uid &&
+            stat.nlink == 1 && (stat.mode & 0o077).zero? && stat.size <= MAX_FILE
+        else
+          RunEvidenceStore.bytes(File.join(staging, name), root: @root, private: true)
+        end
+      end
       entries.each { |name| File.unlink(File.join(staging, name)) }
       Dir.rmdir(staging)
     end

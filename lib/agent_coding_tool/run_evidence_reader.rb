@@ -179,18 +179,27 @@ module AgentCodingTool
           offset = request.fetch("offset", 0)
           refuse!("invalid manifest offset") unless offset.is_a?(Integer) && offset.between?(0, @approvals.length)
           entries = @paged ? @approvals.to_a.slice(offset, 16) : @approvals.to_a
-          entries = entries.map { |name, spec| [name, spec.reject { |key, _| key == "path" }] } if @binding["source"] == "externally_supplied_zip"
+          entries = entries.map { |name, spec| [name, spec.reject { |key, _| %w[path retained_identity].include?(key) }] } if @binding["source"] == "externally_supplied_zip"
           return metadata.merge("artifacts" => JSON.parse(JSON.generate(entries.to_h)),
             "artifact_total" => @approvals.length, "next_offset" => @paged && offset + entries.length < @approvals.length ? offset + entries.length : nil)
         end
         spec = @approvals[request["artifact"]]
         refuse!("artifact not approved") unless spec
         offset, length = request.values_at("offset", "length")
+        maximum = @binding["source"] == "externally_supplied_zip" ? ImportedEvidence::MAX_CHUNK : MAX_CHUNK
         refuse!("invalid chunk") unless offset.is_a?(Integer) && offset >= 0 &&
-          length.is_a?(Integer) && (1..MAX_CHUNK).cover?(length)
+          length.is_a?(Integer) && (1..maximum).cover?(length)
         return metadata.merge("artifact" => request["artifact"], "status" => "missing") if spec["status"] == "missing"
 
-        if request["artifact"] == "transcript" && spec["streamed"]
+        if @binding["source"] == "externally_supplied_zip"
+          refuse!("import artifact binding") unless request["artifact"] == report["artifact_id"] &&
+            spec["path"] == File.join(@run_dir, "bundle") &&
+            spec.slice("filename", "sha256", "bytes") == report.slice("filename", "sha256", "bytes")
+          refuse!("offset past end") if offset > spec.fetch("bytes")
+          chunk = ImportedEvidence.retained(spec.fetch("path"), root: @run_dir, size: spec.fetch("bytes"),
+            identity: spec.fetch("retained_identity"), offset: offset, length: length).fetch("data")
+          total = spec.fetch("bytes")
+        elsif request["artifact"] == "transcript" && spec["streamed"]
           refuse!("offset past end") if offset > spec.fetch("bytes")
           chunk = transcript!(report, offset: offset, length: length)
           total = spec.fetch("bytes")
@@ -296,13 +305,6 @@ module AgentCodingTool
     # supplies the worker binding. Raw receipt output/status is never rewritten.
     def artifact!(name, report)
       spec = @approvals.fetch(name)
-      if @binding["source"] == "externally_supplied_zip"
-        refuse!("import artifact binding") unless name == report["artifact_id"] && spec["path"] == File.join(@run_dir, "bundle") &&
-          spec.slice("filename", "sha256", "bytes") == report.slice("filename", "sha256", "bytes")
-        bytes = bytes!(spec.fetch("path"), @run_dir, spec.fetch("sha256"))
-        refuse!("import size") unless bytes.bytesize == spec["bytes"]
-        return bytes
-      end
       if @binding["source"] == "external_codex_cli"
         recorded = report.fetch("files").fetch(name)
         refuse!("external artifact binding") unless recorded == spec.reject { |key, _| key == "path" } &&

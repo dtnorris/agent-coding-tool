@@ -162,7 +162,8 @@ module AgentCodingTool
       action = argv.shift
       if action.nil? || %w[help --help].include?(action)
         @out.puts "share tunnel [--min N] (default 60); share TASK [PATH_TO_ZIP] [--min N] (default 30); maximum 60 minutes"
-        @out.puts 'Example: act share TASK "./completed results.zip"; ZIP maximum 4 MiB; externally supplied evidence, not verified execution.'
+        @out.puts 'Example: act share TASK "./completed results.zip"; ZIP maximum 100 MiB; externally supplied evidence, not verified execution.'
+        @out.puts "New tunnels: 8192 cumulative requests; byte counters are telemetry, with no cumulative byte caps. Existing capped grants retain their limits."
         @out.puts "share status; share revoke TASK; share stop. Delivered bytes cannot be recalled."
         @out.puts "share source grant ID --code-root PATH --root REPOSITORY [--min N]; share source revoke ID"
         @out.puts "share setup --env-file PATH --client PATH --runtime-dir PATH --account ACCOUNT --workspace WORKSPACE --endpoint tunnel_ID/main"
@@ -196,9 +197,10 @@ module AgentCodingTool
       0
     rescue RunEvidenceReader::Refused, TunnelCredential::Refused, SystemCallError, JSON::ParserError, KeyError, ArgumentError, OptionParser::ParseError => error
       case error.message
-      when "import.size" then @err.puts "ERROR: ZIP exceeds the supported 4 MiB limit; no import shared."
-      when "import.storage_limit" then @err.puts "ERROR: ZIP admission storage exhausted (64 artifacts / 64 MiB); no import shared."
-      when "import.admission_budget" then @err.puts "ERROR: Insufficient remaining tunnel request/wire/decoded budget for ZIP retrieval; no import shared."
+      when "import.size" then @err.puts "ERROR: ZIP exceeds the supported 100 MiB limit; no import shared."
+      when "import.storage_limit" then @err.puts "ERROR: ZIP admission storage exhausted (64 artifacts / 128 MiB); no import shared."
+      when "import.admission_requests", "import.admission_wire", "import.admission_decoded"
+        @err.puts "ERROR: Insufficient remaining tunnel #{error.message.delete_prefix('import.admission_')} budget for ZIP retrieval; no import shared."
       end
       @err.puts "ERROR: share refused; use act share help, act share setup for missing facts, or act share tunnel for a new ready tunnel; inspect act share status before retrying."
       2
@@ -2009,7 +2011,7 @@ module AgentCodingTool
         Commands:
           implementation             resolved mode and verified package source identities
           share tunnel [--min MINUTES]  foreground read tunnel, default 60 (maximum 60)
-          share TASK [PATH_TO_ZIP] [--min MINUTES] grant/renew task visibility; optional ZIP up to 4 MiB
+          share TASK [PATH_TO_ZIP] [--min MINUTES] grant/renew task visibility; optional ZIP up to 100 MiB
           share {status|stop}; share revoke TASK; share help
           share source grant ID --code-root PATH --root REPOSITORY [--min MINUTES]
           share source revoke ID      revoke live source independently of task evidence

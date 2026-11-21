@@ -142,6 +142,28 @@ class NativePilotExecutorTest < Minitest::Test
     JSON.parse(File.binread(File.join(directory, name)))
   end
 
+  # The first-return grant consumes its only fresh inference even on failure.
+  # Reopening from disk preserves that budget; resumed, worker and gate calls
+  # cannot use it. The existing native boundary supplies the harmless process.
+  def test_first_return_grant_is_fresh_only_and_one_use
+    fixture do |_executor, directory, workspace, _profile|
+      control = File.join(File.dirname(directory), "review-control")
+      Dir.mkdir(control, 0o700)
+      executor = EXECUTOR.create(control, @config.merge("first_return" => { "binding" => "fixture" }), seconds: 10)
+      adapter = executor.manager_adapter
+      assert_raises(AgentCodingTool::InvalidState) { executor.call(adapter.argv("resume-id"), "") }
+      assert_raises(AgentCodingTool::InvalidState) do
+        executor.gate(@config.fetch("gate_argv"), cwd: workspace, out: StringIO.new, err: StringIO.new)
+      end
+      assert_equal 7, executor.call(adapter.argv(nil), "").exitstatus
+      assert_equal({ "manager" => 1, "worker" => 0, "gate" => 0 }, read(control).fetch("counts"))
+      reopened = EXECUTOR.new(control)
+      error = assert_raises(AgentCodingTool::InvalidState) { reopened.call(adapter.argv(nil), "") }
+      assert_includes error.message, "invocation/output limit"
+      assert_equal 1, Dir.glob(File.join(control, "*.started.json")).length
+    end
+  end
+
   # The deterministic spawn keeps only its declared environment plus the exact
   # coverage bootstrap/context. A real fixture writes fresh child evidence;
   # explicit context deletion/replacement must refuse before native entry.

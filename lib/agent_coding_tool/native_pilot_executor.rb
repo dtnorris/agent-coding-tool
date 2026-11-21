@@ -15,6 +15,8 @@ module AgentCodingTool
   class NativePilotExecutor
     SCHEMA = "agent-coding-tool-native-pilot/v1"
     LIMITS = { "manager" => 2, "worker" => 1, "gate" => 1 }.freeze
+    FIRST_RETURN_LIMITS = { "manager" => 1, "worker" => 0, "gate" => 0 }.freeze
+    FIRST_RETURN_SECONDS = 120
     OUTPUT_LIMIT = 4 * 1024 * 1024
 
     # Creates an exclusive host-owned ledger in existing checkpoint storage.
@@ -23,15 +25,17 @@ module AgentCodingTool
     # InvalidState/IO errors on unsafe storage, invalid limits or occupied files.
     def self.create(directory, config, seconds: 900)
       raise InvalidState, "pilot: invalid lease" unless seconds.positive? && seconds <= 900
+      raise InvalidState, "first-return: lease exceeds maximum" if config["first_return"] && seconds > FIRST_RETURN_SECONDS
       directory = File.realpath(directory)
       raise InvalidState, "pilot: invalid turn limits" unless config.fetch("turn_seconds", 300).between?(0.01, 300) && config.fetch("gate_seconds", 120).between?(0.01, 120)
+      limits = config["first_return"] ? FIRST_RETURN_LIMITS : LIMITS
       config = config.merge("schema" => SCHEMA, "directory" => directory,
         "deadline" => [Time.now.to_f + seconds, config.dig("enclosing_lease", "deadline") || Float::INFINITY].min,
         "monotonic_deadline" => [clock + seconds, config.dig("enclosing_lease", "monotonic_deadline") || Float::INFINITY].min,
-        "boot" => boot, "limits" => LIMITS, "output_limit" => OUTPUT_LIMIT)
+        "boot" => boot, "limits" => limits, "output_limit" => OUTPUT_LIMIT)
       private_directory!(directory)
       File.open(File.join(directory, "config.json"), "wx", 0o600) { |file| file.write(JSON.generate(config)); file.flush; file.fsync }
-      save(directory, "ledger.json", { "counts" => LIMITS.transform_values { 0 }, "bytes" => 0, "active" => nil, "held" => nil })
+      save(directory, "ledger.json", { "counts" => limits.transform_values { 0 }, "bytes" => 0, "active" => nil, "held" => nil })
       new(directory)
     end
 
@@ -42,9 +46,41 @@ module AgentCodingTool
       raise InvalidState, "pilot: aliased storage" unless File.expand_path(directory) == @directory
       self.class.private_directory!(@directory)
       @config = read("config.json")
+      @limits = @config["first_return"] ? FIRST_RETURN_LIMITS : LIMITS
       raise InvalidState, "pilot: invalid config" unless @config["schema"] == SCHEMA &&
-        @config["directory"] == @directory && @config["limits"] == LIMITS && @config["output_limit"] == OUTPUT_LIMIT
+        @config["directory"] == @directory && @config["limits"] == @limits && @config["output_limit"] == OUTPUT_LIMIT
       verify!
+    end
+
+    # Returns the fixed operator-owned slot for a validated worker invocation.
+    # This is outside task lifecycle and checkout data; no lookup creates it.
+    def self.first_return_directory(data_root, invocation)
+      raise InvalidState, "first-return: invalid pilot invocation" unless invocation.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]{0,127}\z/)
+      File.join("#{data_root}-runs", "checkpoints", ".first-return", invocation)
+    end
+
+    # Opens the one-use, independently supervised adapter for exactly this
+    # approved selection. Host qualification must have installed the pilot.
+    # Filesystem, source, composition or approval mismatches refuse inference.
+    def self.open_first_return(data_root, binding, revision)
+      directory = first_return_directory(data_root, binding.fetch("invocation_id"))
+      unless File.exist?(directory) || File.symlink?(directory)
+        raise InvalidState, "first-return: no approved confined reviewer lease for this invocation"
+      end
+      private_directory!(File.dirname(directory))
+      pilot = new(directory)
+      pilot.first_return_adapter(data_root, binding, revision)
+    end
+
+    # Returns an adapter only for an exact, host-qualified first-return grant.
+    # A normal WAC-04 ledger or an inference substitute cannot be adopted here.
+    def first_return_adapter(data_root, binding, revision)
+      expected = { "data_root" => data_root, "binding" => binding, "revision" => revision,
+        "composition" => Bootstrap::COMPOSITION }
+      raise InvalidState, "first-return: pilot approval does not match the run, evidence or composition" unless
+        @config["first_return"] == expected && !@config.key?("inference_prefixes") &&
+        @config.fetch("pins").key?(File.join(__dir__, "first_return_review.rb"))
+      manager_adapter
     end
 
     # Returns immutable config identity for ACT's manager record; budgets and
@@ -240,7 +276,7 @@ module AgentCodingTool
         raise InvalidState, "pilot: busy" unless lock.flock(File::LOCK_EX | File::LOCK_NB)
         state = read("ledger.json")
         raise InvalidState, "pilot: corrupt budget" unless state.is_a?(Hash) && state["counts"].is_a?(Hash) &&
-          state["counts"].keys.sort == LIMITS.keys.sort && LIMITS.all? { |role, cap| state["counts"][role].is_a?(Integer) && state["counts"][role].between?(0, cap) } &&
+          state["counts"].keys.sort == @limits.keys.sort && @limits.all? { |role, cap| state["counts"][role].is_a?(Integer) && state["counts"][role].between?(0, cap) } &&
           state["bytes"].is_a?(Integer) && state["bytes"].between?(0, OUTPUT_LIMIT)
         yield state
         self.class.save(@directory, "ledger.json", state)
@@ -257,7 +293,7 @@ module AgentCodingTool
                 require_relative "codex_manager_adapter"
                 adapter = CodexManagerAdapter.new(executable: executable, identity: {})
                 session = argv[2] == "resume" ? argv[-2] : nil
-                cwd == @config.fetch("manager_cwd") && argv == adapter.argv(session)
+                (!@config["first_return"] || session.nil?) && cwd == @config.fetch("manager_cwd") && argv == adapter.argv(session)
               when "worker"
                 cwd.start_with?(@config.fetch("worktree_root") + "/T/") &&
                   argv.take(2) == [executable, "exec"] && argv.last == "-" && !argv.include?("--model") &&
@@ -273,10 +309,11 @@ module AgentCodingTool
     # outcome remains active/held across every restart, never auto-replayed.
     def launch(role, argv, input:, output:, error:, cwd:, token: SecureRandom.uuid, final: nil)
       verify!
+      raise InvalidState, "pilot: role not authorized" unless @limits.fetch(role).positive?
       command!(role, argv, cwd)
       ledger do |state|
         raise InvalidState, "pilot: held or active invocation" if state["held"] || state["active"]
-        raise InvalidState, "pilot: invocation/output limit" unless state.fetch("counts").fetch(role) < LIMITS.fetch(role) && state.fetch("bytes") < OUTPUT_LIMIT
+        raise InvalidState, "pilot: invocation/output limit" unless state.fetch("counts").fetch(role) < @limits.fetch(role) && state.fetch("bytes") < OUTPUT_LIMIT
         state.fetch("counts")[role] += 1
         state["active"] = token
       end

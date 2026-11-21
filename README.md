@@ -269,6 +269,40 @@ files, invalid UTF-8/control bytes, sources over 64 KiB and reminders over 8 KiB
 refuse before copying; content is never silently truncated. Clipboard replacement
 is the requested side effect, not repository or publication authorization.
 
+### First-return review
+
+`act manage TASK --first-return` prints one advisory review of a retained managed
+worker return. With multiple managed attempts, select the exact launch with
+`--invocation ID`. The command binds the task, attempt, invocation and worker
+session. It reads the assignment sent on stdin, final output, launch-retained
+worker claims and linked host checkpoint and finished gate receipts established
+by the recorded exit timestamp. It does not read current task text, lifecycle
+closeout or later gate results. The transcript binds the worker session; its body
+and supporting artifacts outside the review byte budget are not supplied to the
+reviewer. Paths mentioned only in worker prose remain unverified. Incomplete
+identity, broken evidence links or evidence changes during review refuse the
+recommendation. Worker exit and reviewer failure are reported separately.
+
+The reviewer starts a fresh Codex session in the WAC-04 confined runtime. The
+host supplies the evidence on stdin and validates the response before printing
+it. The reviewer contributes advice to David's decision and has no tools for
+reading additional evidence, executing recommended commands or changing task
+state. Paste-ready checkpoint commands use the retained binding, and native
+ACT checks still apply. A historical recommendation describes the action at
+the worker return; review current state before acting on it now.
+
+For one separately approved Mini trial, use the existing WAC-04 host recipe
+with action `first-return`, `--authorize-live`, `--data-root PATH`, `--task TASK`
+and `--invocation ID`, alongside the reviewed source/Codex pins and fresh
+`--root` below. It first runs harmless qualification, installs a private lease
+for the exact evidence revision under `DATA-runs/checkpoints/.first-return`.
+Then run `act manage TASK --first-return --invocation ID` in the same qualified
+composition. The lease permits one fresh manager turn,
+at most 120 seconds including teardown and 4 MiB of output. It uses the existing
+ChatGPT login. A missing, expired, occupied or consumed lease refuses without
+launching another reviewer. The trial stops after the recommendation. David
+judges its live quality and retains authority over any next action.
+
 ## Persistent manager session candidate
 
 This WAC-04 architecture decision retains original preparation provenance at ACT baseline

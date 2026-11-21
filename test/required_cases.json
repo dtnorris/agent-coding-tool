@@ -164,6 +164,14 @@
       "ExternalActivityTest#test_preparation_scope_floor_survives_read_only_relabeling",
       "ExternalActivityTest#test_same_task_report_and_manual_start_races"
     ],
+    "test/first_return_review_test.rb": [
+      "FirstReturnReviewTest#test_pre_checkpoint_historical_review",
+      "FirstReturnReviewTest#test_pre_return_checkpoint_keeps_later_gate_out",
+      "FirstReturnReviewTest#test_pre_return_gate_and_output_are_eligible_evidence",
+      "FirstReturnReviewTest#test_exempt_inspection",
+      "FirstReturnReviewTest#test_broken_link_changed_evidence_and_reviewer_failure",
+      "FirstReturnReviewTest#test_unapproved_and_ambiguous_selection"
+    ],
     "test/family_status_test.rb": [
       "FamilyStatusTest#test_zero_one_six_and_seven_ready",
       "FamilyStatusTest#test_four_families_and_act_preference_have_exact_summaries",
@@ -544,7 +552,8 @@
       "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",
       "NativePilotExecutorTest#test_active_enclosing_expiry_worker_limit_and_declared_caps",
       "NativePilotExecutorTest#test_controller_death_owned_teardown_and_concurrent_resume",
-      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse"
+      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse",
+      "NativePilotExecutorTest#test_first_return_grant_is_fresh_only_and_one_use"
     ],
     "test/status_read_view_test.rb": [
       "StatusReadViewTest#test_public_dashboard_equivalence_and_repeated_scan_negative_control",
@@ -876,7 +885,8 @@
       "NativePilotExecutorTest#test_cumulative_output_and_two_turn_admission",
       "NativePilotExecutorTest#test_active_enclosing_expiry_worker_limit_and_declared_caps",
       "NativePilotExecutorTest#test_controller_death_owned_teardown_and_concurrent_resume",
-      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse"
+      "NativePilotExecutorTest#test_pins_paths_commands_and_occupied_control_refuse",
+      "NativePilotExecutorTest#test_first_return_grant_is_fresh_only_and_one_use"
     ],
     "test/status_read_view_test.rb": [
       "StatusReadViewTest#test_public_dashboard_equivalence_and_repeated_scan_negative_control",

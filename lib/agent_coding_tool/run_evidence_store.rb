@@ -63,10 +63,35 @@ module AgentCodingTool
       raise Refused, "source.root", cause: nil
     end
 
+    # Selects one managed worker return without reading current task or state.
+    # A task with multiple attempts requires the exact invocation. Returns the
+    # sealed Launcher fields and reader configuration, or raises Refused.
+    def first_return(task, invocation: nil)
+      raise Refused, "invalid worker invocation ID" if invocation && !invocation.match?(RUN_ID)
+      matches = managed_reports(task).select { |_, _, report| !invocation || report["invocation_id"] == invocation }
+      raise Refused, "no matching managed run" if matches.empty?
+      raise Refused, "multiple matching managed runs (specify the exact --invocation ID)" unless matches.one?
+      _, raw, report = matches.first
+      identity = report.slice(*RunEvidenceReader::IDENTITIES)
+      raise Refused, "missing exact worker attempt or session" unless identity["attempt"].is_a?(Integer) && identity["attempt"].positive? &&
+        %w[invocation_id session_id].all? { |field| identity[field].is_a?(String) && identity[field].match?(RUN_ID) }
+      raise Refused, "completed worker return or checkpoint policy unavailable" unless %w[exited interrupted invalid_final].include?(report["status"]) &&
+        report["exit_status"].is_a?(Integer) && report["ended_at"].is_a?(String) &&
+        [true, false].include?(report["checkpoint_required"]) && report["artifacts"].is_a?(Array)
+      cutoff = Time.iso8601(report.fetch("ended_at"))
+      yield report if block_given?
+      selection = select(identity, artifacts: %w[prompt launch_input final stderr transcript checkpoint candidate validation validation_output],
+        manager: "first-return", shared: true, return_cutoff: cutoff)
+      raise Refused, "worker handoff changed during selection" unless selection["handoff_sha256"] == Digest::SHA256.hexdigest(raw)
+      [report, selection]
+    rescue ArgumentError, JSON::ParserError, KeyError, TypeError
+      raise Refused, "malformed worker handoff or historical evidence timestamp", cause: nil
+    end
+
     # Resolves all four exact identities to one authoritative handoff and builds
     # immutable file approvals. Returns reader constructor arguments. Ambiguity,
     # missing provenance, unsafe paths or mismatched source bytes refuse.
-    def select(identity, artifacts:, manager:, shared: false)
+    def select(identity, artifacts:, manager:, shared: false, return_cutoff: nil)
       if identity.key?("artifact")
         raise Refused, "selection.source" unless shared
         return ImportedEvidence.new(@data).select(identity, manager: manager)
@@ -81,16 +106,8 @@ module AgentCodingTool
         raise Refused, "selection.missing_or_ambiguous" if managed_match
         return ExternalFollowup.new(@data).select(identity, artifacts: artifacts, manager: manager)
       end
-      task = identity.fetch("task_id")
-      raise Refused, "selection.task" unless task.is_a?(String) && task.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
-      task_root = File.join(@root, task)
-      paths = children(task_root).map { |entry| File.join(task_root, entry, "handoff.json") }
-      matches = paths.filter_map do |path|
-        raw = self.class.bytes(path, root: @root)
-        report = self.class.parse(raw)
-        raise Refused, "selection.foreign" unless report.is_a?(Hash) && report["task_id"] == task &&
-          report["schema_version"] == "agent-coding-tool-run/v1"
-        [path, raw, report] if RunEvidenceReader::IDENTITIES.all? { |field| report[field] == identity[field] }
+      matches = managed_reports(identity.fetch("task_id")).select do |_, _, report|
+        RunEvidenceReader::IDENTITIES.all? { |field| report[field] == identity[field] }
       end
       raise Refused, "selection.missing_or_ambiguous" unless matches.length == 1
       path, raw, report = matches.first
@@ -108,7 +125,10 @@ module AgentCodingTool
       { "final" => "final_path", "transcript" => "jsonl_path", "stderr" => "stderr_path" }.each do |name, field|
         next unless artifacts.include?(name)
         source = report.fetch(field)
-        next unless File.exist?(source) || File.symlink?(source)
+        unless File.exist?(source) || File.symlink?(source)
+          raise Refused, "retained #{name} evidence is missing" if return_cutoff && report.fetch("artifacts").any? { |entry| entry["path"] == source }
+          next
+        end
         status = %w[exited invalid_final interrupted child_start_failed preflight_failed preflight_abandoned].include?(report["status"]) ? "complete" : "pending"
         approvals[name] = if shared && name == "transcript"
           streamed = RunEvidenceReader.transcript(source, run_dir, session_id: binding.fetch("session_id"))
@@ -124,8 +144,22 @@ module AgentCodingTool
           approvals[name] = File.exist?(report[field]) || File.symlink?(report[field]) ? approval(report[field], run_dir) : { "status" => "missing" }
         end
       end
-      checkpoint_dir = checkpoint(report, binding, artifacts, approvals, shared: shared)
-      registrations(run_dir, report, binding, approvals) if shared && report["writable_repositories"] != []
+      checkpoint_dir = checkpoint(report, binding, artifacts, approvals, shared: shared, return_cutoff: return_cutoff)
+      if return_cutoff && report["writable_repositories"] != []
+        evidence = report.fetch("worker_evidence")
+        case evidence.fetch("status")
+        when "registered_worker_claims"
+          package = evidence.fetch("package_sha256")
+          raise Refused, "original worker export package digest is invalid" unless package.is_a?(String) && package.match?(/\A[0-9a-f]{64}\z/)
+          registrations(run_dir, binding, approvals, package: package)
+        when "missing", "registration_refused"
+          # Later manual registrations are outside the first return.
+        else
+          raise Refused, "worker export package status is unknown"
+        end
+      elsif shared && report["writable_repositories"] != []
+        registrations(run_dir, binding, approvals)
+      end
       config = { "run_dir" => run_dir, "checkpoint_dir" => checkpoint_dir,
         "handoff_sha256" => Digest::SHA256.hexdigest(raw), "binding" => binding,
         "approvals" => approvals, "manager" => manager }
@@ -136,6 +170,9 @@ module AgentCodingTool
       approvals.each do |name, spec|
         next if spec["status"] == "missing"
         reader.send(:artifact!, name, report)
+      rescue Refused => error
+        raise unless return_cutoff
+        raise Refused, "#{name} evidence: #{error.message}", cause: nil
       end
       config
     rescue KeyError, TypeError, JSON::ParserError, NoMethodError
@@ -251,14 +288,36 @@ module AgentCodingTool
 
     private
 
+    RUN_ID = /\A[A-Za-z0-9][A-Za-z0-9_-]{0,127}\z/
+
+    # Returns only this task's bounded managed handoff inventory. Imported runs
+    # and editable task context are outside the managed identity namespace.
+    def managed_reports(task)
+      raise Refused, "selection.task" unless task.is_a?(String) && task.match?(/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/)
+      root = File.join(@root, task)
+      return [] unless File.exist?(root) || File.symlink?(root)
+      children(root).map do |entry|
+        path = File.join(root, entry, "handoff.json")
+        raw = self.class.bytes(path, root: @root)
+        report = self.class.parse(raw)
+        raise Refused, "selection.foreign" unless report.is_a?(Hash) && report["task_id"] == task &&
+          report["schema_version"] == "agent-coding-tool-run/v1"
+        [path, raw, report]
+      end
+    end
+
     # Admits only completely published registration manifests for this exact
     # run, then pins copied worker bytes. Partial files remain undiscoverable.
     # A later registration cannot replace any prior manifest or selected bytes.
-    def registrations(run, report, binding, approvals)
+    def registrations(run, binding, approvals, package: nil)
       entries = Dir.children(run).grep(/\Aregistration-[0-9a-f]{32}\.json\z/).sort
       raise Refused, "registration.limit" if entries.length > 16
+      matched = 0
       entries.each do |name|
-        record = self.class.parse(self.class.bytes(File.join(run, name), root: run))
+        raw = self.class.bytes(File.join(run, name), root: run)
+        record = self.class.parse(raw)
+        next if package && record["package_sha256"] != package
+        matched += 1
         raise Refused, "registration.binding" unless record["binding"] == binding.slice(*RunEvidenceReader::IDENTITIES) &&
           record["workspace"] == binding["workspace"] && record["base_sha"] == binding["base_sha"]
         record.fetch("files").each do |kind, spec|
@@ -267,9 +326,10 @@ module AgentCodingTool
           pinned = approval(File.join(run, spec.fetch("file")), run)
           raise Refused, "registration.digest" unless pinned.values_at("sha256", "bytes") == spec.values_at("sha256", "bytes")
           approvals["worker:#{token}:#{kind}"] = pinned.merge("registration" => name,
-            "registration_sha256" => Digest::SHA256.file(File.join(run, name)).hexdigest)
+            "registration_sha256" => Digest::SHA256.hexdigest(raw))
         end
       end
+      raise Refused, "original worker export package missing or ambiguous" if package && matched != 1
     end
 
     # Returns bounded run/checkpoint directories, ignoring only regular Finder
@@ -285,15 +345,15 @@ module AgentCodingTool
     end
 
     # Pins exact bytes in an approved directory; returns metadata, never a copy.
-    def approval(path, root, status = "complete")
-      bytes = self.class.bytes(path, root: root)
+    def approval(path, root, status = "complete", bytes: nil)
+      bytes ||= self.class.bytes(path, root: root)
       { "path" => path, "sha256" => Digest::SHA256.hexdigest(bytes), "bytes" => bytes.bytesize, "status" => status }
     end
 
     # Pins launch-bound checkpoint history and exact gate/candidate links. Shared
     # readers follow only published previous_record links, never filename guesses.
     # Missing history is normal; cycles, ambiguous directories or corrupt links refuse.
-    def checkpoint(report, binding, artifacts, approvals, shared: false)
+    def checkpoint(report, binding, artifacts, approvals, shared: false, return_cutoff: nil)
       return @root if report["writable_repositories"] == []
       return @root if (artifacts & %w[checkpoint candidate validation]).empty?
       task_root = File.join(@root, "checkpoints", binding.fetch("task_id"))
@@ -310,14 +370,19 @@ module AgentCodingTool
         history = []
         loop do
           raise Refused, "checkpoint.history" if history.length >= 64 || history.any? { |prior, _| prior["path"] == spec["path"] }
-          record = self.class.parse(self.class.bytes(spec.fetch("path"), root: @root))
+          raw = self.class.bytes(spec.fetch("path"), root: @root)
+          raise Refused, "checkpoint.changed" unless Digest::SHA256.hexdigest(raw) == spec.fetch("sha256")
+          record = self.class.parse(raw)
           history << [spec, record]
           previous = shared && record["previous_record"]
           break unless previous
           raise Refused, "checkpoint.path" unless previous.is_a?(String) && previous.match?(/\A[0-9a-f-]+\.json\z/)
           spec = approval(File.join(directory, previous), @root)
         end
-        history.select! { |_, record| record["launch_invocation"] == binding["invocation_id"] }
+        history.select! do |_, record|
+          record["launch_invocation"] == binding["invocation_id"] &&
+            (!return_cutoff || Time.iso8601(record.fetch("verified_at")) <= return_cutoff)
+        end
         [directory, history] unless history.empty?
       end
       raise Refused, "checkpoint.ambiguous" if matches.length > 1
@@ -336,7 +401,7 @@ module AgentCodingTool
         history.each do |checkpoint_spec, checkpoint_record|
           checkpoint_name = "checkpoint:#{File.basename(checkpoint_spec.fetch('path'))}"
           approvals[checkpoint_name] = checkpoint_spec
-          next unless artifacts.include?("candidate")
+          next unless artifacts.include?("candidate") && !return_cutoff
           filename = checkpoint_record.fetch("artifact")
           raise Refused, "checkpoint.path" unless filename.is_a?(String) && filename.match?(/\A[0-9a-f-]+\.patch\z/)
           approvals["candidate:#{filename}"] = approval(File.join(directory, filename), directory).merge("checkpoint" => checkpoint_name)
@@ -344,7 +409,7 @@ module AgentCodingTool
       end
       if artifacts.include?("validation")
         receipts = Dir.children(directory).grep(/\Agate-[0-9a-f-]+\.finished\.json\z/).sort
-        if shared
+        if shared && !return_cutoff
           receipts += Dir.children(directory).grep(/\Agate-[0-9a-f-]+\.command\.json\z/).reject do |filename|
             File.exist?(File.join(directory, filename.sub(".command.", ".finished.")))
           end.sort
@@ -355,8 +420,10 @@ module AgentCodingTool
         raise Refused, "checkpoint.receipts" if receipts.length > 64
         receipts.each do |filename|
           source = File.join(directory, filename)
-          receipt = self.class.parse(self.class.bytes(source, root: directory))
+          raw = self.class.bytes(source, root: directory)
+          receipt = self.class.parse(raw)
           next unless receipt.dig("candidate", "launch_invocation") == binding["invocation_id"]
+          next if return_cutoff && (Time.iso8601(receipt.fetch("finished_at")) > return_cutoff || receipt.key?("lifecycle_exception"))
           checkpoint_name = "checkpoint"
           if shared
             linked = history.find { |checkpoint_spec, _| File.basename(checkpoint_spec.fetch("path")) == receipt.dig("candidate", "record_file") }
@@ -367,7 +434,7 @@ module AgentCodingTool
             next unless receipt.dig("candidate", "sha256") == record["sha256"]
           end
           pending = receipt["receipt_phase"] == "started"
-          approvals["validation:#{filename}"] = approval(source, directory, pending ? "pending" : "complete").merge("checkpoint" => checkpoint_name)
+          approvals["validation:#{filename}"] = approval(source, directory, pending ? "pending" : "complete", bytes: raw).merge("checkpoint" => checkpoint_name)
           if shared && artifacts.include?("validation_output")
             receipt.fetch("output", {}).fetch("streams", {}).each do |stream, captured|
               next unless %w[stdout stderr].include?(stream) && (pending || captured["sha256"])

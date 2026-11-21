@@ -559,6 +559,37 @@ module Wac04Qualification
       end, "live_retry_authorized" => false, "live_continuity" => "UNPROVEN" }
   end
 
+  # Qualifies the existing WAC policy and arms the retained run for one fresh
+  # public manage call. This step runs no inference. The private ledger refuses
+  # reuse and its independent lease includes process teardown.
+  def self.first_return_trial(options)
+    raise "separate bounded host live authorization required" unless options["authorize-live"]
+    data = File.realpath(options.fetch("data-root"))
+    task, invocation = options.values_at("task", "invocation")
+    store = AgentCodingTool::RunEvidenceStore.new(data)
+    _, selection = store.first_return(task, invocation: invocation)
+    binding = selection.fetch("binding").slice(*AgentCodingTool::RunEvidenceReader::IDENTITIES)
+    reader = AgentCodingTool::RunEvidenceReader.new(**selection.transform_keys(&:to_sym))
+    manifest = reader.call(binding.merge("operation" => "manifest", "revision" => nil), caller: "first-return")
+    directory = EXECUTOR.first_return_directory(data, invocation)
+    raise "first-return trial slot already exists" if File.exist?(directory) || File.symlink?(directory)
+    qualification = qualify(options)
+    _, current = store.first_return(task, invocation: invocation)
+    raise "first-return evidence changed during qualification" unless current == selection
+    ["#{data}-runs", File.join("#{data}-runs", "checkpoints"), File.dirname(directory)].each do |path|
+      Dir.mkdir(path, 0o700) unless File.exist?(path) || File.symlink?(path)
+      EXECUTOR.private_directory!(path)
+    end
+    Dir.mkdir(directory, 0o700)
+    approval = { "data_root" => data, "binding" => binding, "revision" => manifest.fetch("revision"),
+      "composition" => AgentCodingTool::Bootstrap::COMPOSITION }
+    seconds = EXECUTOR::FIRST_RETURN_SECONDS
+    config = qualification.fetch("config").merge("first_return" => approval, "turn_seconds" => seconds)
+    EXECUTOR.create(directory, config, seconds: seconds)
+    puts "Confined reviewer lease armed for #{task} invocation #{invocation} (#{seconds} seconds)."
+    0
+  end
+
   # Explicit host entry: pin/qualify/offline/run. Run requires a separate consent
   # switch and a fresh root; it always requalifies, never renews an old pilot.
   def self.main(arguments)
@@ -569,14 +600,19 @@ module Wac04Qualification
     end
     options = {}
     parser = OptionParser.new do |opts|
-      %w[root source-head source-sha256 codex codex-sha256].each { |name| opts.on("--#{name} VALUE") { |value| options[name] = value } }
+      %w[root source-head source-sha256 codex codex-sha256 data-root task invocation].each do |name|
+        opts.on("--#{name} VALUE") { |value| options[name] = value }
+      end
       opts.on("--authorize-live") { options["authorize-live"] = true }
     end
     parser.require_exact = true
     parser.parse!(arguments)
-    required = %w[codex codex-sha256 root source-head source-sha256] + (action == "run" ? ["authorize-live"] : [])
-    raise "usage: pin | {qualify|offline|run} --root FRESH_PATH --source-head FULL_COMMIT_SHA --source-sha256 HASH --codex PATH --codex-sha256 HASH [--authorize-live for run]" unless
-      %w[qualify offline run].include?(action) && arguments.empty? && options.keys.sort == required.sort
+    required = %w[codex codex-sha256 root source-head source-sha256]
+    required += ["authorize-live"] if %w[run first-return].include?(action)
+    required += %w[data-root task invocation] if action == "first-return"
+    raise "usage: pin | {qualify|offline|run|first-return} --root FRESH_PATH --source-head FULL_COMMIT_SHA --source-sha256 HASH --codex PATH --codex-sha256 HASH [--authorize-live for run/first-return] [--data-root PATH --task TASK --invocation ID for first-return]" unless
+      %w[qualify offline run first-return].include?(action) && arguments.empty? && options.keys.sort == required.sort
+    return first_return_trial(options) if action == "first-return"
     result = action == "qualify" ? qualify(options) : bounded_journey(options, live: action == "run")
     puts JSON.pretty_generate(result)
     0

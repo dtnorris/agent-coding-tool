@@ -46,8 +46,9 @@ module AgentCodingTool
     DISPLAY_TOKEN = /#{ANSI_SEQUENCE}|\X/
     NEXT_JSON_VERSION = "agent-coding-tool-next/v0.1"
 
-    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil, transport: nil)
-      new(root: root, out: out, err: err, data_root: data_root, transport: transport).run(argv)
+    def self.run(argv, root: Dir.pwd, out: $stdout, err: $stderr, data_root: nil, transport: nil, first_return_runtime: nil)
+      new(root: root, out: out, err: err, data_root: data_root, transport: transport,
+        first_return_runtime: first_return_runtime).run(argv)
     end
 
     def self.default_data_root(root, env: ENV)
@@ -59,7 +60,7 @@ module AgentCodingTool
 
     # A host may embed a qualified NativePilotExecutor for the bounded session
     # slice. CLI/model arguments and environment flags cannot install one.
-    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil, input: $stdin, manager_runtime: nil, native_pilot: nil)
+    def initialize(root:, out:, err:, data_root: nil, terminal_width: nil, transport: nil, input: $stdin, manager_runtime: nil, native_pilot: nil, first_return_runtime: nil)
       @root = root
       @out = out
       @err = err
@@ -67,6 +68,7 @@ module AgentCodingTool
       @terminal_width = terminal_width
       @input = input
       @manager_runtime = manager_runtime || native_pilot&.manager_adapter
+      @first_return_runtime = first_return_runtime
       @native_pilot = native_pilot
       @transport = transport || NativeCommandTransport.new(interrupt_out: out, interrupt_err: err)
     end
@@ -233,13 +235,23 @@ module AgentCodingTool
     # an explicit stdout recovery command, never a false copy-success message.
     def manage_command(argv)
       stdout = false
+      first_return = false
+      invocation = nil
       parser = OptionParser.new do |opts|
         opts.on("--stdout", "print the reminder without changing the clipboard") { stdout = true }
+        opts.on("--first-return", "review one retained worker return") { first_return = true }
+        opts.on("--invocation ID", "select the exact worker invocation for first-return review") { |id| invocation = id }
       end
       parser.require_exact = true
       parser.parse!(argv)
       id = argv.shift
-      raise Error, "usage: agent-coding-tool manage TASK [--stdout]" unless id && argv.empty?
+      unless id && argv.empty? && !(stdout && first_return) && (!invocation || first_return)
+        raise Error, "usage: act manage TASK [--stdout | --first-return [--invocation ID]]"
+      end
+      if first_return
+        require_relative "first_return_review"
+        return FirstReturnReview.new(data_root: @data_root, out: @out, runtime: @first_return_runtime).call(id, invocation: invocation)
+      end
 
       require_relative "manager_reminder"
       reminder = ManagerReminder.render(@data_root, id)
@@ -255,7 +267,11 @@ module AgentCodingTool
       @out.puts "Copied manager reminder for #{id}; paste it above your update."
       0
     rescue SystemCallError, IOError, Timeout::Error => error
-      @err.puts "ERROR: manage: clipboard unavailable (#{error.class}); use act manage #{id} --stdout"
+      if first_return
+        @err.puts "ERROR: first-return review unavailable (#{error.class})"
+      else
+        @err.puts "ERROR: manage: clipboard unavailable (#{error.class}); use act manage #{id} --stdout"
+      end
       2
     end
 
@@ -2017,7 +2033,7 @@ module AgentCodingTool
           share source revoke ID      revoke live source independently of task evidence
                               zero tasks on startup; whole configured Work workspace audience
                               setup required once; no execution/publication; delivered bytes cannot be recalled
-          manage TASK [--stdout]
+          manage TASK [--stdout | --first-return [--invocation ID]]
           manager start TASK --id ID
           manager bind ID --task TASK --attempt N --invocation ID --session ID
           manager review ID --session ID

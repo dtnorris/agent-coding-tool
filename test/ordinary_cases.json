@@ -371,6 +371,14 @@
     "LifecycleForceTest#test_stale_scope_and_unobserved_completion_are_explicit": ["coding"],
     "LifecycleForceTest#test_system_alias_preserves_canonical_audit_and_rejects_other_symlinks": ["coding", "coding"]
   },
+  "test/first_return_review_test.rb": {
+    "FirstReturnReviewTest#test_pre_checkpoint_historical_review": [],
+    "FirstReturnReviewTest#test_pre_return_checkpoint_keeps_later_gate_out": [],
+    "FirstReturnReviewTest#test_pre_return_gate_and_output_are_eligible_evidence": [],
+    "FirstReturnReviewTest#test_exempt_inspection": [],
+    "FirstReturnReviewTest#test_broken_link_changed_evidence_and_reviewer_failure": [],
+    "FirstReturnReviewTest#test_unapproved_and_ambiguous_selection": []
+  },
   "test/manage_test.rb": {
     "ManageTest#test_stdout_is_deterministic_source_bound_and_read_only": [],
     "ManageTest#test_default_copies_exact_unicode_text_and_confirms_only_after_success": [],

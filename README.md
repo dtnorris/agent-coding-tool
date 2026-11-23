@@ -291,17 +291,15 @@ state. Paste-ready checkpoint commands use the retained binding, and native
 ACT checks still apply. A historical recommendation describes the action at
 the worker return; review current state before acting on it now.
 
-For one separately approved Mini trial, use the existing WAC-04 host recipe
-with action `first-return`, `--authorize-live`, `--data-root PATH`, `--task TASK`
-and `--invocation ID`, alongside the reviewed source/Codex pins and fresh
-`--root` below. It first runs harmless qualification, installs a private lease
-for the exact evidence revision under `DATA-runs/checkpoints/.first-return`.
-Then run `act manage TASK --first-return --invocation ID` in the same qualified
-composition. The lease permits one fresh manager turn,
-at most 120 seconds including teardown and 4 MiB of output. It uses the existing
-ChatGPT login. A missing, expired, occupied or consumed lease refuses without
-launching another reviewer. The trial stops after the recommendation. David
-judges its live quality and retains authority over any next action.
+The command itself authorizes one review. On macOS, ACT checks the installed
+native Codex on PATH, file-based ChatGPT login, and host confinement, then
+rechecks the selected evidence before sending it. It creates a private one-use
+slot under `DATA-runs/checkpoints/.first-return` when needed. A previously
+qualified lease can still be used if it matches the exact evidence and
+composition. The review permits one fresh manager turn, at most 120 seconds
+including teardown, and 4 MiB of output. An unsafe runtime, occupied or
+consumed slot, or expired lease refuses. The reviewer stops after returning
+its recommendation, and David owns the next action.
 
 ## Persistent manager session candidate
 

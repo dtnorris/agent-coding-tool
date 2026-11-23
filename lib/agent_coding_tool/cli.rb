@@ -239,7 +239,7 @@ module AgentCodingTool
       invocation = nil
       parser = OptionParser.new do |opts|
         opts.on("--stdout", "print the reminder without changing the clipboard") { stdout = true }
-        opts.on("--first-return", "review one retained worker return") { first_return = true }
+        opts.on("--first-return", "authorize one confined Codex review of a retained worker return") { first_return = true }
         opts.on("--invocation ID", "select the exact worker invocation for first-return review") { |id| invocation = id }
       end
       parser.require_exact = true

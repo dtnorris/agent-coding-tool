@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "stringio"
+require_relative "support/child_processes"
 require_relative "../lib/agent_coding_tool/codex_manager_adapter"
 
 # Exercises manage through the public dispatcher and real evidence/JSONL readers.
@@ -11,12 +12,12 @@ class FirstReturnReviewTest < Minitest::Test
 
   # Builds a Launcher-shaped immutable return, plus optional retained claims
   # and chronologically distinct host records. No current task file is needed.
-  def retained_run(data, exempt: false, checkpoint_at: nil, gate_at: "2026-11-18T10:19:01Z", exit_status: 0)
-    run = File.join("#{data}-runs", "T", "run-1")
+  def retained_run(data, exempt: false, checkpoint_at: nil, gate_at: "2026-11-18T10:19:01Z", exit_status: 0, task: "T")
+    run = File.join("#{data}-runs", task, "run-1")
     FileUtils.mkdir_p(run, mode: 0o700)
     workspace = File.realpath(data)
     authority = { "pushed_sha" => "a" * 40, "remote_url" => "git@github.com:example/source.git", "branch" => "main" }
-    identity = { "task_id" => "T", "attempt" => 1, "invocation_id" => "original-invocation", "session_id" => "original-worker" }
+    identity = { "task_id" => task, "attempt" => 1, "invocation_id" => "original-invocation", "session_id" => "original-worker" }
     report = identity.merge("schema_version" => "agent-coding-tool-run/v1", "status" => "exited", "exit_status" => exit_status,
       "final_valid" => true, "ended_at" => "2026-11-18T10:18:03Z", "checkpoint_required" => !exempt,
       "workspace" => workspace, "preparation" => { "source" => authority })
@@ -200,14 +201,16 @@ class FirstReturnReviewTest < Minitest::Test
     end
   end
 
-  # The normal binary path requires a host-qualified lease and rejects multiple
-  # task runs before calling inference. An explicit exact invocation can select it.
+  # An occupied unsafe slot refuses. Ambiguous runs require exact selection.
   def test_unapproved_and_ambiguous_selection
     with_workspace do |data|
       run = retained_run(data, exempt: true)
+      slots = File.join("#{data}-runs", "checkpoints", ".first-return")
+      FileUtils.mkdir_p(slots, mode: 0o700)
+      File.symlink(data, File.join(slots, "original-invocation"))
       status, out, err = review(data)
       assert_equal 2, status
-      assert_includes err, "no approved confined reviewer lease"
+      assert_includes err, "aliased storage"
       refute_includes out, "recommendation"
       second = File.join(File.dirname(run), "run-2")
       Dir.mkdir(second)
@@ -220,6 +223,79 @@ class FirstReturnReviewTest < Minitest::Test
       assert_equal 0, review(data, "--invocation", "original-invocation") { |argv, bytes|
         answer(argv, JSON.parse(bytes), action: "operator_closeout", proved: "The inspection returned three bindings.", remaining: "David owns acceptance.")
       }.first
+    end
+  end
+
+  # Runs the installed entry point with sandbox-exec replaced by a harmless
+  # process. No runtime or inference adapter is injected into the CLI.
+  def installed_review(data, run, action: "ok", args: [])
+    env = { "AGENT_CODING_TOOL_DATA_DIR" => data, "CODEX_HOME" => File.join(data, "auth"),
+      "PATH" => File.join(data, "bin"), "FIRST_RETURN_TEST_ACTION" => action,
+      "FIRST_RETURN_TEST_FINAL" => File.join(run, "final.txt") }
+    ChildProcesses.capture("first_return_cli", environment: env, seconds: 25,
+      arguments: ["manage", "OS-AF-03", "--first-return", *args])
+  end
+
+  # Provides a native executable identity and dummy auth for process substitutes.
+  def installed_fixture(data)
+    data = File.realpath(data)
+    %w[auth bin].each { |name| Dir.mkdir(File.join(data, name), 0o700) }
+    File.write(File.join(data, "auth", "auth.json"), "{}", mode: "wx", perm: 0o600)
+    File.symlink(File.realpath(RbConfig.ruby), File.join(data, "bin", "codex"))
+    retained_run(data, exempt: true, task: "OS-AF-03")
+  end
+
+  # The literal operator command admits one reviewer, even across concurrent
+  # callers, and permanently consumes its one-use slot.
+  def test_installed_cli_authorizes_exactly_one_review
+    skip "native pilot requires Darwin" unless RUBY_PLATFORM.include?("darwin")
+    with_workspace do |temporary|
+      data = File.realpath(temporary)
+      run = installed_fixture(data)
+      refute File.exist?(File.join("#{data}-runs", "checkpoints", ".first-return"))
+      results = Array.new(2) { Thread.new { installed_review(data, run) } }.map(&:value)
+      assert_equal [0, 2], results.map { |_, _, status| status.exitstatus }.sort, results.inspect
+      assert_equal 1, results.sum { |out, _, _| out.scan("First-return recommendation").length }
+      assert_equal ["review"], File.readlines(File.join(run, "final.txt.calls"), chomp: true)
+      out, err, status = installed_review(data, run)
+      assert_equal 2, status.exitstatus
+      assert_includes err, "invocation/output limit"
+      refute_includes out, "recommendation"
+      assert_equal ["review"], File.readlines(File.join(run, "final.txt.calls"), chomp: true)
+    end
+  end
+
+  # Invalid qualification and missing, ambiguous or changed evidence never
+  # print a recommendation. Only an in-flight mutation reaches the reviewer.
+  def test_installed_cli_refuses_unsafe_runtime_and_evidence
+    skip "native pilot requires Darwin" unless RUBY_PLATFORM.include?("darwin")
+    %w[unsafe missing ambiguous change-before change-during].each do |action|
+      with_workspace do |temporary|
+        data = File.realpath(temporary)
+        run = installed_fixture(data)
+        final = File.join(run, "final.txt")
+        File.unlink(final) if action == "missing"
+        if action == "ambiguous"
+          second = File.join(File.dirname(run), "run-2")
+          Dir.mkdir(second)
+          report = JSON.parse(File.read(File.join(run, "handoff.json")))
+          File.write(File.join(second, "handoff.json"), JSON.generate(report.merge("attempt" => 2, "invocation_id" => "other-invocation")))
+        end
+        out, err, status = installed_review(data, run, action: action)
+        assert_equal 2, status.exitstatus, err
+        refute_includes out, "recommendation"
+        expected = { "unsafe" => "manager confinement unqualified", "missing" => "retained final evidence is missing",
+          "ambiguous" => "multiple matching managed runs", "change-before" => "artifact differs from launch record",
+          "change-during" => "artifact differs from launch record" }
+        assert_includes err, expected.fetch(action)
+        assert_equal action == "change-during", File.exist?("#{final}.calls")
+        if action == "ambiguous"
+          out, err, status = installed_review(data, run, args: ["--invocation", "original-invocation"])
+          assert_equal 0, status.exitstatus, err
+          assert_includes out, "First-return recommendation"
+          assert_equal ["review"], File.readlines("#{final}.calls", chomp: true)
+        end
+      end
     end
   end
 end

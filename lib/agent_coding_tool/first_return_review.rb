@@ -33,10 +33,10 @@ module AgentCodingTool
       end
       prompt = prompt_for(report, selection)
       runtime = @runtime || native_runtime(prompt.fetch("binding"), prompt.fetch("revision"))
+      check_selection!(task, invocation, selection) unless @runtime
       result = runtime.call(session: nil, prompt: JSON.generate(prompt))
       decision = decision!(result, prompt)
-      _, current = @store.first_return(task, invocation: invocation)
-      raise InvalidState, "first-return evidence changed during review" unless selection == current
+      check_selection!(task, invocation, selection)
       action = next_action(decision, selection)
       @out.puts "First-return recommendation (as of #{Time.iso8601(report.fetch('ended_at')).utc.iso8601})"
       @out.puts "Proved: #{decision.fetch('proved')}"
@@ -53,8 +53,14 @@ module AgentCodingTool
 
     private
 
-    # Loads only the host-created one-use WAC-04 ledger for this selection.
-    # Missing, unqualified, stale, spent or unsafe ledger state refuses.
+    # Refuses a changed selection before sending evidence and before publishing advice.
+    def check_selection!(task, invocation, selection)
+      _, current = @store.first_return(task, invocation: invocation)
+      raise InvalidState, "first-return evidence changed during review" unless selection == current
+    end
+
+    # Opens or creates the host-confined one-use grant for this selection.
+    # Unqualified, stale, spent or unsafe runtime state refuses.
     def native_runtime(binding, revision)
       require_relative "native_pilot_executor"
       NativePilotExecutor.open_first_return(@data_root, binding, revision)

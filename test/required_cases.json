@@ -170,7 +170,9 @@
       "FirstReturnReviewTest#test_pre_return_gate_and_output_are_eligible_evidence",
       "FirstReturnReviewTest#test_exempt_inspection",
       "FirstReturnReviewTest#test_broken_link_changed_evidence_and_reviewer_failure",
-      "FirstReturnReviewTest#test_unapproved_and_ambiguous_selection"
+      "FirstReturnReviewTest#test_unapproved_and_ambiguous_selection",
+      "FirstReturnReviewTest#test_installed_cli_authorizes_exactly_one_review",
+      "FirstReturnReviewTest#test_installed_cli_refuses_unsafe_runtime_and_evidence"
     ],
     "test/family_status_test.rb": [
       "FamilyStatusTest#test_zero_one_six_and_seven_ready",
@@ -867,6 +869,10 @@
       "BootstrapTest#test_cross_mode_reservation_contention_and_release",
       "BootstrapTest#test_reservation_identity_and_error_compatibility",
       "BootstrapTest#test_lifecycle_scaffold_refuses_adoption"
+    ],
+    "test/first_return_review_test.rb": [
+      "FirstReturnReviewTest#test_installed_cli_authorizes_exactly_one_review",
+      "FirstReturnReviewTest#test_installed_cli_refuses_unsafe_runtime_and_evidence"
     ],
     "test/manager_session_test.rb": [
       "ManagerSessionTest#test_continuous_public_entry_and_required_handoff_controls",

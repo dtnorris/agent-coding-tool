@@ -59,15 +59,17 @@ module AgentCodingTool
       File.join("#{data_root}-runs", "checkpoints", ".first-return", invocation)
     end
 
-    # Opens the one-use, independently supervised adapter for exactly this
-    # approved selection. Host qualification must have installed the pilot.
-    # Filesystem, source, composition or approval mismatches refuse inference.
+    # Opens an existing exact grant or qualifies a new one for this operator call.
+    # Occupied, unsafe or partially initialized slots cannot be replaced.
     def self.open_first_return(data_root, binding, revision)
       directory = first_return_directory(data_root, binding.fetch("invocation_id"))
       unless File.exist?(directory) || File.symlink?(directory)
-        raise InvalidState, "first-return: no approved confined reviewer lease for this invocation"
+        require_relative "first_return_runtime"
+        FirstReturnRuntime.new(directory).authorize(data_root, binding, revision)
       end
-      private_directory!(File.dirname(directory))
+      ["#{data_root}-runs", File.dirname(File.dirname(directory)), File.dirname(directory)].each do |path|
+        private_directory!(path)
+      end
       pilot = new(directory)
       pilot.first_return_adapter(data_root, binding, revision)
     end
